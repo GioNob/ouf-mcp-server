@@ -1,10 +1,20 @@
-name: MCP 1A Go kernel
+name: MCP 1B durable lifecycle
 on: [push, pull_request]
 permissions: {contents: read}
 jobs:
-  protocol-feasibility:
+  protocol-and-lifecycle:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+      MCP_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -13,13 +23,17 @@ jobs:
           cache: true
       - run: go mod download
       - run: bash scripts/verify.sh
+      - run: ./build/ouf-mcp migrate
+      - run: ./build/ouf-mcp maintenance-worker --once
       - run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-1a-evidence-${{ github.run_id }}
+          name: mcp-1b-evidence-${{ github.run_id }}
           path: |
             docs/MCP_1A_TRACEABILITY.md
+            docs/MCP_1B_TRACEABILITY.md
             internal/manifest/capabilities.json
+            internal/adapter/postgres/migrations/*.sql
           retention-days: 30
