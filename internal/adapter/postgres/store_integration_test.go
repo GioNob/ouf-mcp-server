@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 	"os"
 	"testing"
@@ -75,6 +76,33 @@ func TestDurableLifecycle(t *testing.T) {
 	}
 	if _, err = store.Pool().Exec(ctx, "update ouf_mcp.manifest_snapshot set manifest_version='mutated' where manifest_checksum=$1", manifestHash); err == nil {
 		t.Fatal("manifest mutable")
+	}
+	governed := orchestration.AdmissionRequest{Identity: orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "agent", TenantID: "tenant", ActorType: "AI_AGENT", AuthenticationContextRef: "authn-1"}, CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", ManifestChecksum: manifestHash, AuthorizationDecisionRef: "decision-1", IdempotencyKey: uuid.NewString(), RequestHash: hash64("governed"), SemanticFingerprint: "v1:hmac-sha256:same", FingerprintVersion: "v1", CorrelationID: uuid.NewString(), Window: time.Minute, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 1024}}
+	reserved, err := store.Reserve(ctx, governed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	governedReplay, err := store.Reserve(ctx, governed)
+	if err != nil || governedReplay.AttemptID != reserved.AttemptID || !governedReplay.Replay {
+		t.Fatalf("governed replay %+v %v", governedReplay, err)
+	}
+	if err := store.Dispatch(ctx, reserved.AttemptID, "backend-1", time.Second, reserved.LockVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reconcile(ctx, reserved.AttemptID, orchestration.Cost{ToolCalls: 1, ResultBytes: 12}, orchestration.AttemptOutcome{Success: true, Code: "SUCCEEDED", BackendRequestID: "backend-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for n := 2; n <= 3; n++ {
+		candidate := governed
+		candidate.IdempotencyKey = uuid.NewString()
+		candidate.RequestHash = hash64(fmt.Sprintf("governed-%d", n))
+		_, err = store.Reserve(ctx, candidate)
+		if n == 2 && err != nil {
+			t.Fatal(err)
+		}
+		if n == 3 && !errors.Is(err, orchestration.ErrToolSelectionStall) {
+			t.Fatalf("expected retry stall, got %v", err)
+		}
 	}
 	expired := uuid.New()
 	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.application_session(application_session_id,service_principal_id,principal_id,tenant_id,created_manifest_checksum,created_at,expires_at) values($1,'s','p','t',$2,transaction_timestamp()-interval '2 hours',transaction_timestamp()-interval '1 hour')`, expired, manifestHash)

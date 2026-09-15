@@ -20,7 +20,10 @@ func testServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httptest.NewServer(h)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		h.ServeHTTP(w, r)
+	}))
 }
 
 func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {

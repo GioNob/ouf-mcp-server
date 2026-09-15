@@ -1,0 +1,116 @@
+package httpclient
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+)
+
+type AuthorizationClient struct {
+	Endpoint      *url.URL
+	Client        *http.Client
+	WorkloadToken string
+}
+
+func NewAuthorization(endpoint string, token string) (*AuthorizationClient, error) {
+	u, e := governed(endpoint)
+	if e != nil {
+		return nil, e
+	}
+	return &AuthorizationClient{u, sharedClient(), token}, nil
+}
+func (c *AuthorizationClient) Authorize(ctx context.Context, in orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	body, _ := json.Marshal(in)
+	req, e := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint.String(), bytes.NewReader(body))
+	if e != nil {
+		return orchestration.AuthorizationDecision{}, e
+	}
+	headers(req, c.WorkloadToken, "", "", "")
+	res, e := c.Client.Do(req)
+	if e != nil {
+		return orchestration.AuthorizationDecision{}, e
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return orchestration.AuthorizationDecision{}, errors.New("authorization service denied request")
+	}
+	var out orchestration.AuthorizationDecision
+	e = json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&out)
+	return out, e
+}
+
+type GatewayClient struct {
+	Endpoint      *url.URL
+	Client        *http.Client
+	WorkloadToken string
+}
+
+func NewGateway(endpoint string, token string) (*GatewayClient, error) {
+	u, e := governed(endpoint)
+	if e != nil {
+		return nil, e
+	}
+	return &GatewayClient{u, sharedClient(), token}, nil
+}
+func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	body, _ := json.Marshal(in)
+	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, c.Endpoint.String(), bytes.NewReader(body))
+	if e != nil {
+		return orchestration.GatewayResponse{}, e
+	}
+	headers(req, c.WorkloadToken, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
+	res, e := c.Client.Do(req)
+	if e != nil {
+		return orchestration.GatewayResponse{}, e
+	}
+	defer res.Body.Close()
+	limit := in.MaxResultBytes
+	if limit < 1 {
+		limit = 1 << 20
+	}
+	payload, e := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if e != nil {
+		return orchestration.GatewayResponse{}, e
+	}
+	out := orchestration.GatewayResponse{Status: res.StatusCode, Body: payload, BackendRequestID: res.Header.Get("X-Backend-Request-ID")}
+	if res.StatusCode/100 != 2 {
+		var p orchestration.Problem
+		_ = json.Unmarshal(payload, &p)
+		p.RetryAfter = res.Header.Get("Retry-After")
+		p.Status = res.StatusCode
+		out.Problem = &p
+	}
+	return out, nil
+}
+func governed(raw string) (*url.URL, error) {
+	u, e := url.Parse(raw)
+	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("invalid governed service endpoint")
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")) {
+		return nil, errors.New("governed endpoint requires HTTPS")
+	}
+	return u, nil
+}
+func sharedClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{MaxIdleConns: 32, MaxIdleConnsPerHost: 16, MaxConnsPerHost: 32, IdleConnTimeout: 30 * time.Second, ResponseHeaderTimeout: 10 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+func headers(r *http.Request, token, correlation, idempotency, attempt string) {
+	r.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(token) != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	r.Header.Set("X-Correlation-ID", correlation)
+	r.Header.Set("Idempotency-Key", idempotency)
+	r.Header.Set("X-Tool-Attempt-ID", attempt)
+}
