@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,13 @@ type Capability struct {
 	ResultSemantics       string          `json:"resultSemantics"`
 	SecurityNotes         []string        `json:"securityNotes"`
 	MCPClass              string          `json:"mcpClass"`
+	Owner                 string          `json:"owner"`
+	OperationClass        string          `json:"operationClass"`
+	PublicationState      string          `json:"publicationState"`
+	RequiredAuthorization string          `json:"requiredAuthorizationCapability"`
+	GatewayBindingRef     string          `json:"gatewayBindingRef"`
+	BaseCostEnvelope      json.RawMessage `json:"baseCostEnvelope"`
+	ConditionalCost       json.RawMessage `json:"conditionalOutcomeCost"`
 	ToolEligible          bool            `json:"toolEligible"`
 	InputSchema           json.RawMessage `json:"inputSchema"`
 }
@@ -54,7 +62,7 @@ func (s *Snapshot) Validate() error {
 	seen := map[string]bool{}
 	for i, c := range s.Capabilities {
 		prefix := fmt.Sprintf("capabilities[%d]", i)
-		if c.CapabilityID == "" || c.Purpose == "" || len(c.UseWhen) == 0 || len(c.DoNotUseWhen) == 0 || len(c.PreferredAlternatives) == 0 || len(c.OperationalLimits) == 0 || c.ResultSemantics == "" || len(c.SecurityNotes) == 0 || len(c.InputSchema) == 0 {
+		if c.CapabilityID == "" || c.Purpose == "" || len(c.UseWhen) == 0 || len(c.DoNotUseWhen) == 0 || len(c.PreferredAlternatives) == 0 || len(c.OperationalLimits) == 0 || c.ResultSemantics == "" || len(c.SecurityNotes) == 0 || len(c.InputSchema) == 0 || c.Owner == "" || c.OperationClass == "" || c.PublicationState == "" || c.RequiredAuthorization == "" || c.GatewayBindingRef == "" || len(c.BaseCostEnvelope) == 0 || len(c.ConditionalCost) == 0 {
 			return fmt.Errorf("%s: incomplete mandatory manifest fields", prefix)
 		}
 		if c.ToolEligible && c.ToolName == "" {
@@ -66,6 +74,15 @@ func (s *Snapshot) Validate() error {
 		seen[c.ToolName] = c.ToolName != ""
 		if c.MCPClass == "TRUSTED_HUMAN_ONLY" && c.ToolEligible {
 			return fmt.Errorf("%s: trusted-human-only capability cannot be tool eligible", prefix)
+		}
+		if c.PublicationState != "ACTIVE" && c.PublicationState != "INACTIVE" && c.PublicationState != "REVOKED" {
+			return fmt.Errorf("%s: invalid publicationState %q", prefix, c.PublicationState)
+		}
+		if c.OperationClass != "READ" && c.OperationClass != "SEARCH" && c.OperationClass != "COMMAND" {
+			return fmt.Errorf("%s: invalid operationClass %q", prefix, c.OperationClass)
+		}
+		if !strings.HasPrefix(c.GatewayBindingRef, "capability://") {
+			return fmt.Errorf("%s: gatewayBindingRef must be a capability reference", prefix)
 		}
 		var schema map[string]any
 		if err := json.Unmarshal(c.InputSchema, &schema); err != nil || schema["type"] != "object" || schema["additionalProperties"] != false {
@@ -81,10 +98,20 @@ func (s *Snapshot) Validate() error {
 	return nil
 }
 
+func (s *Snapshot) CanonicalPayload() ([]byte, error) { return json.Marshal(s) }
+func (s *Snapshot) Checksum() (string, error) {
+	payload, err := s.CanonicalPayload()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum), nil
+}
+
 func (s *Snapshot) ToolEligible() []Capability {
 	out := make([]Capability, 0, len(s.Capabilities))
 	for _, c := range s.Capabilities {
-		if c.ToolEligible && c.MCPClass == "MCP_TOOL" {
+		if c.ToolEligible && c.MCPClass == "MCP_TOOL" && c.PublicationState == "ACTIVE" {
 			out = append(out, c)
 		}
 	}

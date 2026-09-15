@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-mcp-1a",
+  "version": "1.0.0-mcp-1b",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -12,6 +12,13 @@
       "resultSemantics": "Authorized related objects returned by the UDP server-side fixed relationship plan",
       "securityNotes": ["Gateway mediation and backend authorization are mandatory", "No arbitrary query language or network destination input"],
       "mcpClass": "MCP_TOOL",
+      "owner": "udp",
+      "operationClass": "SEARCH",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "urban.object.related_search",
+      "gatewayBindingRef": "capability://urban.object.related_search",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 200, "hardMaxResultBytes": 1048576, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 1, "equivalentRetryCalls": 1},
       "toolEligible": true,
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -40,6 +47,13 @@
       "resultSemantics": "Authoritative merge outcome owned by UDP",
       "securityNotes": ["Never exposed in tools/list"],
       "mcpClass": "TRUSTED_HUMAN_ONLY",
+      "owner": "udp",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "urban.merge.confirm",
+      "gatewayBindingRef": "capability://urban.merge.confirm",
+      "baseCostEnvelope": {"hardMaxToolCalls": 0, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 0, "hardMaxResultBytes": 0, "hardMaxElapsedMs": 0},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 0},
       "toolEligible": false,
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
     }

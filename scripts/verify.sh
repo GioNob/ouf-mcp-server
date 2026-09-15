@@ -9,3 +9,5 @@ go test -race ./...
 mkdir -p build
 go build -trimpath -o build/ouf-mcp ./cmd/ouf-mcp
 ./scripts/verify-no-legacy.sh
+! grep -REn '\\ir|\\i ' internal/adapter/postgres/migrations
+test "$(grep -c 'pg.Migrate(ctx' cmd/ouf-mcp/main.go)" -eq 1

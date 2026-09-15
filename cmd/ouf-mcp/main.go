@@ -11,50 +11,141 @@ import (
 	"syscall"
 	"time"
 
+	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
+	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 )
 
 func main() {
-	role := flag.String("role", "mcp-server", "process role: mcp-server or maintenance-worker")
-	addr := flag.String("http", ":8080", "HTTP listen address")
-	flag.Parse()
-
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	switch *role {
-	case "mcp-server":
-		runServer(ctx, logger, *addr)
+	if len(os.Args) < 2 {
+		logger.Error("missing command", "allowed", "server, maintenance-worker, migrate")
+		os.Exit(2)
+	}
+	databaseURL := os.Getenv("MCP_DATABASE_URL")
+	if databaseURL == "" {
+		logger.Error("MCP_DATABASE_URL is required")
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "server":
+		flags := flag.NewFlagSet("server", flag.ExitOnError)
+		addr := flags.String("http", ":8080", "HTTP listen address")
+		_ = flags.Parse(os.Args[2:])
+		runServer(ctx, logger, databaseURL, *addr)
 	case "maintenance-worker":
-		logger.Info("maintenance worker role reserved for MCP 1B persistence lifecycle")
-		<-ctx.Done()
+		flags := flag.NewFlagSet("maintenance-worker", flag.ExitOnError)
+		once := flags.Bool("once", false, "run one maintenance cycle")
+		interval := flags.Duration("interval", 30*time.Second, "maintenance interval")
+		_ = flags.Parse(os.Args[2:])
+		runMaintenance(ctx, logger, databaseURL, *interval, *once)
+	case "migrate":
+		runMigrate(ctx, logger, databaseURL)
 	default:
-		logger.Error("unsupported process role", "role", *role)
+		logger.Error("unsupported command", "command", os.Args[1])
 		os.Exit(2)
 	}
 }
 
-func runServer(ctx context.Context, logger *slog.Logger, addr string) {
+func openStore(ctx context.Context, logger *slog.Logger, databaseURL string) *pg.Store {
+	store, err := pg.Open(ctx, databaseURL)
+	if err != nil {
+		logger.Error("database connection failed", "error", err)
+		os.Exit(1)
+	}
+	return store
+}
+
+func runMigrate(ctx context.Context, logger *slog.Logger, databaseURL string) {
+	store := openStore(ctx, logger, databaseURL)
+	defer store.Close()
+	if err := pg.Migrate(ctx, store.Pool()); err != nil {
+		logger.Error("database migration failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("database migrations applied")
+}
+
+func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string, interval time.Duration, once bool) {
+	if interval <= 0 {
+		logger.Error("maintenance interval must be positive")
+		os.Exit(2)
+	}
+	store := openStore(ctx, logger, databaseURL)
+	defer store.Close()
+	if err := store.Ready(ctx); err != nil {
+		logger.Error("database schema is not ready", "error", err)
+		os.Exit(1)
+	}
+	for {
+		cycleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		result, err := store.Maintain(cycleCtx, time.Now())
+		cancel()
+		if err != nil {
+			logger.Error("maintenance cycle failed", "error", err)
+		} else {
+			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted)
+		}
+		if once {
+			if err != nil {
+				os.Exit(1)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
+func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr string) {
+	store := openStore(ctx, logger, databaseURL)
+	defer store.Close()
+	if err := store.Ready(ctx); err != nil {
+		logger.Error("database schema is not ready; run the migration role first", "error", err)
+		os.Exit(1)
+	}
+	snapshot, err := manifest.Load()
+	if err != nil {
+		logger.Error("manifest load failed", "error", err)
+		os.Exit(1)
+	}
+	payload, err := snapshot.CanonicalPayload()
+	if err != nil {
+		logger.Error("manifest serialization failed", "error", err)
+		os.Exit(1)
+	}
+	checksum, err := snapshot.Checksum()
+	if err != nil {
+		logger.Error("manifest checksum failed", "error", err)
+		os.Exit(1)
+	}
+	if err := store.EnsureManifest(ctx, checksum, snapshot.Version, "mcp-manifest-v1", payload); err != nil {
+		logger.Error("manifest persistence failed", "error", err)
+		os.Exit(1)
+	}
 	handler, err := kernel.NewHTTPHandler(logger)
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)
 	}
-
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 2 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		readyCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if err := store.Ready(readyCtx); err != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -63,8 +154,7 @@ func runServer(ctx context.Context, logger *slog.Logger, addr string) {
 			logger.Error("HTTP shutdown failed", "error", err)
 		}
 	}()
-
-	logger.Info("OUF MCP server listening", "address", addr, "protocol", kernel.ProtocolVersion)
+	logger.Info("OUF MCP server listening", "address", addr, "protocol", kernel.ProtocolVersion, "manifestChecksum", checksum)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("HTTP server failed", "error", err)
 		os.Exit(1)
