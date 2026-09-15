@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 )
 
 type AuthorizationClient struct {
@@ -51,6 +52,39 @@ type GatewayClient struct {
 	Endpoint      *url.URL
 	Client        *http.Client
 	WorkloadToken string
+}
+
+type RecoveryClient struct {
+	Endpoint      *url.URL
+	Client        *http.Client
+	WorkloadToken string
+}
+
+func NewRecovery(endpoint, token string) (*RecoveryClient, error) {
+	u, e := governed(endpoint)
+	if e != nil {
+		return nil, e
+	}
+	return &RecoveryClient{u, sharedClient(), token}, nil
+}
+func (c *RecoveryClient) QueryOutcome(ctx context.Context, in recovery.OwnerQuery) (recovery.OwnerEvidence, error) {
+	body, _ := json.Marshal(in)
+	req, e := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint.String(), bytes.NewReader(body))
+	if e != nil {
+		return recovery.OwnerEvidence{}, e
+	}
+	headers(req, c.WorkloadToken, in.CorrelationID, "", "")
+	res, e := c.Client.Do(req)
+	if e != nil {
+		return recovery.OwnerEvidence{}, e
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return recovery.OwnerEvidence{}, errors.New("owner recovery query rejected")
+	}
+	var out recovery.OwnerEvidence
+	e = json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&out)
+	return out, e
 }
 
 func NewGateway(endpoint string, token string) (*GatewayClient, error) {

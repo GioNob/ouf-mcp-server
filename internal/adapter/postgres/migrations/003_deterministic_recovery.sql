@@ -1,0 +1,16 @@
+alter table ouf_mcp.idempotency_claim add column state text not null default 'BOUND' check(state in('BOUND','UNKNOWN','COMPLETED'));
+alter table ouf_mcp.idempotency_claim add column lock_version bigint not null default 0;
+alter table ouf_mcp.retry_guard add column blocking_attempts integer not null default 0 check(blocking_attempts>=0);
+alter table ouf_mcp.tool_attempt add column recovery_owner text;
+alter table ouf_mcp.tool_attempt add column recovery_lease_until timestamptz;
+alter table ouf_mcp.tool_attempt add column unknown_since timestamptz;
+alter table ouf_mcp.tool_attempt add column outcome_code text;
+alter table ouf_mcp.tool_attempt add column result_ref text;
+alter table ouf_mcp.tool_attempt drop constraint tool_attempt_dispatch_state_check;
+alter table ouf_mcp.tool_attempt add constraint tool_attempt_dispatch_state_check check(dispatch_state in('NOT_DISPATCHED','DISPATCHED','CONFIRMED','ACKNOWLEDGED','UNKNOWN'));
+alter table ouf_mcp.tool_attempt add constraint tool_attempt_recovery_lease_check check((recovery_owner is null)=(recovery_lease_until is null));
+alter table ouf_mcp.budget_reservation drop constraint budget_reservation_state_check;
+alter table ouf_mcp.budget_reservation add constraint budget_reservation_state_check check(state in('RESERVED','RECONCILED','RELEASED','UNKNOWN'));
+alter table ouf_mcp.budget_reservation add column actual_tool_calls bigint;
+alter table ouf_mcp.budget_reservation add column actual_result_bytes bigint;
+create index tool_attempt_recovery_claim_idx on ouf_mcp.tool_attempt(state,recovery_lease_until,unknown_since) where state='UNKNOWN';

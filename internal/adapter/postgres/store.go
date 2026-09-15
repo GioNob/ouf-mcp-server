@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,6 +17,8 @@ import (
 
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
 var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
+var ErrIdempotencyOutcomeUnknown = errors.New("idempotency outcome unknown")
+var ErrGroupLocked = errors.New("equivalence group locked by uncertain attempt")
 
 type Store struct{ pool *pgxpool.Pool }
 
@@ -135,6 +138,13 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 		if existingHash != in.RequestHash {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyConflict
 		}
+		var state string
+		if err = tx.QueryRow(ctx, `select state from ouf_mcp.tool_attempt where attempt_id=$1`, existingID).Scan(&state); err != nil {
+			return orchestration.AdmissionDecision{}, err
+		}
+		if state == "UNKNOWN" || state == "UNRESOLVED" {
+			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
+		}
 		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true}, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -163,11 +173,14 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	var attempts int
+	var attempts, blocking int
 	var blocked bool
-	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_guard(equivalence_group_id,equivalent_attempts) values($1,1) on conflict(equivalence_group_id) do update set equivalent_attempts=ouf_mcp.retry_guard.equivalent_attempts+1,updated_at=transaction_timestamp() returning equivalent_attempts,blocked`, groupID).Scan(&attempts, &blocked)
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_guard(equivalence_group_id,equivalent_attempts) values($1,1) on conflict(equivalence_group_id) do update set equivalent_attempts=ouf_mcp.retry_guard.equivalent_attempts+1,updated_at=transaction_timestamp() returning equivalent_attempts,blocked,blocking_attempts`, groupID).Scan(&attempts, &blocked, &blocking)
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
+	}
+	if blocking > 0 {
+		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
 	if blocked || attempts >= in.RetryThreshold {
 		_, _ = tx.Exec(ctx, `update ouf_mcp.retry_guard set blocked=true where equivalence_group_id=$1`, groupID)
@@ -223,7 +236,7 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',reconciled_at=transaction_timestamp() where attempt_id=$1`, id)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='CONFIRMED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
+		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
 	}
 	if err != nil {
 		return err
@@ -257,8 +270,21 @@ func (s *Store) Maintain(ctx context.Context, now time.Time) (MaintenanceResult,
 		return MaintenanceResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	orphans, err := tx.Exec(ctx, `update ouf_mcp.tool_attempt set state='UNKNOWN',dispatch_state='UNKNOWN',lease_until=null,lock_version=lock_version+1 where state='RUNNING' and lease_until<$1`, now)
+	rows, err := tx.Query(ctx, `update ouf_mcp.tool_attempt ta set state='UNKNOWN',dispatch_state='UNKNOWN',unknown_since=coalesce(unknown_since,$1),lease_until=null,lock_version=lock_version+1 where state='RUNNING' and lease_until<$1 and not exists(select 1 from ouf_mcp.attempt_admission_context ac where ac.attempt_id=ta.attempt_id) returning attempt_id`, now)
 	if err != nil {
+		return MaintenanceResult{}, err
+	}
+	var stale []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return MaintenanceResult{}, err
+		}
+		stale = append(stale, id)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
 		return MaintenanceResult{}, err
 	}
 	expired, err := tx.Exec(ctx, `delete from ouf_mcp.application_session s where expires_at<$1 and not exists(select 1 from ouf_mcp.tool_attempt a where a.application_session_id=s.application_session_id)`, now)
@@ -268,5 +294,229 @@ func (s *Store) Maintain(ctx context.Context, now time.Time) (MaintenanceResult,
 	if err = tx.Commit(ctx); err != nil {
 		return MaintenanceResult{}, err
 	}
-	return MaintenanceResult{orphans.RowsAffected(), expired.RowsAffected()}, nil
+	return MaintenanceResult{int64(len(stale)), expired.RowsAffected()}, nil
+}
+
+func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.Time, worker string, lease time.Duration, limit int) ([]recovery.Candidate, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	admittedRows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id,br.reserved_tool_calls,br.reserved_result_bytes,ta.service_principal_id,ta.manifest_checksum from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.budget_reservation br using(attempt_id) where ta.state='ADMITTED' and ta.dispatch_state='NOT_DISPATCHED' and ta.admitted_at<$1 order by ta.admitted_at,ta.attempt_id limit $2`, admittedBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	type expiredAdmission struct {
+		id, window, group uuid.UUID
+		calls, bytes      int64
+		service, manifest string
+	}
+	var expiredAdmissions []expiredAdmission
+	for admittedRows.Next() {
+		var a expiredAdmission
+		if err = admittedRows.Scan(&a.id, &a.window, &a.group, &a.calls, &a.bytes, &a.service, &a.manifest); err != nil {
+			admittedRows.Close()
+			return nil, err
+		}
+		expiredAdmissions = append(expiredAdmissions, a)
+	}
+	admittedRows.Close()
+	if err = admittedRows.Err(); err != nil {
+		return nil, err
+	}
+	for _, a := range expiredAdmissions {
+		if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.budget_window where budget_window_id=$1 for update`, a.window); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.retry_guard where equivalence_group_id=$1 for update`, a.group); err != nil {
+			return nil, err
+		}
+		var attemptState string
+		if err = tx.QueryRow(ctx, `select state from ouf_mcp.tool_attempt where attempt_id=$1 for update`, a.id).Scan(&attemptState); err != nil {
+			return nil, err
+		}
+		if attemptState != "ADMITTED" {
+			continue
+		}
+		if _, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3 where budget_window_id=$1`, a.window, a.calls, a.bytes); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state='FAILED',dispatch_state='NOT_DISPATCHED',outcome_code='DISPATCH_NOT_STARTED',completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1 and state='ADMITTED' and dispatch_state='NOT_DISPATCHED'`, a.id); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state='RELEASED',actual_tool_calls=0,actual_result_bytes=0,reconciled_at=transaction_timestamp() where attempt_id=$1 and state='RESERVED'`, a.id); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.idempotency_claim set state='COMPLETED',lock_version=lock_version+1 where attempt_id=$1 and state='BOUND'`, a.id); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,service_principal_id,attempt_id,manifest_checksum,safe_detail) values($1,'DISPATCH_NOT_STARTED','MAINTENANCE_WORKER',$2,$3,$4,'{}')`, uuid.New(), a.service, a.id, a.manifest); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) where ta.state='RUNNING' and ta.dispatch_state='DISPATCHED' and ta.lease_until<$1 order by ta.lease_until,ta.attempt_id limit $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	type staleDispatch struct{ id, window, group uuid.UUID }
+	var staleDispatches []staleDispatch
+	for rows.Next() {
+		var stale staleDispatch
+		if err = rows.Scan(&stale.id, &stale.window, &stale.group); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		staleDispatches = append(staleDispatches, stale)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, stale := range staleDispatches {
+		if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.budget_window where budget_window_id=$1 for update`, stale.window); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.retry_guard where equivalence_group_id=$1 for update`, stale.group); err != nil {
+			return nil, err
+		}
+		var state string
+		var leaseUntil time.Time
+		if err = tx.QueryRow(ctx, `select state,lease_until from ouf_mcp.tool_attempt where attempt_id=$1 for update`, stale.id).Scan(&state, &leaseUntil); err != nil {
+			return nil, err
+		}
+		if state != "RUNNING" || !leaseUntil.Before(now) {
+			continue
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state='UNKNOWN',dispatch_state='UNKNOWN',unknown_since=coalesce(unknown_since,$2),lease_until=null,lock_version=lock_version+1 where attempt_id=$1 and state='RUNNING'`, stale.id, now); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.retry_guard set blocking_attempts=blocking_attempts+1,updated_at=transaction_timestamp() where equivalence_group_id=$1`, stale.group); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state='UNKNOWN' where attempt_id=$1 and state='RESERVED'`, stale.id); err != nil {
+			return nil, err
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.idempotency_claim set state='UNKNOWN',lock_version=lock_version+1 where attempt_id=$1 and state='BOUND'`, stale.id); err != nil {
+			return nil, err
+		}
+	}
+	rows, err = tx.Query(ctx, `select ta.attempt_id,ta.backend_request_id,ac.owner,ta.capability_id,ta.correlation_id from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac on ac.attempt_id=ta.attempt_id where ta.state='UNKNOWN' and (ta.recovery_lease_until is null or ta.recovery_lease_until<$1) order by ta.unknown_since,ta.attempt_id for update of ta skip locked limit $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	var out []recovery.Candidate
+	for rows.Next() {
+		var c recovery.Candidate
+		if err = rows.Scan(&c.AttemptID, &c.BackendRequestID, &c.Owner, &c.CapabilityID, &c.CorrelationID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, c := range out {
+		tag, e := tx.Exec(ctx, `update ouf_mcp.tool_attempt set recovery_owner=$2,recovery_lease_until=$3 where attempt_id=$1 and state='UNKNOWN'`, c.AttemptID, worker, now.Add(lease))
+		if e != nil {
+			return nil, e
+		}
+		if tag.RowsAffected() != 1 {
+			return nil, errors.New("recovery claim CAS failed")
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) ApplyOwnerEvidence(ctx context.Context, id uuid.UUID, worker string, evidence recovery.OwnerEvidence) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var windowID, groupID uuid.UUID
+	if err = tx.QueryRow(ctx, `select budget_window_id,equivalence_group_id from ouf_mcp.attempt_admission_context where attempt_id=$1`, id).Scan(&windowID, &groupID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `select 1 from ouf_mcp.retry_guard where equivalence_group_id=$1 for update`, groupID); err != nil {
+		return err
+	}
+	var backendRequestID, state, currentOwner string
+	if err = tx.QueryRow(ctx, `select backend_request_id,state,coalesce(recovery_owner,'') from ouf_mcp.tool_attempt where attempt_id=$1 for update`, id).Scan(&backendRequestID, &state, &currentOwner); err != nil {
+		return err
+	}
+	if state != "UNKNOWN" {
+		return tx.Commit(ctx)
+	}
+	if currentOwner != worker || backendRequestID != evidence.BackendRequestID {
+		return recovery.ErrInvalidOwnerEvidence
+	}
+	if evidence.Outcome == "UNKNOWN" {
+		err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set recovery_owner=null,recovery_lease_until=null where attempt_id=$1 and recovery_owner=$2 and state='UNKNOWN'`, id, worker)
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	var reservedCalls, reservedBytes int64
+	var reservationState string
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,reserved_result_bytes,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&reservedCalls, &reservedBytes, &reservationState); err != nil {
+		return err
+	}
+	if reservationState != "UNKNOWN" {
+		return errors.New("recovery reservation is not UNKNOWN")
+	}
+	if evidence.ActualToolCalls < 0 || evidence.ActualResultBytes < 0 || evidence.ActualToolCalls > reservedCalls || evidence.ActualResultBytes > reservedBytes {
+		return errors.New("owner actual cost exceeds reservation")
+	}
+	finalState, dispatchState, reservationFinal := "FAILED", "ACKNOWLEDGED", "RECONCILED"
+	consumeCalls, consumeBytes := evidence.ActualToolCalls, evidence.ActualResultBytes
+	if evidence.Outcome == "SUCCEEDED" {
+		finalState = "SUCCEEDED"
+	}
+	if evidence.Outcome == "NOT_DISPATCHED" {
+		dispatchState = "NOT_DISPATCHED"
+		reservationFinal = "RELEASED"
+		consumeCalls = 0
+		consumeBytes = 0
+	}
+	if _, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,consumed_tool_calls=consumed_tool_calls+$4,consumed_result_bytes=consumed_result_bytes+$5 where budget_window_id=$1`, windowID, reservedCalls, reservedBytes, consumeCalls, consumeBytes); err != nil {
+		return err
+	}
+	if err = execOne(ctx, tx, `update ouf_mcp.retry_guard set blocking_attempts=blocking_attempts-1,updated_at=transaction_timestamp() where equivalence_group_id=$1 and blocking_attempts>0`, groupID); err != nil {
+		return err
+	}
+	if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state=$3,dispatch_state=$4,outcome_code=$5,result_ref=nullif($6,''),completed_at=transaction_timestamp(),recovery_owner=null,recovery_lease_until=null,lock_version=lock_version+1 where attempt_id=$1 and recovery_owner=$2 and state='UNKNOWN'`, id, worker, finalState, dispatchState, evidence.OutcomeCode, evidence.ResultRef); err != nil {
+		return err
+	}
+	if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state=$2,actual_tool_calls=$3,actual_result_bytes=$4,reconciled_at=transaction_timestamp() where attempt_id=$1 and state='UNKNOWN'`, id, reservationFinal, consumeCalls, consumeBytes); err != nil {
+		return err
+	}
+	if err = execOne(ctx, tx, `update ouf_mcp.idempotency_claim set state='COMPLETED',lock_version=lock_version+1 where attempt_id=$1 and state='UNKNOWN'`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func execOne(ctx context.Context, tx pgx.Tx, sql string, arguments ...any) error {
+	tag, err := tx.Exec(ctx, sql, arguments...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("recovery CAS affected an unexpected row count")
+	}
+	return nil
+}
+
+func (s *Store) AppendRecoveryAudit(ctx context.Context, id uuid.UUID, outcome, code string) error {
+	return s.AppendAudit(ctx, "ATTEMPT_RECOVERY_"+outcome, "MAINTENANCE_WORKER", "", &id, "", []byte(fmt.Sprintf(`{"outcomeCode":%q}`, code)))
 }

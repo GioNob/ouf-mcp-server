@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 	"github.com/google/uuid"
 	"os"
 	"testing"
@@ -103,6 +104,68 @@ func TestDurableLifecycle(t *testing.T) {
 		if n == 3 && !errors.Is(err, orchestration.ErrToolSelectionStall) {
 			t.Fatalf("expected retry stall, got %v", err)
 		}
+	}
+	uncertain := governed
+	uncertain.Identity.TenantID = "tenant-unknown-" + uuid.NewString()
+	uncertain.IdempotencyKey = uuid.NewString()
+	uncertain.RequestHash = hash64("uncertain")
+	uncertain.SemanticFingerprint = "v1:hmac-sha256:uncertain"
+	unknownAttempt, err := store.Reserve(ctx, uncertain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Dispatch(ctx, unknownAttempt.AttemptID, "backend-unknown", -time.Second, unknownAttempt.LockVersion); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-one", time.Minute, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].BackendRequestID != "backend-unknown" {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if _, err = store.Reserve(ctx, uncertain); !errors.Is(err, ErrIdempotencyOutcomeUnknown) {
+		t.Fatalf("unsafe retry was not blocked: %v", err)
+	}
+	blockedPeer := uncertain
+	blockedPeer.IdempotencyKey = uuid.NewString()
+	blockedPeer.RequestHash = hash64("blocked-peer")
+	if _, err = store.Reserve(ctx, blockedPeer); !errors.Is(err, ErrGroupLocked) {
+		t.Fatalf("equivalent group admitted during uncertainty: %v", err)
+	}
+	secondClaim, err := store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-two", time.Minute, 10)
+	if err != nil || len(secondClaim) != 0 {
+		t.Fatalf("duplicate claim=%+v err=%v", secondClaim, err)
+	}
+	if err = store.ApplyOwnerEvidence(ctx, unknownAttempt.AttemptID, "worker-one", recovery.OwnerEvidence{BackendRequestID: "backend-unknown", Outcome: "NOT_DISPATCHED", OutcomeCode: "OWNER_PROVES_NO_DISPATCH"}); err != nil {
+		t.Fatal(err)
+	}
+	var recoveredState, recoveredDispatch, reservationState, claimState string
+	var blocking int
+	if err = store.Pool().QueryRow(ctx, `select ta.state,ta.dispatch_state,br.state,ic.state,rg.blocking_attempts from ouf_mcp.tool_attempt ta join ouf_mcp.budget_reservation br using(attempt_id) join ouf_mcp.idempotency_claim ic using(attempt_id) join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.retry_guard rg using(equivalence_group_id) where ta.attempt_id=$1`, unknownAttempt.AttemptID).Scan(&recoveredState, &recoveredDispatch, &reservationState, &claimState, &blocking); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredState != "FAILED" || recoveredDispatch != "NOT_DISPATCHED" || reservationState != "RELEASED" || claimState != "COMPLETED" || blocking != 0 {
+		t.Fatalf("recovery %s/%s reservation=%s claim=%s blocking=%d", recoveredState, recoveredDispatch, reservationState, claimState, blocking)
+	}
+	preDispatch := governed
+	preDispatch.Identity.TenantID = "tenant-admitted-" + uuid.NewString()
+	preDispatch.IdempotencyKey = uuid.NewString()
+	preDispatch.RequestHash = hash64("never-dispatched")
+	preDispatch.SemanticFingerprint = "v1:hmac-sha256:never-dispatched"
+	admittedOnly, err := store.Reserve(ctx, preDispatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pool().Exec(ctx, `update ouf_mcp.tool_attempt set admitted_at=transaction_timestamp()-interval '5 minutes' where attempt_id=$1`, admittedOnly.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-one", time.Minute, 10)
+	if err != nil || len(claimed) != 0 {
+		t.Fatalf("pre-dispatch recovery claimed owner: %+v %v", claimed, err)
+	}
+	if err = store.Pool().QueryRow(ctx, `select ta.state,ta.dispatch_state,br.state,ic.state from ouf_mcp.tool_attempt ta join ouf_mcp.budget_reservation br using(attempt_id) join ouf_mcp.idempotency_claim ic using(attempt_id) where ta.attempt_id=$1`, admittedOnly.AttemptID).Scan(&recoveredState, &recoveredDispatch, &reservationState, &claimState); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredState != "FAILED" || recoveredDispatch != "NOT_DISPATCHED" || reservationState != "RELEASED" || claimState != "COMPLETED" {
+		t.Fatalf("pre-dispatch %s/%s reservation=%s claim=%s", recoveredState, recoveredDispatch, reservationState, claimState)
 	}
 	expired := uuid.New()
 	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.application_session(application_session_id,service_principal_id,principal_id,tenant_id,created_manifest_checksum,created_at,expires_at) values($1,'s','p','t',$2,transaction_timestamp()-interval '2 hours',transaction_timestamp()-interval '1 hour')`, expired, manifestHash)
