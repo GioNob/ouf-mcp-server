@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: codex/gateway-pairwise-1d
+          ref: be7e80f2667877734267d9b66733179244acb9f2
           path: .pairwise/gateway
       - uses: actions/setup-go@v6
         with:
