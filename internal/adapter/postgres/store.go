@@ -218,7 +218,13 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 	if outcome.Success {
 		final = "SUCCEEDED"
 	}
-	_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,consumed_tool_calls=consumed_tool_calls+$4,consumed_result_bytes=consumed_result_bytes+$5 where budget_window_id=$1; update ouf_mcp.budget_reservation set state='RECONCILED',reconciled_at=transaction_timestamp() where attempt_id=$6; update ouf_mcp.tool_attempt set state=$7,dispatch_state='CONFIRMED',backend_request_id=coalesce(backend_request_id,$8),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$6`, windowID, calls, bytes, actual.ToolCalls, actual.ResultBytes, id, final, outcome.BackendRequestID)
+	_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,consumed_tool_calls=consumed_tool_calls+$4,consumed_result_bytes=consumed_result_bytes+$5 where budget_window_id=$1`, windowID, calls, bytes, actual.ToolCalls, actual.ResultBytes)
+	if err == nil {
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',reconciled_at=transaction_timestamp() where attempt_id=$1`, id)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='CONFIRMED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
+	}
 	if err != nil {
 		return err
 	}
