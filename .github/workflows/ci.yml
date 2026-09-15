@@ -1,0 +1,17 @@
+name: MCP 1A legacy feasibility probe
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  protocol-feasibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '21', cache: maven}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm}
+      - run: bash scripts/verify-feasibility.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: 'mcp-1a-evidence-${{ github.run_id }}', path: target/feasibility-evidence/, retention-days: 30}
