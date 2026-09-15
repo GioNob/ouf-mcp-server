@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0-mcp-1a",
+  "capabilities": [
+    {
+      "toolName": "urban.object.related_search",
+      "capabilityId": "urban.object.related_search",
+      "purpose": "Find objects connected to a known anchor through governed relationship rules",
+      "useWhen": ["the anchor and bounded relationship pattern are known"],
+      "doNotUseWhen": ["recursive traversal or arbitrary query execution is required"],
+      "preferredAlternatives": ["urban.graph.neighbors", "urban.spatial.intersection_search"],
+      "operationalLimits": {"maxLimit": 200, "maxRelationshipTypes": 10},
+      "resultSemantics": "Authorized related objects returned by the UDP server-side fixed relationship plan",
+      "securityNotes": ["Gateway mediation and backend authorization are mandatory", "No arbitrary query language or network destination input"],
+      "mcpClass": "MCP_TOOL",
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["anchorObjectId", "anchorTypeCode", "relationIri", "direction", "targetTypeCodes", "limit"],
+        "properties": {
+          "anchorObjectId": {"type": "string", "format": "uuid"},
+          "anchorTypeCode": {"type": "string", "minLength": 1, "maxLength": 128},
+          "relationIri": {"type": "string", "minLength": 1, "maxLength": 512},
+          "direction": {"type": "string", "enum": ["OUTBOUND", "INBOUND"]},
+          "targetTypeCodes": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+          "applicationSessionRef": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    {
+      "toolName": "",
+      "capabilityId": "urban.merge.confirm",
+      "purpose": "Commit an approved merge through the Trusted Human Surface",
+      "useWhen": ["a verified human is confirming an exact approved merge plan"],
+      "doNotUseWhen": ["an AI agent or MCP client is attempting confirmation"],
+      "preferredAlternatives": ["urban.merge.propose"],
+      "operationalLimits": {"trustedHumanSurfaceOnly": true},
+      "resultSemantics": "Authoritative merge outcome owned by UDP",
+      "securityNotes": ["Never exposed in tools/list"],
+      "mcpClass": "TRUSTED_HUMAN_ONLY",
+      "toolEligible": false,
+      "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
+    }
+  ]
+}

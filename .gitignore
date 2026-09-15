@@ -1,3 +1,5 @@
-target/
+build/
+coverage.out
 node_modules/
+target/
 *.tgz
