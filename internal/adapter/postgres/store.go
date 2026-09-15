@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
 
 type Store struct{ pool *pgxpool.Pool }
 
@@ -115,6 +118,123 @@ func (s *Store) Admit(ctx context.Context, in Admission) (Attempt, error) {
 	}
 	return out, nil
 }
+
+func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
+	if in.Window <= 0 || in.RetryThreshold < 1 || in.Maximum.ToolCalls < 1 {
+		return orchestration.AdmissionDecision{}, errors.New("invalid admission policy")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var existingID uuid.UUID
+	var existingHash string
+	err = tx.QueryRow(ctx, `select attempt_id,request_hash from ouf_mcp.idempotency_claim where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner=$4 and capability_id=$5 and operation_class=$6 and idempotency_key=$7 for update`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey).Scan(&existingID, &existingHash)
+	if err == nil {
+		if existingHash != in.RequestHash {
+			return orchestration.AdmissionDecision{}, ErrIdempotencyConflict
+		}
+		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true}, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return orchestration.AdmissionDecision{}, err
+	}
+	var now time.Time
+	if err = tx.QueryRow(ctx, "select transaction_timestamp()").Scan(&now); err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	windowStart := now.Truncate(in.Window)
+	windowEnd := windowStart.Add(in.Window)
+	windowID := uuid.New()
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end) values($1,$2,$3,$4,$5,$6,$7) on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update set policy_ref=excluded.policy_ref returning budget_window_id`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.ManifestChecksum, windowStart, windowEnd).Scan(&windowID)
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	var reservedCalls, consumedCalls, reservedBytes, consumedBytes int64
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes); err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > in.Maximum.ToolCalls*int64(in.RetryThreshold) || reservedBytes+consumedBytes+in.Maximum.ResultBytes > in.Maximum.ResultBytes*int64(in.RetryThreshold) {
+		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
+	}
+	groupID := uuid.New()
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_equivalence_group(equivalence_group_id,budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) values($1,$2,$3,$4,$5) on conflict(budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) do update set semantic_fingerprint=excluded.semantic_fingerprint returning equivalence_group_id`, groupID, windowID, in.CapabilityID, in.FingerprintVersion, in.SemanticFingerprint).Scan(&groupID)
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	var attempts int
+	var blocked bool
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_guard(equivalence_group_id,equivalent_attempts) values($1,1) on conflict(equivalence_group_id) do update set equivalent_attempts=ouf_mcp.retry_guard.equivalent_attempts+1,updated_at=transaction_timestamp() returning equivalent_attempts,blocked`, groupID).Scan(&attempts, &blocked)
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	if blocked || attempts >= in.RetryThreshold {
+		_, _ = tx.Exec(ctx, `update ouf_mcp.retry_guard set blocked=true where equivalence_group_id=$1`, groupID)
+		return orchestration.AdmissionDecision{}, orchestration.ErrToolSelectionStall
+	}
+	if in.AttemptID == uuid.Nil {
+		in.AttemptID = uuid.New()
+	}
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.tool_attempt(attempt_id,service_principal_id,principal_id,tenant_id,capability_id,operation_class,manifest_checksum,idempotency_key,request_hash,correlation_id,state,dispatch_state) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ADMITTED','NOT_DISPATCHED')`, in.AttemptID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.CapabilityID, in.OperationClass, in.ManifestChecksum, in.IdempotencyKey, in.RequestHash, in.CorrelationID)
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID)
+	if err == nil {
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),null)`, uuid.New(), in.AttemptID, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls+$2,reserved_result_bytes=reserved_result_bytes+$3 where budget_window_id=$1`, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes)
+	}
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	return orchestration.AdmissionDecision{AttemptID: in.AttemptID}, nil
+}
+
+func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestration.Cost, outcome orchestration.AttemptOutcome) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var windowID uuid.UUID
+	var calls, bytes int64
+	var state string
+	if err = tx.QueryRow(ctx, `select budget_window_id,reserved_tool_calls,reserved_result_bytes,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&windowID, &calls, &bytes, &state); err != nil {
+		return err
+	}
+	if state == "RECONCILED" {
+		return tx.Commit(ctx)
+	}
+	final := "FAILED"
+	if outcome.Success {
+		final = "SUCCEEDED"
+	}
+	_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,consumed_tool_calls=consumed_tool_calls+$4,consumed_result_bytes=consumed_result_bytes+$5 where budget_window_id=$1`, windowID, calls, bytes, actual.ToolCalls, actual.ResultBytes)
+	if err == nil {
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',reconciled_at=transaction_timestamp() where attempt_id=$1`, id)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='CONFIRMED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) Dispatch(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) error {
+	_, err := s.MarkRunning(ctx, id, backendRequestID, lease, expected)
+	return err
+}
 func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) (Attempt, error) {
 	var out Attempt
 	err := s.pool.QueryRow(ctx, `update ouf_mcp.tool_attempt set state='RUNNING',dispatch_state='DISPATCHED',backend_request_id=$2,started_at=transaction_timestamp(),lease_until=transaction_timestamp()+$3::interval,lock_version=lock_version+1 where attempt_id=$1 and state='ADMITTED' and dispatch_state='NOT_DISPATCHED' and lock_version=$4 returning attempt_id,state,dispatch_state,request_hash,lock_version`, id, backendRequestID, lease.String(), expected).Scan(&out.ID, &out.State, &out.DispatchState, &out.RequestHash, &out.LockVersion)
@@ -123,6 +243,10 @@ func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, backendRequestID 
 func (s *Store) AppendAudit(ctx context.Context, eventType, actorType, servicePrincipal string, attemptID *uuid.UUID, manifestChecksum string, safeDetail []byte) error {
 	_, err := s.pool.Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,service_principal_id,attempt_id,manifest_checksum,safe_detail) values($1,$2,$3,nullif($4,''),$5,nullif($6,''),$7::jsonb)`, uuid.New(), eventType, actorType, servicePrincipal, attemptID, manifestChecksum, string(safeDetail))
 	return err
+}
+func (s *Store) Audit(ctx context.Context, event orchestration.AuditEvent) error {
+	detail := fmt.Sprintf(`{"outcomeCode":%q}`, event.OutcomeCode)
+	return s.AppendAudit(ctx, event.EventType, event.Identity.ActorType, event.Identity.ServicePrincipalID, &event.AttemptID, event.ManifestChecksum, []byte(detail))
 }
 
 type MaintenanceResult struct{ OrphansMarkedUnknown, ExpiredSessionsDeleted int64 }

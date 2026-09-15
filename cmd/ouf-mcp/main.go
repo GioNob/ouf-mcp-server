@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
 func main() {
@@ -128,7 +130,27 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("manifest persistence failed", "error", err)
 		os.Exit(1)
 	}
-	handler, err := kernel.NewHTTPHandler(logger)
+	authClient, err := httpadapter.NewAuthorization(os.Getenv("MCP_AUTHORIZATION_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
+	if err != nil {
+		logger.Error("authorization client initialization failed", "error", err)
+		os.Exit(1)
+	}
+	gatewayClient, err := httpadapter.NewGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
+	if err != nil {
+		logger.Error("Gateway client initialization failed", "error", err)
+		os.Exit(1)
+	}
+	fingerprintKey := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
+	if os.Getenv("MCP_WORKLOAD_TOKEN") == "" {
+		logger.Error("MCP_WORKLOAD_TOKEN is required")
+		os.Exit(1)
+	}
+	if len(fingerprintKey) < 32 {
+		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
+		os.Exit(1)
+	}
+	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: gatewayClient, Audit: store, FingerprintKey: fingerprintKey}
+	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)
