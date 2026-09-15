@@ -1,19 +1,14 @@
-# OUF MCP Server — MCP 1A feasibility gate
+# OUF MCP Server
 
-This repository records a **conditional NO-GO** for product implementation. The
-normative PET requires MCP `2026-07-28`, including the stateless lifecycle and
-`server/discover`; the official Java SDK 2.0.1 supports the legacy
-`2025-11-25` lifecycle only. Its published roadmap assigns `2026-07-28` to the
-future 3.x line.
+MCP 1A implements the protocol kernel defined by MCP Server PET v1.2 in Reality Baseline Package v1.6.
 
-The Java program is deliberately a disposable **legacy compatibility probe**.
-It verifies that the current official Java SDK can expose a closed, typed tool
-over Streamable HTTP, reject undeclared input, serve concurrent calls, and be
-used by the official TypeScript client. It is not the production server, it
-must not be deployed, and its green tests do not satisfy `MCP-A38`.
+- Go 1.25.13 and official MCP Go SDK v1.7.0 are pinned.
+- `/mcp` accepts only MCP 2026-07-28 Streamable HTTP modern/stateless POST requests.
+- `server/discover`, `tools/list` and closed JSON Schema descriptors are provided by the official SDK.
+- Legacy initialize/session transport is disabled.
+- No SQL, arbitrary query language, network destination or backend bypass is exposed.
+- Tool execution remains fail-closed until Gateway mediation and authorization land in a later increment.
 
-Normative scope: MCP PET v1.1 `MCP-A01`, `MCP-A02`, `MCP-A05`, `MCP-A06`, `MCP-A15`, `MCP-A29`, `MCP-A38`; Gateway PET remains authoritative for the later mediated route. No Executive Freeze evidence is claimed.
+Run `scripts/verify.sh` with Go 1.25.13. The same source builds the `mcp-server` and reserved `maintenance-worker` process roles.
 
-See [`docs/MCP_1A_FEASIBILITY_REPORT.md`](docs/MCP_1A_FEASIBILITY_REPORT.md)
-for the evidence, decision, exit criteria, and preserved Gateway–Onboarding
-regression boundary.
+See [MCP 1A traceability](docs/MCP_1A_TRACEABILITY.md) for the bounded PET claims.

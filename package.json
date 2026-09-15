@@ -1,7 +1,0 @@
-{
-  "name": "ouf-mcp-feasibility-tests",
-  "private": true,
-  "type": "module",
-  "scripts": {"test:client": "node test/official-client.mjs"},
-  "dependencies": {"@modelcontextprotocol/sdk": "1.30.0"}
-}
