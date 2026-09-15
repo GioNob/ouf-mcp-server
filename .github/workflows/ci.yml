@@ -1,4 +1,4 @@
-name: MCP 1B durable lifecycle
+name: MCP deterministic recovery
 on: [push, pull_request]
 permissions: {contents: read}
 jobs:
@@ -15,6 +15,8 @@ jobs:
     env:
       MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
       MCP_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+      MCP_GATEWAY_RECOVERY_ENDPOINT: http://127.0.0.1:1/internal/capabilities/v1/recovery
+      MCP_WORKLOAD_TOKEN: ci-synthetic-workload-token
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -37,10 +39,12 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-1b-evidence-${{ github.run_id }}
+          name: mcp-1d-evidence-${{ github.run_id }}
           path: |
             docs/MCP_1A_TRACEABILITY.md
             docs/MCP_1B_TRACEABILITY.md
+            docs/MCP_1C_TRACEABILITY.md
+            docs/MCP_1D_TRACEABILITY.md
             internal/manifest/capabilities.json
             internal/adapter/postgres/migrations/*.sql
             internal/adapter/httpclient/pairwise_integration_test.go

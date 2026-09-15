@@ -20,3 +20,5 @@ See [MCP 1A traceability](docs/MCP_1A_TRACEABILITY.md) and [MCP 1B traceability]
 The governed server requires `MCP_AUTHORIZATION_ENDPOINT`, `MCP_GATEWAY_ENDPOINT`, `MCP_WORKLOAD_TOKEN`, and a minimum 32-byte `MCP_FINGERPRINT_KEY`. Service endpoints are deployment configuration, never tool arguments; production endpoints must use HTTPS and redirects are disabled.
 
 See `docs/MCP_1C_TRACEABILITY.md` for the bounded PET coverage and explicit deferrals.
+
+The maintenance worker additionally requires `MCP_GATEWAY_RECOVERY_ENDPOINT` and `MCP_WORKLOAD_TOKEN`. It never contacts an owner directly: outcome lookup is Gateway-mediated and keyed by the persisted backend request ID.

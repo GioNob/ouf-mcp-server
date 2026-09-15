@@ -16,6 +16,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 )
 
 func main() {
@@ -81,14 +82,24 @@ func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string
 		logger.Error("database schema is not ready", "error", err)
 		os.Exit(1)
 	}
+	recoveryClient, err := httpadapter.NewRecovery(os.Getenv("MCP_GATEWAY_RECOVERY_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
+	if err != nil {
+		logger.Error("recovery client initialization failed", "error", err)
+		os.Exit(1)
+	}
+	worker := recovery.Service{Store: store, Owner: recoveryClient, Audit: store, WorkerID: "maintenance-" + os.Getenv("HOSTNAME"), Lease: 30 * time.Second, AdmissionGrace: 2 * time.Minute, Batch: 50}
 	for {
 		cycleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		result, err := store.Maintain(cycleCtx, time.Now())
+		var recovered recovery.Result
+		if err == nil {
+			recovered, err = worker.RunOnce(cycleCtx, time.Now())
+		}
 		cancel()
 		if err != nil {
 			logger.Error("maintenance cycle failed", "error", err)
 		} else {
-			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted)
+			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted, "recoveryClaimed", recovered.Claimed, "reconciled", recovered.Reconciled, "stillUnknown", recovered.StillUnknown)
 		}
 		if once {
 			if err != nil {
