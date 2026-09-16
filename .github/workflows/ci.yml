@@ -59,6 +59,8 @@ jobs:
             internal/adapter/postgres/migrations/
             internal/adapter/postgres/operational_awareness.go
             internal/adapter/postgres/operational_awareness_integration_test.go
+            internal/adapter/postgres/concurrency_release_gate_integration_test.go
+            internal/adapter/postgres/debt_admission_gate_integration_test.go
             internal/adapter/httpclient/pairwise_integration_test.go
             internal/evidence/gateway_pairwise_test.go
           retention-days: 30
