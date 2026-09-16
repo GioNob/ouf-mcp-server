@@ -17,22 +17,19 @@ func TestDebtCacheReconciliationPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second); defer cancel()
 	store, err := Open(ctx, dsn); if err != nil { t.Fatal(err) }; defer store.Close()
 	if err = Migrate(ctx, store.Pool()); err != nil { t.Fatal(err) }
-	payload := []byte(`{"capabilities":[]}`)
-	checksum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	version := "maintenance-" + uuid.NewString()
-	if err = store.EnsureManifest(ctx, checksum, version, "mcp-manifest-v1", payload); err != nil && version != "" { // checksum may already exist from another integration run
-		// Existing checksum with another version is legitimate immutable evidence; use a unique payload instead.
-		payload = []byte(fmt.Sprintf(`{"capabilities":[],"run":%q}`, version))
-		checksum = fmt.Sprintf("%x", sha256.Sum256(payload))
-		if err = store.EnsureManifest(ctx, checksum, version, "mcp-manifest-v1", payload); err != nil { t.Fatal(err) }
-	}
-	window := uuid.New()
-	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end,current_unresolved_object_debt_total) values($1,$2,$3,$4,$5,transaction_timestamp(),transaction_timestamp()+interval '1 hour',1)`, window, "maintenance", uuid.NewString(), "tenant", checksum)
+	payload := []byte(fmt.Sprintf(`{"capabilities":[],"run":%q}`, version))
+	checksum := fmt.Sprintf("%x", sha256.Sum256(payload))
+	if err = store.EnsureManifest(ctx, checksum, version, "mcp-manifest-v1", payload); err != nil { t.Fatal(err) }
+	window, group, attempt := uuid.New(), uuid.New(), uuid.New()
+	principal := uuid.NewString()
+	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end,current_unresolved_object_debt_total) values($1,'maintenance',$2,'tenant',$3,transaction_timestamp(),transaction_timestamp()+interval '1 hour',1)`, window, principal, checksum)
 	if err != nil { t.Fatal(err) }
-	attempt := uuid.New()
-	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.tool_attempt(attempt_id,service_principal_id,principal_id,tenant_id,capability_id,operation_class,manifest_checksum,idempotency_key,request_hash,correlation_id,state,dispatch_state,completed_at) values($1,'maintenance',$2,'tenant','test','READ',$3,$4,$5,$6,'UNRESOLVED','UNKNOWN',transaction_timestamp())`, attempt, uuid.NewString(), checksum, uuid.NewString(), fmt.Sprintf("%064x", 1), uuid.NewString())
+	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.retry_equivalence_group(equivalence_group_id,budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) values($1,$2,'test','v1',$3)`, group, window, fmt.Sprintf("%064x", 2))
 	if err != nil { t.Fatal(err) }
-	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.attempt_admission_context(attempt_id,budget_window_id,equivalence_group_id,owner,actor_type,authentication_context_ref,authorization_decision_ref,semantic_fingerprint,fingerprint_version) values($1,$2,$3,'udp','SERVICE','authn','authz',$4,'v1')`, attempt, window, uuid.New(), fmt.Sprintf("%064x", 2))
+	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.tool_attempt(attempt_id,service_principal_id,principal_id,tenant_id,capability_id,operation_class,manifest_checksum,idempotency_key,request_hash,correlation_id,state,dispatch_state,completed_at) values($1,'maintenance',$2,'tenant','test','READ',$3,$4,$5,$6,'UNRESOLVED','UNKNOWN',transaction_timestamp())`, attempt, principal, checksum, uuid.NewString(), fmt.Sprintf("%064x", 1), uuid.NewString())
+	if err != nil { t.Fatal(err) }
+	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.attempt_admission_context(attempt_id,budget_window_id,equivalence_group_id,owner,actor_type,authentication_context_ref,authorization_decision_ref,semantic_fingerprint,fingerprint_version) values($1,$2,$3,'udp','SERVICE','authn','authz',$4,'v1')`, attempt, window, group, fmt.Sprintf("%064x", 2))
 	if err != nil { t.Fatal(err) }
 	_, err = store.Pool().Exec(ctx, `insert into ouf_mcp.budget_object_debt(attempt_id,budget_window_id,debt_amount,debt_state) values($1,$2,4,'ACTIVE')`, attempt, window)
 	if err != nil { t.Fatal(err) }
