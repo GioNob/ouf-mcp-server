@@ -20,17 +20,17 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 	var manifest struct {
 		Capabilities []struct {
 			ToolName, CapabilityID, RequiredAuthorizationCapability, GatewayBindingRef string
-			ToolEligible bool `json:"toolEligible"`
+			ToolEligible                                                               bool `json:"toolEligible"`
 		} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
 		t.Fatal(err)
 	}
 	expected := map[string]struct{ scope, route, backend string }{
-		"ouf.ingestion.status": {"ingestion.operations.read", "mcp-ingestion-status.yaml", "/api/internal/v1/ingestion/operations/status"},
-		"ouf.ingestion.history": {"ingestion.operations.read", "mcp-ingestion-history.yaml", "/api/internal/v1/ingestion/operations/history"},
+		"ouf.ingestion.status":     {"ingestion.operations.read", "mcp-ingestion-status.yaml", "/api/internal/v1/ingestion/operations/status"},
+		"ouf.ingestion.history":    {"ingestion.operations.read", "mcp-ingestion-history.yaml", "/api/internal/v1/ingestion/operations/history"},
 		"ouf.operations.incidents": {"operations.incident.read", "mcp-operations-incidents.yaml", "/api/internal/v1/ingestion/operations/incidents"},
-		"ouf.operations.summary": {"operations.status.read", "mcp-operations-summary.yaml", "/api/internal/v1/ingestion/operations/summary"},
+		"ouf.operations.summary":   {"operations.status.read", "mcp-operations-summary.yaml", "/api/internal/v1/ingestion/operations/summary"},
 	}
 	seen := map[string]bool{}
 	for _, c := range manifest.Capabilities {
