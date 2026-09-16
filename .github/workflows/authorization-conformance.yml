@@ -1,0 +1,22 @@
+name: Authorization Java Go conformance
+on: [push, pull_request, workflow_dispatch]
+permissions: {contents: read}
+jobs:
+  common-vectors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-source-onboarding
+          ref: 63f238fa78abe2e6834430af618366ce865977fd
+          path: .pairwise/authorization
+      - name: Verify common fixture provenance
+        run: cmp .pairwise/authorization/authorization-sdk/src/test/resources/authorization-conformance-v1.json internal/authorization/testdata/authorization-conformance-v1.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Execute common decision vectors
+        run: go test -count=1 -v ./internal/authorization -run TestCommonJavaGoConformance
