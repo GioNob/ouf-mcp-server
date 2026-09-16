@@ -158,7 +158,20 @@ func modernOnly(next http.Handler) http.Handler {
 			http.Error(w, "trusted Gateway context required", http.StatusUnauthorized)
 			return
 		}
-		identity := requestIdentity{Identity: orchestration.Identity{ServicePrincipalID: r.Header.Get("X-OUF-Service-Principal"), PrincipalID: r.Header.Get("X-OUF-Principal-ID"), TenantID: r.Header.Get("X-OUF-Tenant-ID"), ActorType: r.Header.Get("X-OUF-Actor-Type"), AuthenticationContextRef: r.Header.Get("X-OUF-Authentication-Context-Ref")}, CorrelationID: r.Header.Get("X-Correlation-ID"), IdempotencyKey: r.Header.Get("Idempotency-Key")}
+		identity := requestIdentity{
+			Identity: orchestration.Identity{
+				ServicePrincipalID:       r.Header.Get("X-OUF-Service-Principal"),
+				PrincipalID:              r.Header.Get("X-OUF-Principal-ID"),
+				TenantID:                 r.Header.Get("X-OUF-Tenant-ID"),
+				ActorType:                r.Header.Get("X-OUF-Actor-Type"),
+				AuthenticationContextRef: r.Header.Get("X-OUF-Authentication-Context-Ref"),
+				Issuer:                   r.Header.Get("X-OUF-Token-Issuer"),
+				Audience:                 r.Header.Get("X-OUF-Token-Audience"),
+				Scopes:                   strings.Fields(r.Header.Get("X-OUF-Granted-Scopes")),
+			},
+			CorrelationID:  r.Header.Get("X-Correlation-ID"),
+			IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
 	})
 }
