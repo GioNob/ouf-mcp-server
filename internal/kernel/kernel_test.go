@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -43,15 +44,27 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "urban.object.related_search" {
-		t.Fatalf("tools/list = %#v", tools.Tools)
+	gotNames := make([]string, 0, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		gotNames = append(gotNames, tool.Name)
+		schema, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToLower(string(schema)), `"sql"`) {
+			t.Fatalf("forbidden query surface in %s schema: %s", tool.Name, schema)
+		}
 	}
-	schema, err := json.Marshal(tools.Tools[0].InputSchema)
-	if err != nil {
-		t.Fatal(err)
+	sort.Strings(gotNames)
+	wantNames := []string{
+		"ouf.ingestion.history",
+		"ouf.ingestion.status",
+		"ouf.operations.incidents",
+		"ouf.operations.summary",
+		"urban.object.related_search",
 	}
-	if strings.Contains(strings.ToLower(string(schema)), `"sql"`) {
-		t.Fatalf("forbidden query surface in tools/list: %s", schema)
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("tools/list names=%v want=%v", gotNames, wantNames)
 	}
 	call, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "urban.object.related_search", Arguments: map[string]any{
 		"anchorObjectId": "fd971091-2b0d-4daf-977a-81509056315a", "anchorTypeCode": "DEHOR", "relationIri": "https://example.test/relatedTo", "direction": "OUTBOUND", "targetTypeCodes": []string{"CIVICO"}, "limit": 10,
