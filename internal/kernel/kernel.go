@@ -36,10 +36,11 @@ type relatedSearchInput struct {
 }
 
 type operationalInput struct {
-	SourceID string `json:"sourceId,omitempty"`
-	State    string `json:"state,omitempty"`
-	Since    string `json:"since,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	IncidentID string `json:"incidentId,omitempty"`
+	SourceID   string `json:"sourceId,omitempty"`
+	State      string `json:"state,omitempty"`
+	Since      string `json:"since,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
 }
 
 func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) { return newHTTPHandler(logger, nil) }
