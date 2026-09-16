@@ -8,13 +8,8 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
-type SelfStatusProvider interface {
-	SystemStatus(context.Context, orchestration.Identity) ([]byte, error)
-}
-
 type RoutingGateway struct {
 	Remote orchestration.GatewayPort
-	Self   SelfStatusProvider
 }
 
 func (g RoutingGateway) Execute(ctx context.Context, in orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
