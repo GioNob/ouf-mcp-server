@@ -253,7 +253,7 @@ func TestDurableLifecycle(t *testing.T) {
 	}
 	var finalDebt, finalEvidence string
 	var finalBlocking int
-	if err = store.Pool().QueryRow(ctx, `select d.debt_state,e.evidence_state,g.blocking_attempts from ouf_mcp.budget_object_debt d join ouf_mcp.owner_evidence_inbox e on e.evidence_ref=d.owner_evidence_ref join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.retry_guard g using(equivalence_group_id) where d.attempt_id=$1`, debtAttempt.AttemptID).Scan(&finalDebt, &finalEvidence, &finalBlocking); err != nil {
+	if err = store.Pool().QueryRow(ctx, `select d.debt_state,e.evidence_state,g.blocking_attempts from ouf_mcp.budget_object_debt d join ouf_mcp.owner_evidence_inbox e on e.evidence_ref=d.owner_evidence_ref join ouf_mcp.attempt_admission_context ac on ac.attempt_id=d.attempt_id join ouf_mcp.retry_guard g on g.equivalence_group_id=ac.equivalence_group_id where d.attempt_id=$1`, debtAttempt.AttemptID).Scan(&finalDebt, &finalEvidence, &finalBlocking); err != nil {
 		t.Fatal(err)
 	}
 	if finalDebt != "RESOLVED" || finalEvidence != "CONSUMED" || finalBlocking != 0 {
@@ -295,7 +295,7 @@ func TestDurableLifecycle(t *testing.T) {
 		t.Fatalf("domain violation %+v err=%v", violated, err)
 	}
 	var violationDebt, violationEvidence, violationOutcome string
-	if err = store.Pool().QueryRow(ctx, `select d.debt_state,e.evidence_state,ta.outcome_code,g.blocking_attempts from ouf_mcp.budget_object_debt d join ouf_mcp.owner_evidence_inbox e on e.attempt_id=d.attempt_id join ouf_mcp.tool_attempt ta using(attempt_id) join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.retry_guard g using(equivalence_group_id) where d.attempt_id=$1`, violationAttempt.AttemptID).Scan(&violationDebt, &violationEvidence, &violationOutcome, &finalBlocking); err != nil {
+	if err = store.Pool().QueryRow(ctx, `select d.debt_state,e.evidence_state,ta.outcome_code,g.blocking_attempts from ouf_mcp.budget_object_debt d join ouf_mcp.owner_evidence_inbox e on e.attempt_id=d.attempt_id join ouf_mcp.tool_attempt ta on ta.attempt_id=d.attempt_id join ouf_mcp.attempt_admission_context ac on ac.attempt_id=d.attempt_id join ouf_mcp.retry_guard g on g.equivalence_group_id=ac.equivalence_group_id where d.attempt_id=$1`, violationAttempt.AttemptID).Scan(&violationDebt, &violationEvidence, &violationOutcome, &finalBlocking); err != nil {
 		t.Fatal(err)
 	}
 	if violationDebt != "ACTIVE" || violationEvidence != "QUARANTINED" || violationOutcome != "CRYPTO_VIOLATION" || finalBlocking != 1 {
