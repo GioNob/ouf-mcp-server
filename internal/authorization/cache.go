@@ -39,11 +39,12 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	}
 	current := c.active.Load()
 	if current != nil {
-		if bundle.BundleVersion < current.BundleVersion {
-			return fmt.Errorf("authorization policy rollback rejected: active=%d fetched=%d", current.BundleVersion, bundle.BundleVersion)
+		if bundle.ActivatedAt.Before(current.ActivatedAt) {
+			return fmt.Errorf("stale authorization activation rejected: active=%s fetched=%s", current.ActivatedAt, bundle.ActivatedAt)
 		}
-		if bundle.BundleVersion == current.BundleVersion && bundle.Bundle.BundleID != current.Bundle.BundleID {
-			return errors.New("authorization policy version collision")
+		if bundle.ActivatedAt.Equal(current.ActivatedAt) &&
+			(bundle.BundleID != current.BundleID || bundle.BundleVersion != current.BundleVersion) {
+			return errors.New("authorization activation timestamp collision")
 		}
 	}
 	copy := bundle
