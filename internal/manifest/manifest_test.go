@@ -2,6 +2,8 @@ package manifest
 
 import (
 	"encoding/json"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -11,8 +13,26 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := s.ToolEligible()
-	if len(tools) != 1 || tools[0].ToolName != "urban.object.related_search" {
-		t.Fatalf("unexpected tool registry: %#v", tools)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.ToolName)
+		if tool.MCPClass != "MCP_TOOL" || !tool.ToolEligible {
+			t.Fatalf("tool registry contains non-tool capability: %#v", tool)
+		}
+		if len(tool.InputSchema) == 0 || strings.Contains(strings.ToLower(string(tool.InputSchema)), `"sql"`) {
+			t.Fatalf("tool registry contains unsafe schema for %s", tool.ToolName)
+		}
+	}
+	sort.Strings(names)
+	want := []string{
+		"ouf.ingestion.history",
+		"ouf.ingestion.status",
+		"ouf.operations.incidents",
+		"ouf.operations.summary",
+		"urban.object.related_search",
+	}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected tool registry names=%v want=%v", names, want)
 	}
 }
 

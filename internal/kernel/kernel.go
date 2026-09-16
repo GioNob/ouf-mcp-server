@@ -35,10 +35,14 @@ type relatedSearchInput struct {
 	ApplicationSessionRef string   `json:"applicationSessionRef,omitempty"`
 }
 
-func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) {
-	return newHTTPHandler(logger, nil)
+type operationalInput struct {
+	SourceID string `json:"sourceId,omitempty"`
+	State    string `json:"state,omitempty"`
+	Since    string `json:"since,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
 }
 
+func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) { return newHTTPHandler(logger, nil) }
 func NewGovernedHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("governed service is required")
@@ -51,12 +55,7 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.H
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
 	}
-
-	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{
-		Capabilities: &mcp.ServerCapabilities{},
-		Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access.",
-		Logger:       logger,
-	})
+	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
 	for _, capability := range snapshot.ToolEligible() {
 		if service == nil {
 			registerUnavailableTool(server, capability)
@@ -64,13 +63,7 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.H
 			registerGovernedTool(server, capability, snapshot, service)
 		}
 	}
-
-	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
-		Stateless:                    true,
-		JSONResponse:                 true,
-		MaxRequestBodyBytes:          maxRequestBytes,
-		PropagateRequestCancellation: true,
-	})
+	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
 	return modernOnly(streamable), nil
 }
 
@@ -81,27 +74,47 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	if strings.HasPrefix(c.ToolName, "ouf.") {
+		registerOperationalTool(server, c, snapshot, service)
+		return
+	}
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
 	checksum, _ := snapshot.Checksum()
 	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input relatedSearchInput) (*mcp.CallToolResult, any, error) {
-		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
-		if !ok {
-			return errorResult("UNAUTHENTICATED", false), nil, nil
-		}
 		args, _ := json.Marshal(input)
-		result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 200, ResultBytes: 1 << 20}})
-		if err != nil {
-			return errorResult(err.Error(), false), nil, nil
-		}
-		if result.Problem != nil {
-			body, _ := json.Marshal(result.Problem)
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}, nil, nil
+		return invoke(ctx, c, checksum, args, service, 200, 1<<20)
 	})
+}
+
+func registerOperationalTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	var inputSchema jsonschema.Schema
+	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
+		panic(err)
+	}
+	checksum, _ := snapshot.Checksum()
+	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
+		args, _ := json.Marshal(input)
+		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
+	})
+}
+
+func invoke(ctx context.Context, c manifest.Capability, checksum string, args []byte, service *orchestration.Service, maxObjects, maxBytes int) (*mcp.CallToolResult, any, error) {
+	identity, ok := ctx.Value(identityKey{}).(requestIdentity)
+	if !ok {
+		return errorResult("UNAUTHENTICATED", false), nil, nil
+	}
+	result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
+	if err != nil {
+		return errorResult(err.Error(), false), nil, nil
+	}
+	if result.Problem != nil {
+		body, _ := json.Marshal(result.Problem)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}, nil, nil
 }
 
 func errorResult(code string, retryable bool) *mcp.CallToolResult {
@@ -114,17 +127,9 @@ func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(fmt.Sprintf("validated schema for %s cannot be decoded: %v", c.ToolName, err))
 	}
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        c.ToolName,
-		Description: c.Description(),
-		InputSchema: &inputSchema,
-	}, func(context.Context, *mcp.CallToolRequest, relatedSearchInput) (*mcp.CallToolResult, any, error) {
-		result := unavailableResult{Code: "MCP_1A_BACKEND_NOT_BOUND", Retryable: false}
-		body, _ := json.Marshal(result)
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
-			IsError: true,
-		}, nil, nil
+	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, any, error) {
+		body, _ := json.Marshal(unavailableResult{Code: "MCP_1A_BACKEND_NOT_BOUND", Retryable: false})
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	})
 }
 

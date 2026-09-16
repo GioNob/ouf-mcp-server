@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-mcp-1b",
+  "version": "1.3.0-operational-awareness",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -22,8 +22,7 @@
       "toolEligible": true,
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": false,
+        "type": "object", "additionalProperties": false,
         "required": ["anchorObjectId", "anchorTypeCode", "relationIri", "direction", "targetTypeCodes", "limit"],
         "properties": {
           "anchorObjectId": {"type": "string", "format": "uuid"},
@@ -37,8 +36,67 @@
       }
     },
     {
-      "toolName": "",
-      "capabilityId": "urban.merge.confirm",
+      "toolName": "ouf.ingestion.status", "capabilityId": "ouf.ingestion.status",
+      "purpose": "Read the current authorized ingestion/source operational state without raw logs",
+      "useWhen": ["the user asks whether ingestion or a source is healthy now"],
+      "doNotUseWhen": ["raw telemetry or protected evidence is requested"],
+      "preferredAlternatives": ["ouf.operations.summary", "ouf.ingestion.history"],
+      "operationalLimits": {"maxLimit": 100},
+      "resultSemantics": "Bounded current source health and latest run state",
+      "securityNotes": ["Tenant/source scope and redaction are enforced server-side", "Gateway mediation is mandatory"],
+      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ingestion.operations.read", "gatewayBindingRef": "capability://ouf.ingestion.status",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 262144, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"limit":{"type":"integer","minimum":1,"maximum":100}}}
+    },
+    {
+      "toolName": "ouf.ingestion.history", "capabilityId": "ouf.ingestion.history",
+      "purpose": "Read bounded historical ingestion runs including failures, retries and recovery context",
+      "useWhen": ["the user asks what happened to an ingestion/source in a past time window"],
+      "doNotUseWhen": ["an unbounded audit export is requested"],
+      "preferredAlternatives": ["ouf.ingestion.status", "ouf.operations.incidents"],
+      "operationalLimits": {"maxLimit": 200},
+      "resultSemantics": "Bounded persisted run history for authorized sources",
+      "securityNotes": ["No secrets or raw stack traces", "Gateway mediation is mandatory"],
+      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ingestion.operations.read", "gatewayBindingRef": "capability://ouf.ingestion.history",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 200, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":200}}}
+    },
+    {
+      "toolName": "ouf.operations.incidents", "capabilityId": "ouf.operations.incidents",
+      "purpose": "List authorized persisted operational incidents, including incidents that occurred while the chatbot was offline",
+      "useWhen": ["the user asks which problems are open, recovering or recently resolved"],
+      "doNotUseWhen": ["security-sensitive protected evidence is requested without privileged authorization"],
+      "preferredAlternatives": ["ouf.operations.summary", "ouf.ingestion.status"],
+      "operationalLimits": {"maxLimit": 100},
+      "resultSemantics": "Bounded incident aggregates with lifecycle, severity, safe impact summary and evidence references",
+      "securityNotes": ["NOT_AUTHORIZED must not be mapped to NO_INCIDENTS", "Raw logs and credentials are never returned"],
+      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "operations.incident.read", "gatewayBindingRef": "capability://ouf.operations.incidents",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"state":{"type":"string","enum":["OPEN","RECOVERING","RESOLVED"]},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
+    },
+    {
+      "toolName": "ouf.operations.summary", "capabilityId": "ouf.operations.summary",
+      "purpose": "Summarize significant authorized operational events in a bounded time window for chatbot catch-up",
+      "useWhen": ["the user asks what happened while they were away or whether OUF had problems"],
+      "doNotUseWhen": ["the user needs protected raw evidence"],
+      "preferredAlternatives": ["ouf.operations.incidents", "ouf.ingestion.history"],
+      "operationalLimits": {"maxLimit": 100},
+      "resultSemantics": "Safe catch-up summary that preserves DEGRADED/PARTIAL semantics and resolved outcomes",
+      "securityNotes": ["Missing evidence must never be manufactured as HEALTHY", "Gateway and Authorization enforcement are mandatory"],
+      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.operations.summary",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
+    },
+    {
+      "toolName": "", "capabilityId": "urban.merge.confirm",
       "purpose": "Commit an approved merge through the Trusted Human Surface",
       "useWhen": ["a verified human is confirming an exact approved merge plan"],
       "doNotUseWhen": ["an AI agent or MCP client is attempting confirmation"],
@@ -46,15 +104,10 @@
       "operationalLimits": {"trustedHumanSurfaceOnly": true},
       "resultSemantics": "Authoritative merge outcome owned by UDP",
       "securityNotes": ["Never exposed in tools/list"],
-      "mcpClass": "TRUSTED_HUMAN_ONLY",
-      "owner": "udp",
-      "operationClass": "COMMAND",
-      "publicationState": "ACTIVE",
-      "requiredAuthorizationCapability": "urban.merge.confirm",
-      "gatewayBindingRef": "capability://urban.merge.confirm",
+      "mcpClass": "TRUSTED_HUMAN_ONLY", "owner": "udp", "operationClass": "COMMAND", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "urban.merge.confirm", "gatewayBindingRef": "capability://urban.merge.confirm",
       "baseCostEnvelope": {"hardMaxToolCalls": 0, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 0, "hardMaxResultBytes": 0, "hardMaxElapsedMs": 0},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 0},
-      "toolEligible": false,
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 0}, "toolEligible": false,
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
     }
   ]
