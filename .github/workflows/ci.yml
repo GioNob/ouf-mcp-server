@@ -29,6 +29,11 @@ jobs:
           repository: GioNob/ouf-ingestion-runtime
           ref: 58d9caf609b2d1f3b8ce49d6fac0abff73f740db
           path: .pairwise/ingestion
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-source-onboarding
+          ref: c5fa7504c062760be383d4882fd8836e6468ad45
+          path: .pairwise/authorization
       - uses: actions/setup-go@v6
         with: {go-version: '1.25.13', cache: true}
       - run: go mod download
@@ -40,6 +45,7 @@ jobs:
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" INGESTION_PAIRWISE_ROOT="$PWD/.pairwise/ingestion" go test ./internal/deployment -run TestOperationalExplainOwnerPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestChannelNeutralSystemStatusPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestOperationalAwarenessAggregationPairwise -v
+      - run: AUTHORIZATION_PAIRWISE_ROOT="$PWD/.pairwise/authorization" go test ./internal/deployment -run TestAuthorizationMCPPairwise -v
       - run: go test ./internal/deployment -run TestMCP1IObservabilityCapacityAndDRContracts -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
