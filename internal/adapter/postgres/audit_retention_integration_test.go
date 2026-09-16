@@ -7,7 +7,10 @@ import (
 
 func TestAuditRetentionDirectDeleteDeniedAndDefinerCallable(t *testing.T) {
 	s, ctx := maintenanceStore(t)
-	if _, err := s.Pool().Exec(ctx, `delete from ouf_mcp.audit_event where false`); err == nil {
+	if _, err := s.Pool().Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,safe_detail,occurred_at) values(gen_random_uuid(),'RETENTION_DIRECT_DELETE_FIXTURE','SYSTEM','{}',transaction_timestamp()-interval '2 days')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool().Exec(ctx, `delete from ouf_mcp.audit_event where event_type='RETENTION_DIRECT_DELETE_FIXTURE'`); err == nil {
 		t.Fatal("direct audit delete unexpectedly allowed")
 	}
 	var execute bool
