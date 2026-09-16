@@ -22,6 +22,7 @@ begin
 end $$;
 
 revoke all on function ouf_mcp.purge_owner_evidence(timestamptz,integer) from public;
+grant usage on schema ouf_mcp to ouf_mcp_maintenance_role;
 grant execute on function ouf_mcp.purge_owner_evidence(timestamptz,integer) to ouf_mcp_maintenance_role;
 revoke delete on ouf_mcp.audit_event,ouf_mcp.owner_evidence_inbox,ouf_mcp.security_incident from ouf_mcp_maintenance_role;
 
