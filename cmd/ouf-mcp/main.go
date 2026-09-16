@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -71,9 +72,26 @@ func runMigrate(ctx context.Context, logger *slog.Logger, databaseURL string) {
 	logger.Info("database migrations applied")
 }
 
+func positiveIntEnv(name string, fallback int) (int, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 10000 {
+		return 0, errors.New(name + " must be between 1 and 10000")
+	}
+	return n, nil
+}
+
 func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string, interval time.Duration, once bool) {
 	if interval <= 0 {
 		logger.Error("maintenance interval must be positive")
+		os.Exit(2)
+	}
+	batch, err := positiveIntEnv("MCP_MAINTENANCE_BATCH", 50)
+	if err != nil {
+		logger.Error("invalid maintenance configuration", "error", err)
 		os.Exit(2)
 	}
 	store := openStore(ctx, logger, databaseURL)
@@ -95,22 +113,26 @@ func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string
 			os.Exit(2)
 		}
 	}
-	worker := recovery.Service{Store: store, Owner: recoveryClient, Audit: store, WorkerID: "maintenance-" + os.Getenv("HOSTNAME"), Lease: 30 * time.Second, AdmissionGrace: 2 * time.Minute, MaxUnknownHold: maxUnknownHold, Batch: 50}
+	worker := recovery.Service{Store: store, Owner: recoveryClient, Audit: store, WorkerID: "maintenance-" + os.Getenv("HOSTNAME"), Lease: 30 * time.Second, AdmissionGrace: 2 * time.Minute, MaxUnknownHold: maxUnknownHold, Batch: batch}
 	for {
 		cycleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		result, err := store.Maintain(cycleCtx, time.Now())
+		result, cycleErr := store.Maintain(cycleCtx, time.Now())
 		var recovered recovery.Result
-		if err == nil {
-			recovered, err = worker.RunOnce(cycleCtx, time.Now())
+		var debt pg.DebtCacheReconciliationResult
+		if cycleErr == nil {
+			recovered, cycleErr = worker.RunOnce(cycleCtx, time.Now())
+		}
+		if cycleErr == nil {
+			debt, cycleErr = store.ReconcileDebtCaches(cycleCtx, batch)
 		}
 		cancel()
-		if err != nil {
-			logger.Error("maintenance cycle failed", "error", err)
+		if cycleErr != nil {
+			logger.Error("maintenance cycle failed", "error", cycleErr)
 		} else {
-			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted, "recoveryClaimed", recovered.Claimed, "reconciled", recovered.Reconciled, "stillUnknown", recovered.StillUnknown, "unresolved", recovered.Unresolved)
+			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted, "recoveryClaimed", recovered.Claimed, "reconciled", recovered.Reconciled, "stillUnknown", recovered.StillUnknown, "unresolved", recovered.Unresolved, "debtCachesChecked", debt.Checked, "debtCachesRepaired", debt.Repaired, "debtCacheDelta", debt.Delta)
 		}
 		if once {
-			if err != nil {
+			if cycleErr != nil {
 				os.Exit(1)
 			}
 			return
