@@ -1,0 +1,327 @@
+{
+  "schemaVersion": "1",
+  "bundle": {
+    "bundleId": "conformance",
+    "version": 7,
+    "publishedAt": "2026-09-16T00:00:00Z",
+    "capabilities": [
+      {
+        "capabilityId": "read",
+        "operation": "READ",
+        "requiredScope": "read",
+        "allowedActors": [
+          "HUMAN",
+          "SERVICE"
+        ]
+      }
+    ],
+    "grants": [
+      {
+        "grantId": "g-human",
+        "capabilityId": "read",
+        "tenantId": "tenant-a",
+        "subjectId": "alice",
+        "servicePrincipalId": null,
+        "organizationId": "org-a",
+        "validFrom": "2026-09-16T00:00:00Z",
+        "validUntil": "2026-09-17T00:00:00Z"
+      },
+      {
+        "grantId": "g-service",
+        "capabilityId": "read",
+        "tenantId": "tenant-a",
+        "subjectId": null,
+        "servicePrincipalId": "svc",
+        "organizationId": "org-a",
+        "validFrom": "2026-09-16T00:00:00Z",
+        "validUntil": "2026-09-17T00:00:00Z"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "allow-human",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "ALLOW"
+    },
+    {
+      "id": "tenant-mismatch",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-b",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "TENANT_MISMATCH"
+    },
+    {
+      "id": "actor-deny",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "AI_AGENT",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "ACTOR_NOT_ALLOWED"
+    },
+    {
+      "id": "scope-deny",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": []
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "SCOPE_MISSING"
+    },
+    {
+      "id": "organization-deny",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-b",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "NO_APPLICABLE_GRANT"
+    },
+    {
+      "id": "subject-deny",
+      "principal": {
+        "subjectId": "bob",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "NO_APPLICABLE_GRANT"
+    },
+    {
+      "id": "expired",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-17T00:00:00Z",
+      "decisionCode": "NO_APPLICABLE_GRANT"
+    },
+    {
+      "id": "unknown",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "unknown",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "CAPABILITY_NOT_DECLARED"
+    },
+    {
+      "id": "wrong-operation",
+      "principal": {
+        "subjectId": "alice",
+        "tenantId": "tenant-a",
+        "actorType": "HUMAN",
+        "servicePrincipalId": null,
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "WRITE",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "CAPABILITY_NOT_DECLARED"
+    },
+    {
+      "id": "service-allow",
+      "principal": {
+        "subjectId": "client",
+        "tenantId": "tenant-a",
+        "actorType": "SERVICE",
+        "servicePrincipalId": "svc",
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "ALLOW"
+    },
+    {
+      "id": "service-deny",
+      "principal": {
+        "subjectId": "client",
+        "tenantId": "tenant-a",
+        "actorType": "SERVICE",
+        "servicePrincipalId": "other",
+        "authenticationContextRef": "fixture:auth",
+        "issuer": "fixture:issuer",
+        "audience": "fixture:audience",
+        "scopes": [
+          "read"
+        ]
+      },
+      "resource": {
+        "resourceType": "object",
+        "resourceId": "42",
+        "tenantId": "tenant-a",
+        "organizationId": "org-a",
+        "attributes": {}
+      },
+      "capabilityId": "read",
+      "operation": "READ",
+      "now": "2026-09-16T12:00:00Z",
+      "decisionCode": "NO_APPLICABLE_GRANT"
+    }
+  ]
+}
