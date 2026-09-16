@@ -1,0 +1,25 @@
+apiVersion: ouf.trieste.it/v1
+kind: ObservabilityDashboardContract
+metadata:
+  name: mcp-overview
+spec:
+  service: mcp-server
+  panels:
+    - id: overview
+      metrics: [ouf_mcp_http_requests_total, ouf_mcp_http_duration_bucket]
+      views: [rps, p95, p99, success_error_codes]
+    - id: agent-governance
+      views: [budget_denies, tool_calls_per_session, graph_calls, stalled_loops]
+    - id: tool-quality
+      views: [capability_mismatch_by_tool, invalid_dto, remediation_outcomes]
+    - id: human-governance
+      views: [approval_refs_created, confirmed, stale_expired]
+    - id: dependencies
+      metrics: [ouf_mcp_db_pool_connections, ouf_mcp_db_pool_empty_acquire_total, ouf_mcp_db_pool_acquire_seconds_total]
+      views: [gateway_latency_error, authorization_iam, db_pool]
+    - id: cost
+      views: [calls, result_bytes, backend_latency]
+      dimensions: [principal, tenant, capability]
+      note: high-cardinality dimensions belong in governed telemetry queries, never Prometheus labels
+  privacy:
+    forbiddenMetricLabels: [tenant, principal, correlationId, applicationSessionId, toolAttemptId, backendRequestId, accessToken, rawPayload]
