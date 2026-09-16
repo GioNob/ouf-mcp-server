@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "gatewayMain": "18ba4d317fd451954e13ffca4e88c6541e2062fc",
+  "mcp": {
+    "ingressFrom": ["ouf-gateway/apisix-northbound"],
+    "egressTo": ["ouf-gateway/apisix-southbound", "postgresql", "dns", "telemetry"],
+    "forbiddenDirect": ["udp-object-resolution", "generic-internet"]
+  },
+  "maintenance": {
+    "egressTo": ["postgresql", "telemetry"],
+    "forbidden": ["ouf-gateway/apisix-southbound", "udp-object-resolution", "generic-internet"]
+  },
+  "gateway": {
+    "southboundPort": 9443,
+    "southboundDefaultDeny": true,
+    "ingestionDirectVerticalDenied": true
+  }
+}
