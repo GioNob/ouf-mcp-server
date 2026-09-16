@@ -60,6 +60,14 @@ func (s *Store) SystemStatus(ctx context.Context, identity orchestration.Identit
 		where a.tenant_id=$1 and e.evidence_state='VERIFIED'`, identity.TenantID).Scan(&evidenceBacklog); err != nil {
 		return nil, err
 	}
+	var incidentCount int64
+	if err := s.pool.QueryRow(ctx, `
+		select count(*)
+		from ouf_mcp.security_incident i
+		join ouf_mcp.tool_attempt a on a.attempt_id=i.attempt_id
+		where a.tenant_id=$1`, identity.TenantID).Scan(&incidentCount); err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		select i.incident_key,i.category,i.detail_code,i.created_at
 		from ouf_mcp.security_incident i
@@ -86,14 +94,14 @@ func (s *Store) SystemStatus(ctx context.Context, identity orchestration.Identit
 	if unknown > 0 || expired > 0 || debtCount > 0 || evidenceBacklog > 0 {
 		status = "RECOVERING"
 	}
-	if unresolved > 0 || len(incidents) > 0 {
+	if unresolved > 0 || incidentCount > 0 {
 		status = "DEGRADED"
 	}
 	out := selfStatus{
 		Module: "MCP", Status: status,
 		UnknownAttempts: unknown, UnresolvedAttempts: unresolved, ExpiredRunningAttempts: expired,
 		ActiveDebtCount: debtCount, ActiveDebtObjects: debtObjects, VerifiedEvidenceBacklog: evidenceBacklog,
-		SecurityIncidentCount: int64(len(incidents)), ActionRequired: unresolved > 0 || len(incidents) > 0,
+		SecurityIncidentCount: incidentCount, ActionRequired: unresolved > 0 || incidentCount > 0,
 		Incidents: incidents, Partial: false,
 	}
 	return json.Marshal(out)
