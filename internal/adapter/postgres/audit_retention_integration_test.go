@@ -32,7 +32,7 @@ func TestAuditRetentionDirectDeleteDeniedAndDefinerCallable(t *testing.T) {
 func TestAuditRetentionConcurrentWorkersAreBounded(t *testing.T) {
 	s, ctx := maintenanceStore(t)
 	for i := 0; i < 20; i++ {
-		if _, err := s.Pool().Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,safe_detail,occurred_at) values(gen_random_uuid(),'RETENTION_FIXTURE','SYSTEM','{}',transaction_timestamp()-interval '2 days')`); err != nil {
+		if _, err := s.Pool().Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,safe_detail,occurred_at) values(gen_random_uuid(),'RETENTION_FIXTURE','SYSTEM','{}',transaction_timestamp()-interval '4 days')`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestAuditRetentionConcurrentWorkersAreBounded(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			var n int
-			err := s.Pool().QueryRow(ctx, `select ouf_mcp.purge_audit_events(transaction_timestamp()-interval '1 day',10)`).Scan(&n)
+			err := s.Pool().QueryRow(ctx, `select ouf_mcp.purge_audit_events(transaction_timestamp()-interval '3 days',10)`).Scan(&n)
 			counts <- n
 			errs <- err
 		}()
