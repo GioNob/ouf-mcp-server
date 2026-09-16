@@ -59,6 +59,13 @@ func (c *Cache) Authorize(_ context.Context, in orchestration.AuthorizationReque
 	if active == nil {
 		return orchestration.AuthorizationDecision{}, ErrPolicyUnavailable
 	}
+	if in.Identity.PrincipalID == "" || in.Identity.TenantID == "" || in.Identity.ActorType == "" ||
+		in.Identity.AuthenticationContextRef == "" || in.Identity.Issuer == "" || in.Identity.Audience == "" {
+		return orchestration.AuthorizationDecision{}, errors.New("trusted authorization principal context incomplete")
+	}
+	if in.Identity.ActorType == "SERVICE" && in.Identity.ServicePrincipalID == "" {
+		return orchestration.AuthorizationDecision{}, errors.New("service principal id is required for SERVICE actor")
+	}
 	resource := in.Resource
 	if resource.TenantID == "" {
 		resource.TenantID = in.Identity.TenantID
@@ -87,9 +94,9 @@ func (a ActivePolicyBundle) Validate() error {
 }
 
 type PolicyBundle struct {
-	BundleID    string                 `json:"bundleId"`
-	Version     int64                  `json:"version"`
-	PublishedAt time.Time              `json:"publishedAt"`
+	BundleID     string                 `json:"bundleId"`
+	Version      int64                  `json:"version"`
+	PublishedAt  time.Time              `json:"publishedAt"`
 	Capabilities []CapabilityDescriptor `json:"capabilities"`
 	Grants       []Grant                `json:"grants"`
 }
