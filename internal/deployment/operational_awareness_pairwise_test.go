@@ -19,8 +19,8 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 	}
 	var manifest struct {
 		Capabilities []struct {
-			ToolName, CapabilityID, RequiredAuthorizationCapability, GatewayBindingRef string
-			ToolEligible                                                               bool `json:"toolEligible"`
+			ToolName, CapabilityID, RequiredAuthorizationCapability, GatewayBindingRef, Owner string
+			ToolEligible                                                                      bool `json:"toolEligible"`
 		} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
@@ -30,10 +30,19 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 		"ouf.ingestion.status":     {"ingestion.operations.read", "mcp-ingestion-status.yaml", "/api/internal/v1/ingestion/operations/status"},
 		"ouf.ingestion.history":    {"ingestion.operations.read", "mcp-ingestion-history.yaml", "/api/internal/v1/ingestion/operations/history"},
 		"ouf.operations.incidents": {"operations.incident.read", "mcp-operations-incidents.yaml", "/api/internal/v1/ingestion/operations/incidents"},
+		"ouf.operations.explain":   {"operations.incident.explain", "mcp-operations-explain.yaml", "/api/internal/v1/ingestion/operations/incidents/explain"},
 		"ouf.operations.summary":   {"operations.status.read", "mcp-operations-summary.yaml", "/api/internal/v1/ingestion/operations/summary"},
 	}
 	seen := map[string]bool{}
+	localStatusSeen := false
 	for _, c := range manifest.Capabilities {
+		if c.CapabilityID == "ouf.system.status" {
+			if !c.ToolEligible || c.ToolName != c.CapabilityID || c.Owner != "mcp" || c.RequiredAuthorizationCapability != "operations.status.read" || c.GatewayBindingRef != "capability://ouf.system.status" {
+				t.Fatalf("MCP local system status contract mismatch: %+v", c)
+			}
+			localStatusSeen = true
+			continue
+		}
 		e, ok := expected[c.CapabilityID]
 		if !ok {
 			continue
@@ -52,6 +61,12 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 		seen[c.CapabilityID] = true
 	}
 	if len(seen) != len(expected) {
-		t.Fatalf("operational capability coverage=%d want=%d", len(seen), len(expected))
+		t.Fatalf("remote operational capability coverage=%d want=%d", len(seen), len(expected))
+	}
+	if !localStatusSeen {
+		t.Fatal("MCP local system status capability missing")
+	}
+	if _, err := os.Stat(filepath.Join(root, "ouf-config", "routes", "northbound", "mcp-system-status.yaml")); !os.IsNotExist(err) {
+		t.Fatal("MCP-owned system status must not create a Gateway loop route")
 	}
 }
