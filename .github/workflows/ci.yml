@@ -24,6 +24,11 @@ jobs:
           repository: GioNob/ouf-api-gateway
           ref: 7c6b3cee9994220e435b24c07aabc8d8d7180039
           path: .pairwise/gateway
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-ingestion-runtime
+          ref: 58d9caf609b2d1f3b8ce49d6fac0abff73f740db
+          path: .pairwise/ingestion
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25.13'
@@ -34,6 +39,7 @@ jobs:
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/evidence -run TestGatewayEvidenceIngressPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayDeploymentSecurityPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayOperationalAwarenessPairwise -v
+      - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" INGESTION_PAIRWISE_ROOT="$PWD/.pairwise/ingestion" go test ./internal/deployment -run TestOperationalExplainOwnerPairwise -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
@@ -62,6 +68,7 @@ jobs:
             internal/deployment/security_contract.json
             internal/deployment/security_pairwise_test.go
             internal/deployment/operational_awareness_pairwise_test.go
+            internal/deployment/operational_awareness_owner_pairwise_test.go
             internal/deployment/mcp_1h_contract_test.go
             internal/manifest/capabilities.json
             internal/kernel/kernel.go
