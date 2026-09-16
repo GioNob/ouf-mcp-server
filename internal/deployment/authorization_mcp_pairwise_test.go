@@ -141,7 +141,7 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 		t.Fatal("MCP manifest does not expose Authorization vocabulary for ouf.system.status")
 	}
 
-	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	bundle := authorization.ActivePolicyBundle{
 		BundleID:      "policy-bundle-pairwise",
 		BundleVersion: 7,
