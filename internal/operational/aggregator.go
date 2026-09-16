@@ -148,7 +148,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			items = append(items, map[string]any{
 				"incident_id": "mcp-operational-state", "module": "MCP", "event_type": "MCP_OPERATIONAL_" + state,
 				"lifecycle_state": mapStatusLifecycle(state), "severity": mapStatusSeverity(state),
-				"impact_summary": "MCP has governed recovery, debt, evidence or unresolved orchestration state requiring attention.",
+				"impact_summary":  "MCP has governed recovery, debt, evidence or unresolved orchestration state requiring attention.",
 				"action_required": state == "DEGRADED", "visibility_class": "TENANT_OPERATIONAL",
 			})
 		}
