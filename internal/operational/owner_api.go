@@ -1,12 +1,17 @@
 package operational
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
+
+type SelfStatusProvider interface {
+	SystemStatus(context.Context, orchestration.Identity) ([]byte, error)
+}
 
 type ownerAPI struct{ self SelfStatusProvider }
 
