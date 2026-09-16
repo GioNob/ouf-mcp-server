@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mcp-default-deny, namespace: ouf-mcp}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mcp-server-allow, namespace: ouf-mcp}
+spec:
+  podSelector: {matchLabels: {ouf.component: mcp-server}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {ouf.gateway-client: "true"}}
+          podSelector: {matchLabels: {ouf.component: apisix-northbound}}
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ouf-gateway}}
+          podSelector: {matchLabels: {ouf.component: apisix-southbound}}
+      ports: [{protocol: TCP, port: 9443}]
+    - to:
+        - namespaceSelector: {matchLabels: {ouf.database: "true"}}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - namespaceSelector: {matchLabels: {ouf.telemetry: "true"}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mcp-maintenance-allow, namespace: ouf-mcp}
+spec:
+  podSelector: {matchLabels: {ouf.component: mcp-maintenance-worker}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {ouf.database: "true"}}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - namespaceSelector: {matchLabels: {ouf.telemetry: "true"}}
