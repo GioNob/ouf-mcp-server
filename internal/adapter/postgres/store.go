@@ -161,8 +161,12 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	var reservedCalls, consumedCalls, reservedBytes, consumedBytes, reservedObjects, consumedObjects, objectDebt int64
-	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes,reserved_distinct_objects,consumed_distinct_objects,current_unresolved_object_debt_total from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes, &reservedObjects, &consumedObjects, &objectDebt); err != nil {
+	var reservedCalls, consumedCalls, reservedBytes, consumedBytes, reservedObjects, consumedObjects int64
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes,reserved_distinct_objects,consumed_distinct_objects from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes, &reservedObjects, &consumedObjects); err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
+	var objectDebt int64
+	if err = tx.QueryRow(ctx, `select coalesce(sum(debt_amount),0) from ouf_mcp.budget_object_debt where budget_window_id=$1 and debt_state='ACTIVE'`, windowID).Scan(&objectDebt); err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
 	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > in.Maximum.DistinctObjects*int64(in.RetryThreshold)
@@ -388,11 +392,11 @@ func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.
 			return nil, err
 		}
 		var state string
-		var leaseUntil time.Time
+		var leaseUntil *time.Time
 		if err = tx.QueryRow(ctx, `select state,lease_until from ouf_mcp.tool_attempt where attempt_id=$1 for update`, stale.id).Scan(&state, &leaseUntil); err != nil {
 			return nil, err
 		}
-		if state != "RUNNING" || !leaseUntil.Before(now) {
+		if state != "RUNNING" || leaseUntil == nil || !leaseUntil.Before(now) {
 			continue
 		}
 		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state='UNKNOWN',dispatch_state='UNKNOWN',unknown_since=coalesce(unknown_since,$2),lease_until=null,lock_version=lock_version+1 where attempt_id=$1 and state='RUNNING'`, stale.id, now); err != nil {
