@@ -32,6 +32,12 @@ type producerSpec struct {
 	Name, CapabilityID, Owner, Scope string
 }
 
+type producerResult struct {
+	Producer producerSpec
+	Body     []byte
+	OK       bool
+}
+
 var incidentProducers = []producerSpec{
 	{Name: "INGESTION", CapabilityID: "ouf.ingestion.operations.incidents", Owner: "ingestion", Scope: "operations.incident.read"},
 	{Name: "GATEWAY", CapabilityID: "ouf.gateway.operations.incidents", Owner: "gateway", Scope: "operations.incident.read"},
@@ -68,18 +74,17 @@ func (a Aggregator) Summary(ctx context.Context, in aggregateRequest) ([]byte, e
 		}
 	}
 
-	for _, producer := range summaryProducers {
-		body, ok := a.callProducer(ctx, in, producer)
-		if !ok {
+	for result := range a.callProducers(ctx, in, summaryProducers) {
+		if !result.OK {
 			partial = true
-			unavailable = append(unavailable, producer.Name)
+			unavailable = append(unavailable, result.Producer.Name)
 			status = "DEGRADED"
 			continue
 		}
 		var module map[string]any
-		if json.Unmarshal(body, &module) != nil {
+		if json.Unmarshal(result.Body, &module) != nil {
 			partial = true
-			unavailable = append(unavailable, producer.Name)
+			unavailable = append(unavailable, result.Producer.Name)
 			status = "DEGRADED"
 			continue
 		}
@@ -90,6 +95,7 @@ func (a Aggregator) Summary(ctx context.Context, in aggregateRequest) ([]byte, e
 			status = "DEGRADED"
 		}
 	}
+	sort.Slice(modules, func(i, j int) bool { return stringValue(modules[i]["module"]) < stringValue(modules[j]["module"]) })
 	sort.Strings(unavailable)
 	return json.Marshal(map[string]any{
 		"status": status, "partial": partial, "modules": modules,
@@ -104,29 +110,28 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 	items := make([]map[string]any, 0)
 	unavailable := make([]string, 0, 2)
 	partial := false
-	for _, producer := range incidentProducers {
-		body, ok := a.callProducer(ctx, in, producer)
-		if !ok {
+	for result := range a.callProducers(ctx, in, incidentProducers) {
+		if !result.OK {
 			partial = true
-			unavailable = append(unavailable, producer.Name)
+			unavailable = append(unavailable, result.Producer.Name)
 			continue
 		}
-		var result struct {
+		var decoded struct {
 			Items   []map[string]any `json:"items"`
 			Partial bool             `json:"partial"`
 		}
-		if json.Unmarshal(body, &result) != nil {
+		if json.Unmarshal(result.Body, &decoded) != nil {
 			partial = true
-			unavailable = append(unavailable, producer.Name)
+			unavailable = append(unavailable, result.Producer.Name)
 			continue
 		}
-		for _, item := range result.Items {
+		for _, item := range decoded.Items {
 			if _, exists := item["module"]; !exists {
-				item["module"] = producer.Name
+				item["module"] = result.Producer.Name
 			}
 			items = append(items, item)
 		}
-		partial = partial || result.Partial
+		partial = partial || decoded.Partial
 	}
 
 	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
@@ -151,11 +156,30 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
+	sort.SliceStable(items, func(i, j int) bool { return stringValue(items[i]["module"]) < stringValue(items[j]["module"]) })
 	if len(items) > limit {
 		items = items[:limit]
 	}
 	sort.Strings(unavailable)
 	return json.Marshal(map[string]any{"items": items, "partial": partial, "unavailableProducers": unavailable})
+}
+
+func (a Aggregator) callProducers(ctx context.Context, in aggregateRequest, producers []producerSpec) <-chan producerResult {
+	results := make(chan producerResult, len(producers))
+	for _, producer := range producers {
+		producer := producer
+		go func() {
+			body, ok := a.callProducer(ctx, in, producer)
+			results <- producerResult{Producer: producer, Body: body, OK: ok}
+		}()
+	}
+	go func() {
+		for range producers {
+			<-time.After(0)
+		}
+		close(results)
+	}()
+	return results
 }
 
 func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, producer producerSpec) ([]byte, bool) {
