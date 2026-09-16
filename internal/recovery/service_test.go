@@ -20,6 +20,9 @@ func (f *fakeStore) ApplyOwnerEvidence(_ context.Context, _ uuid.UUID, _ string,
 	f.applied = append(f.applied, e)
 	return nil
 }
+func (f *fakeStore) ExpireUnknown(context.Context, time.Time, time.Time, int) (int, error) {
+	return 0, nil
+}
 
 type fakeOwner struct {
 	e   OwnerEvidence
@@ -30,7 +33,7 @@ func (f fakeOwner) QueryOutcome(context.Context, OwnerQuery) (OwnerEvidence, err
 	return f.e, f.err
 }
 func service(store *fakeStore, owner fakeOwner) Service {
-	return Service{Store: store, Owner: owner, WorkerID: "worker-1", Lease: time.Minute, AdmissionGrace: time.Minute, Batch: 10}
+	return Service{Store: store, Owner: owner, WorkerID: "worker-1", Lease: time.Minute, AdmissionGrace: time.Minute, MaxUnknownHold: time.Hour, Batch: 10}
 }
 func TestDeterministicOwnerOutcomeIsApplied(t *testing.T) {
 	id := uuid.New()

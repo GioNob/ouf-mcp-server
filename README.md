@@ -22,3 +22,5 @@ The governed server requires `MCP_AUTHORIZATION_ENDPOINT`, `MCP_GATEWAY_ENDPOINT
 See `docs/MCP_1C_TRACEABILITY.md` for the bounded PET coverage and explicit deferrals.
 
 The maintenance worker additionally requires `MCP_GATEWAY_RECOVERY_ENDPOINT` and `MCP_WORKLOAD_TOKEN`. It never contacts an owner directly: outcome lookup is Gateway-mediated and keyed by the persisted backend request ID.
+
+MCP 1E preserves object-budget uncertainty as durable debt. `MCP_MAX_UNKNOWN_HOLD` defaults to `24h`; expiry changes `UNKNOWN` to `UNRESOLVED` without releasing debt or retry blockers. Only verified Evidence Inbox records can drive late compensation. See `docs/MCP_1E_TRACEABILITY.md`.

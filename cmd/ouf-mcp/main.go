@@ -87,7 +87,15 @@ func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string
 		logger.Error("recovery client initialization failed", "error", err)
 		os.Exit(1)
 	}
-	worker := recovery.Service{Store: store, Owner: recoveryClient, Audit: store, WorkerID: "maintenance-" + os.Getenv("HOSTNAME"), Lease: 30 * time.Second, AdmissionGrace: 2 * time.Minute, Batch: 50}
+	maxUnknownHold := 24 * time.Hour
+	if raw := os.Getenv("MCP_MAX_UNKNOWN_HOLD"); raw != "" {
+		maxUnknownHold, err = time.ParseDuration(raw)
+		if err != nil || maxUnknownHold <= 0 {
+			logger.Error("MCP_MAX_UNKNOWN_HOLD must be a positive duration", "error", err)
+			os.Exit(2)
+		}
+	}
+	worker := recovery.Service{Store: store, Owner: recoveryClient, Audit: store, WorkerID: "maintenance-" + os.Getenv("HOSTNAME"), Lease: 30 * time.Second, AdmissionGrace: 2 * time.Minute, MaxUnknownHold: maxUnknownHold, Batch: 50}
 	for {
 		cycleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		result, err := store.Maintain(cycleCtx, time.Now())
@@ -99,7 +107,7 @@ func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string
 		if err != nil {
 			logger.Error("maintenance cycle failed", "error", err)
 		} else {
-			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted, "recoveryClaimed", recovered.Claimed, "reconciled", recovered.Reconciled, "stillUnknown", recovered.StillUnknown)
+			logger.Info("maintenance cycle completed", "orphansMarkedUnknown", result.OrphansMarkedUnknown, "expiredSessionsDeleted", result.ExpiredSessionsDeleted, "recoveryClaimed", recovered.Claimed, "reconciled", recovered.Reconciled, "stillUnknown", recovered.StillUnknown, "unresolved", recovered.Unresolved)
 		}
 		if once {
 			if err != nil {
