@@ -50,33 +50,38 @@ begin
  limit p_limit
  for update of t skip locked;
 
- -- PET order for implemented child relations.
  delete from ouf_mcp.security_incident i using pg_temp.ouf_mcp_retention_attempts c where i.attempt_id=c.attempt_id;
  delete from ouf_mcp.budget_adjustment a using pg_temp.ouf_mcp_retention_attempts c where a.attempt_id=c.attempt_id;
  delete from ouf_mcp.budget_object_debt d using pg_temp.ouf_mcp_retention_attempts c where d.attempt_id=c.attempt_id and d.debt_state='RESOLVED';
  delete from ouf_mcp.owner_evidence_inbox e using pg_temp.ouf_mcp_retention_attempts c where e.attempt_id=c.attempt_id and e.evidence_state in('CONSUMED','QUARANTINED');
  delete from ouf_mcp.idempotency_claim i using pg_temp.ouf_mcp_retention_attempts c where i.attempt_id=c.attempt_id;
  delete from ouf_mcp.budget_reservation r using pg_temp.ouf_mcp_retention_attempts c where r.attempt_id=c.attempt_id and r.state in('RECONCILED','RELEASED');
-
- -- Technical FK child required before tool_attempt; this is an implementation
- -- necessity, not a new normative retention category.
  delete from ouf_mcp.attempt_admission_context x using pg_temp.ouf_mcp_retention_attempts c where x.attempt_id=c.attempt_id;
-
  delete from ouf_mcp.tool_attempt t using pg_temp.ouf_mcp_retention_attempts c where t.attempt_id=c.attempt_id;
  get diagnostics n=row_count;
 
- -- Parent cleanup follows only when no surviving references remain.
+ -- Parent records obey the same governed age cutoff as attempts. Becoming
+ -- orphaned is necessary but never sufficient for early deletion.
  delete from ouf_mcp.retry_guard g
- where not exists(select 1 from ouf_mcp.attempt_admission_context x where x.equivalence_group_id=g.equivalence_group_id)
-   and exists(select 1 from ouf_mcp.retry_equivalence_group q where q.equivalence_group_id=g.equivalence_group_id);
+ using ouf_mcp.retry_equivalence_group q, ouf_mcp.budget_window w
+ where g.equivalence_group_id=q.equivalence_group_id
+   and q.budget_window_id=w.budget_window_id
+   and w.window_end<p_before
+   and not exists(select 1 from ouf_mcp.attempt_admission_context x where x.equivalence_group_id=g.equivalence_group_id);
 
  delete from ouf_mcp.budget_distinct_object o
- where not exists(select 1 from ouf_mcp.attempt_admission_context x where x.budget_window_id=o.budget_window_id)
+ using ouf_mcp.budget_window w
+ where o.budget_window_id=w.budget_window_id
+   and w.window_end<p_before
+   and not exists(select 1 from ouf_mcp.attempt_admission_context x where x.budget_window_id=o.budget_window_id)
    and not exists(select 1 from ouf_mcp.budget_object_debt d where d.budget_window_id=o.budget_window_id)
    and not exists(select 1 from ouf_mcp.budget_adjustment a where a.budget_window_id=o.budget_window_id);
 
  delete from ouf_mcp.retry_equivalence_group q
- where not exists(select 1 from ouf_mcp.attempt_admission_context x where x.equivalence_group_id=q.equivalence_group_id)
+ using ouf_mcp.budget_window w
+ where q.budget_window_id=w.budget_window_id
+   and w.window_end<p_before
+   and not exists(select 1 from ouf_mcp.attempt_admission_context x where x.equivalence_group_id=q.equivalence_group_id)
    and not exists(select 1 from ouf_mcp.retry_guard g where g.equivalence_group_id=q.equivalence_group_id);
 
  delete from ouf_mcp.budget_window w
