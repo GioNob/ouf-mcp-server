@@ -115,7 +115,7 @@ func TestCacheRetainsLastKnownGoodOnRefreshFailure(t *testing.T) {
 	}
 }
 
-func TestCacheRejectsRollbackAndOrgGrantWithoutOrgContext(t *testing.T) {
+func TestCacheRejectsStaleActivationAndOrgGrantWithoutOrgContext(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	bundle := validBundle(now)
 	bundle.Bundle.Grants[0].OrganizationID = "org-a"
@@ -146,11 +146,29 @@ func TestCacheRejectsRollbackAndOrgGrantWithoutOrgContext(t *testing.T) {
 		t.Fatalf("org-scoped grant must fail closed without org context: %+v", decision)
 	}
 
-	rollback := validBundle(now)
-	rollback.BundleVersion = 6
-	rollback.Bundle.Version = 6
-	source.bundle = rollback
+	stale := validBundle(now)
+	stale.ActivatedAt = bundle.ActivatedAt.Add(-time.Second)
+	source.bundle = stale
 	if err := cache.Refresh(context.Background()); err == nil {
-		t.Fatal("expected rollback rejection")
+		t.Fatal("expected stale activation rejection")
+	}
+}
+
+func TestCacheAcceptsAuthoritativeNewerActivationWithLowerVersion(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	source := &bundleSourceFixture{bundle: validBundle(now)}
+	cache := NewCache(source)
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	next := validBundle(now)
+	next.BundleID = "bundle-rollback"
+	next.BundleVersion = 1
+	next.ActivatedAt = now
+	next.Bundle.BundleID = "bundle-rollback"
+	next.Bundle.Version = 1
+	source.bundle = next
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatalf("authoritative newer activation must be accepted: %v", err)
 	}
 }
