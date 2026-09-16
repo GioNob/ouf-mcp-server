@@ -87,14 +87,20 @@ func (r *Registry) Handler(extra func() string) http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		r.mu.Lock()
 		requestCopy := make(map[string]uint64, len(r.requests))
-		for k, v := range r.requests { requestCopy[k] = v }
+		for k, v := range r.requests {
+			requestCopy[k] = v
+		}
 		latencyCopy := make(map[string][]uint64, len(r.latency))
-		for k, v := range r.latency { latencyCopy[k] = append([]uint64(nil), v...) }
+		for k, v := range r.latency {
+			latencyCopy[k] = append([]uint64(nil), v...)
+		}
 		buckets := append([]time.Duration(nil), r.buckets...)
 		r.mu.Unlock()
 
 		keys := make([]string, 0, len(requestCopy))
-		for k := range requestCopy { keys = append(keys, k) }
+		for k := range requestCopy {
+			keys = append(keys, k)
+		}
 		sort.Strings(keys)
 		fmt.Fprintln(w, "# HELP ouf_mcp_http_requests_total Governed MCP HTTP requests by bounded route/outcome labels.")
 		fmt.Fprintln(w, "# TYPE ouf_mcp_http_requests_total counter")
@@ -105,7 +111,9 @@ func (r *Registry) Handler(extra func() string) http.Handler {
 		fmt.Fprintln(w, "# HELP ouf_mcp_http_duration_bucket Request duration histogram buckets.")
 		fmt.Fprintln(w, "# TYPE ouf_mcp_http_duration_bucket histogram")
 		routes := make([]string, 0, len(latencyCopy))
-		for route := range latencyCopy { routes = append(routes, route) }
+		for route := range latencyCopy {
+			routes = append(routes, route)
+		}
 		sort.Strings(routes)
 		for _, route := range routes {
 			cumulative := uint64(0)
@@ -116,6 +124,8 @@ func (r *Registry) Handler(extra func() string) http.Handler {
 			cumulative += latencyCopy[route][len(buckets)]
 			fmt.Fprintf(w, "ouf_mcp_http_duration_bucket{route=%q,le=\"+Inf\"} %d\n", route, cumulative)
 		}
-		if extra != nil { fmt.Fprint(w, extra()) }
+		if extra != nil {
+			fmt.Fprint(w, extra())
+		}
 	})
 }
