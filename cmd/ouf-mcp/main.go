@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/observability"
 	"github.com/GioNob/ouf-mcp-server/internal/operational"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
@@ -199,12 +201,17 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)
 	}
+	metrics := observability.NewRegistry()
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", metrics.Instrument("mcp", handler))
 	ownerAPI := operational.NewOwnerAPI(store, aggregator)
-	mux.Handle("/api/internal/v1/mcp/operations/status", ownerAPI)
-	mux.Handle("/api/internal/v1/mcp/operations/summary", ownerAPI)
-	mux.Handle("/api/internal/v1/mcp/operations/incidents", ownerAPI)
+	mux.Handle("/api/internal/v1/mcp/operations/status", metrics.Instrument("operations_status", ownerAPI))
+	mux.Handle("/api/internal/v1/mcp/operations/summary", metrics.Instrument("operations_summary", ownerAPI))
+	mux.Handle("/api/internal/v1/mcp/operations/incidents", metrics.Instrument("operations_incidents", ownerAPI))
+	mux.Handle("GET /metrics", metrics.Handler(func() string {
+		stat := store.Pool().Stat()
+		return fmt.Sprintf("# TYPE ouf_mcp_db_pool_connections gauge\nouf_mcp_db_pool_connections{state=\"acquired\"} %d\nouf_mcp_db_pool_connections{state=\"idle\"} %d\nouf_mcp_db_pool_connections{state=\"total\"} %d\n# TYPE ouf_mcp_db_pool_empty_acquire_total counter\nouf_mcp_db_pool_empty_acquire_total %d\n# TYPE ouf_mcp_db_pool_acquire_seconds_total counter\nouf_mcp_db_pool_acquire_seconds_total %.6f\n", stat.AcquiredConns(), stat.IdleConns(), stat.TotalConns(), stat.EmptyAcquireCount(), stat.AcquireDuration().Seconds())
+	}))
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
