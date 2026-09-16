@@ -21,7 +21,7 @@ func TestChannelNeutralSystemStatusPairwise(t *testing.T) {
 	var manifest struct {
 		Capabilities []struct {
 			CapabilityID, Owner, RequiredAuthorizationCapability, GatewayBindingRef string
-			ToolEligible                                                        bool `json:"toolEligible"`
+			ToolEligible                                                            bool `json:"toolEligible"`
 		} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
