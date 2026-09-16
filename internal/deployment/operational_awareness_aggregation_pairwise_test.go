@@ -42,14 +42,14 @@ func TestOperationalAwarenessAggregationPairwise(t *testing.T) {
 	}
 
 	checks := map[string][]string{
-		"mcp-operations-incidents.yaml": {"sourceRef: mcp-server-operations@1.0.0", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/incidents"},
-		"mcp-operations-summary.yaml": {"sourceRef: mcp-server-operations@1.0.0", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/summary"},
+		"mcp-operations-incidents.yaml":                    {"sourceRef: mcp-server-operations@1.0.0", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/incidents"},
+		"mcp-operations-summary.yaml":                      {"sourceRef: mcp-server-operations@1.0.0", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/summary"},
 		"mcp-ingestion-operations-incidents-producer.yaml": {"capabilityRef: ouf.ingestion.operations.incidents@1.0.0", "service: ouf-ingestion-runtime"},
-		"mcp-ingestion-operations-summary-producer.yaml": {"capabilityRef: ouf.ingestion.operations.summary@1.0.0", "service: ouf-ingestion-runtime"},
-		"mcp-gateway-operations-incidents.yaml": {"capabilityRef: ouf.gateway.operations.incidents@1.0.0", "service: ouf-gateway-control-plane"},
-		"mcp-gateway-operations-summary.yaml": {"capabilityRef: ouf.gateway.operations.summary@1.0.0", "service: ouf-gateway-control-plane"},
-		"api-operations-incidents.yaml": {"identity: OIDC", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/incidents"},
-		"api-operations-summary.yaml": {"identity: OIDC", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/summary"},
+		"mcp-ingestion-operations-summary-producer.yaml":   {"capabilityRef: ouf.ingestion.operations.summary@1.0.0", "service: ouf-ingestion-runtime"},
+		"mcp-gateway-operations-incidents.yaml":            {"capabilityRef: ouf.gateway.operations.incidents@1.0.0", "service: ouf-gateway-control-plane"},
+		"mcp-gateway-operations-summary.yaml":              {"capabilityRef: ouf.gateway.operations.summary@1.0.0", "service: ouf-gateway-control-plane"},
+		"api-operations-incidents.yaml":                    {"identity: OIDC", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/incidents"},
+		"api-operations-summary.yaml":                      {"identity: OIDC", "service: ouf-mcp-server", "path: /api/internal/v1/mcp/operations/summary"},
 	}
 	for name, required := range checks {
 		raw, err := os.ReadFile(filepath.Join(root, "ouf-config", "routes", "northbound", name))
