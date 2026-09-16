@@ -31,7 +31,7 @@ func TestSystemStatusIsTenantScopedAndSafe(t *testing.T) {
 	}
 	id := uuid.NewString()
 	tenant := "tenant-self-" + id
-	payload := []byte(`{"capabilities":[]}`)
+	payload := []byte(fmt.Sprintf(`{"capabilities":[],"fixtureId":%q}`, id))
 	manifestHash := fmt.Sprintf("%x", sha256.Sum256(payload))
 	if err := store.EnsureManifest(ctx, manifestHash, "self-status-v1", "mcp-manifest-v1", payload); err != nil {
 		t.Fatal(err)
