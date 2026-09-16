@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func maintenanceStore(t *testing.T) (*Store,context.Context) { t.Helper(); dsn:=os.Getenv("MCP_TEST_DATABASE_URL");if dsn==""{t.Skip("MCP_TEST_DATABASE_URL is not set")};ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second);t.Cleanup(cancel);s,err:=Open(ctx,dsn);if err!=nil{t.Fatal(err)};t.Cleanup(s.Close);if err=Migrate(ctx,s.Pool());err!=nil{t.Fatal(err)};return s,ctx }
@@ -38,6 +37,5 @@ func TestEvidenceRetentionFunctionIsBoundedAndRoleCallable(t *testing.T) {
 }
 
 func TestMaintenanceRoleHasNoTableOwnership(t *testing.T) {
-	s,ctx:=maintenanceStore(t);cfg,err:=pgxpool.ParseConfig(os.Getenv("MCP_TEST_DATABASE_URL"));if err!=nil{t.Fatal(err)};_ = cfg
-	var owns bool;if err=s.Pool().QueryRow(ctx,`select exists(select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace join pg_roles r on r.oid=c.relowner where n.nspname='ouf_mcp' and r.rolname='ouf_mcp_maintenance_role')`).Scan(&owns);err!=nil{t.Fatal(err)};if owns{t.Fatal("maintenance role owns protected relation")}
+	s,ctx:=maintenanceStore(t);var owns bool;if err:=s.Pool().QueryRow(ctx,`select exists(select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace join pg_roles r on r.oid=c.relowner where n.nspname='ouf_mcp' and r.rolname='ouf_mcp_maintenance_role')`).Scan(&owns);err!=nil{t.Fatal(err)};if owns{t.Fatal("maintenance role owns protected relation")}
 }
