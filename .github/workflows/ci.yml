@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 9321bca98f22b9952075cf0dec1cf595a0e755d1
+          ref: 2ffb3e9584021ddbfbc35e18a4607e6a19c5a016
           path: .pairwise/gateway
       - uses: actions/setup-go@v6
         with:
@@ -31,6 +31,7 @@ jobs:
       - run: go mod download
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/adapter/httpclient -run TestMCPGatewayUDPPairwise -v
+      - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/evidence -run TestGatewayEvidenceIngressPairwise -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
@@ -49,4 +50,5 @@ jobs:
             internal/manifest/capabilities.json
             internal/adapter/postgres/migrations/*.sql
             internal/adapter/httpclient/pairwise_integration_test.go
+            internal/evidence/gateway_pairwise_test.go
           retention-days: 30
