@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -12,15 +13,24 @@ import (
 type aggregateCallerFixture struct {
 	responses map[string][]byte
 	fail      map[string]bool
+	mu        sync.Mutex
 	calls     []string
 }
 
 func (f *aggregateCallerFixture) Call(_ context.Context, in orchestration.Invocation) (orchestration.Result, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, in.CapabilityID)
+	f.mu.Unlock()
 	if f.fail[in.CapabilityID] {
 		return orchestration.Result{}, errors.New("producer unavailable")
 	}
 	return orchestration.Result{Body: f.responses[in.CapabilityID]}, nil
+}
+
+func (f *aggregateCallerFixture) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
 }
 
 type aggregateSelfFixture struct{ body []byte }
@@ -53,8 +63,8 @@ func TestSummaryAggregatesOwnerTruthWithoutInventingHealth(t *testing.T) {
 	if got["status"] != "RECOVERING" || got["partial"] != false {
 		t.Fatalf("unexpected aggregate: %s", body)
 	}
-	if len(caller.calls) != 2 {
-		t.Fatalf("producer calls=%v", caller.calls)
+	if caller.callCount() != 2 {
+		t.Fatalf("producer call count=%d", caller.callCount())
 	}
 }
 
