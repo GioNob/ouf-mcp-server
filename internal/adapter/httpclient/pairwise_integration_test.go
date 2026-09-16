@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 )
 
 func TestMCPGatewayUDPPairwise(t *testing.T) {
@@ -23,15 +24,35 @@ func TestMCPGatewayUDPPairwise(t *testing.T) {
 		t.Skip("GATEWAY_PAIRWISE_ROOT is not set")
 	}
 	token := "pairwise-workload-token"
-	udpCalls := 0
+	dispatchCalls, recoveryCalls := 0, 0
 	udp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		udpCalls++
-		if r.URL.Path != "/internal/v1/objects/related-search" || r.Header.Get("X-OUF-Capability-ID") != "urban.object.related_search" || r.Header.Get("X-OUF-Authorization-Decision-Ref") != "decision-1" {
+		if r.Method == http.MethodGet && len(r.URL.Path) > len("/internal/v1/attempt-outcomes/") && r.URL.Path[:len("/internal/v1/attempt-outcomes/")] == "/internal/v1/attempt-outcomes/" {
+			recoveryCalls++
+			backendID := r.URL.Path[len("/internal/v1/attempt-outcomes/"):]
+			if r.Header.Get("X-OUF-Capability-ID") != "urban.object.related_search" || r.Header.Get("X-OUF-Recovery-For") != backendID || r.Header.Get("X-Correlation-ID") == "" {
+				t.Errorf("invalid recovery path=%s headers=%v", r.URL.Path, r.Header)
+				http.Error(w, "invalid", 500)
+				return
+			}
+			if backendID == "udp-unavailable" {
+				http.Error(w, "unavailable", 503)
+				return
+			}
+			if backendID == "udp-mismatch" {
+				_, _ = w.Write([]byte(`{"BackendRequestID":"other","Outcome":"SUCCEEDED"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"BackendRequestID":"udp-request-1","Outcome":"NOT_DISPATCHED","OutcomeCode":"OWNER_PROVES_NO_DISPATCH"}`))
+			return
+		}
+		dispatchCalls++
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/objects/related-search" || r.Header.Get("X-OUF-Capability-ID") != "urban.object.related_search" || r.Header.Get("X-OUF-Authorization-Decision-Ref") != "decision-1" {
 			t.Errorf("invalid UDP dispatch path=%s headers=%v", r.URL.Path, r.Header)
 			http.Error(w, "invalid", 500)
 			return
 		}
-		if udpCalls == 2 {
+		if dispatchCalls == 2 {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.Header().Set("Retry-After", "17")
 			w.WriteHeader(429)
@@ -85,7 +106,24 @@ func TestMCPGatewayUDPPairwise(t *testing.T) {
 	if err != nil || second.Status != 429 || second.Problem == nil || second.Problem.Code != "BUDGET_EXHAUSTED" || second.Problem.RetryAfter != "17" {
 		t.Fatalf("problem response %+v err=%v", second, err)
 	}
-	if udpCalls != 2 {
-		t.Fatalf("UDP calls=%d", udpCalls)
+	if dispatchCalls != 2 {
+		t.Fatalf("UDP dispatch calls=%d", dispatchCalls)
+	}
+	recoveryClient, err := NewRecovery(fmt.Sprintf("http://127.0.0.1:%d/internal/capabilities/v1/recovery", port), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := recoveryClient.QueryOutcome(ctx, recovery.OwnerQuery{BackendRequestID: "udp-request-1", Owner: "udp", CapabilityID: "urban.object.related_search", CorrelationID: "correlation-recovery-1"})
+	if err != nil || evidence.Outcome != "NOT_DISPATCHED" || evidence.OutcomeCode != "OWNER_PROVES_NO_DISPATCH" || evidence.ActualToolCalls != 0 || evidence.ActualResultBytes != 0 {
+		t.Fatalf("recovery evidence %+v err=%v", evidence, err)
+	}
+	for _, backendID := range []string{"udp-unavailable", "udp-mismatch"} {
+		_, err = recoveryClient.QueryOutcome(ctx, recovery.OwnerQuery{BackendRequestID: backendID, Owner: "udp", CapabilityID: "urban.object.related_search", CorrelationID: "correlation-" + backendID})
+		if err == nil {
+			t.Fatalf("non-authoritative owner response became terminal for %s", backendID)
+		}
+	}
+	if recoveryCalls != 3 {
+		t.Fatalf("UDP recovery calls=%d", recoveryCalls)
 	}
 }
