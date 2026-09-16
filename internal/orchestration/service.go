@@ -22,8 +22,8 @@ var (
 
 type Identity struct {
 	ServicePrincipalID, PrincipalID, TenantID, ActorType, AuthenticationContextRef string
-	Issuer, Audience                                                               string
-	Scopes                                                                         []string
+	Issuer, Audience                                                               string   `json:"-"`
+	Scopes                                                                         []string `json:"-"`
 }
 
 type AuthorizationRequest struct {
