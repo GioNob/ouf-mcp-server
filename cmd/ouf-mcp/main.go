@@ -16,6 +16,7 @@ import (
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/operational"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 )
@@ -190,7 +191,8 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
 		os.Exit(1)
 	}
-	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: gatewayClient, Audit: store, FingerprintKey: fingerprintKey}
+	routedGateway := operational.RoutingGateway{Remote: gatewayClient, Self: store}
+	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)

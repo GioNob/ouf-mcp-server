@@ -27,8 +27,10 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 	want := []string{
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
+		"ouf.operations.explain",
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
+		"ouf.system.status",
 		"urban.object.related_search",
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {

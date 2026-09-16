@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0-operational-awareness",
+  "version": "1.3.1-operational-awareness",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -20,20 +20,22 @@
       "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 200, "hardMaxResultBytes": 1048576, "hardMaxElapsedMs": 3000},
       "conditionalOutcomeCost": {"mismatchCalls": 1, "equivalentRetryCalls": 1},
       "toolEligible": true,
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object", "additionalProperties": false,
-        "required": ["anchorObjectId", "anchorTypeCode", "relationIri", "direction", "targetTypeCodes", "limit"],
-        "properties": {
-          "anchorObjectId": {"type": "string", "format": "uuid"},
-          "anchorTypeCode": {"type": "string", "minLength": 1, "maxLength": 128},
-          "relationIri": {"type": "string", "minLength": 1, "maxLength": 512},
-          "direction": {"type": "string", "enum": ["OUTBOUND", "INBOUND"]},
-          "targetTypeCodes": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-          "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-          "applicationSessionRef": {"type": "string", "minLength": 1, "maxLength": 128}
-        }
-      }
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["anchorObjectId","anchorTypeCode","relationIri","direction","targetTypeCodes","limit"],"properties":{"anchorObjectId":{"type":"string","format":"uuid"},"anchorTypeCode":{"type":"string","minLength":1,"maxLength":128},"relationIri":{"type":"string","minLength":1,"maxLength":512},"direction":{"type":"string","enum":["OUTBOUND","INBOUND"]},"targetTypeCodes":{"type":"array","minItems":1,"maxItems":10,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128}},"limit":{"type":"integer","minimum":1,"maximum":200},"applicationSessionRef":{"type":"string","minLength":1,"maxLength":128}}}
+    },
+    {
+      "toolName": "ouf.system.status", "capabilityId": "ouf.system.status",
+      "purpose": "Read bounded current OUF MCP operational health from authoritative persisted recovery, debt, evidence and security state",
+      "useWhen": ["the user asks whether the MCP layer is healthy or whether OUF itself has unresolved orchestration problems"],
+      "doNotUseWhen": ["raw logs, credentials, SQL or protected evidence payloads are requested"],
+      "preferredAlternatives": ["ouf.operations.summary", "ouf.operations.incidents"],
+      "operationalLimits": {"maxIncidents": 20},
+      "resultSemantics": "Tenant-scoped MCP status with HEALTHY, RECOVERING or DEGRADED semantics and bounded safe incident references",
+      "securityNotes": ["Authorization, admission, reconciliation and audit remain mandatory", "MCP-owned dispatch is local to avoid a Gateway loop and never exposes raw evidence"],
+      "mcpClass": "MCP_TOOL", "owner": "mcp", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.system.status",
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":20,"hardMaxResultBytes":262144,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{}}
     },
     {
       "toolName": "ouf.ingestion.status", "capabilityId": "ouf.ingestion.status",
@@ -46,8 +48,8 @@
       "securityNotes": ["Tenant/source scope and redaction are enforced server-side", "Gateway mediation is mandatory"],
       "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ingestion.operations.read", "gatewayBindingRef": "capability://ouf.ingestion.status",
-      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 262144, "hardMaxElapsedMs": 3000},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":262144,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"limit":{"type":"integer","minimum":1,"maximum":100}}}
     },
     {
@@ -61,8 +63,8 @@
       "securityNotes": ["No secrets or raw stack traces", "Gateway mediation is mandatory"],
       "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ingestion.operations.read", "gatewayBindingRef": "capability://ouf.ingestion.history",
-      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 200, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":200,"hardMaxResultBytes":524288,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":200}}}
     },
     {
@@ -76,9 +78,24 @@
       "securityNotes": ["NOT_AUTHORIZED must not be mapped to NO_INCIDENTS", "Raw logs and credentials are never returned"],
       "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.incident.read", "gatewayBindingRef": "capability://ouf.operations.incidents",
-      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"state":{"type":"string","enum":["OPEN","RECOVERING","RESOLVED"]},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
+    },
+    {
+      "toolName": "ouf.operations.explain", "capabilityId": "ouf.operations.explain",
+      "purpose": "Explain one authorized operational incident using safe owner-provided classification and evidence references",
+      "useWhen": ["the user asks why a specific incident happened or what action is recommended"],
+      "doNotUseWhen": ["no incident reference is known or raw protected evidence is requested"],
+      "preferredAlternatives": ["ouf.operations.incidents", "ouf.operations.summary"],
+      "operationalLimits": {"maxIncidents": 1},
+      "resultSemantics": "Owner-specific safe explanation with classification, severity, lifecycle, evidence reference and recommended action",
+      "securityNotes": ["The owner rechecks tenant scope and explain authorization", "No raw stack traces, tokens or protected evidence payloads"],
+      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "operations.incident.explain", "gatewayBindingRef": "capability://ouf.operations.explain",
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":1,"hardMaxResultBytes":131072,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
+      "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["incidentId"],"properties":{"incidentId":{"type":"string","format":"uuid"}}}
     },
     {
       "toolName": "ouf.operations.summary", "capabilityId": "ouf.operations.summary",
@@ -91,8 +108,8 @@
       "securityNotes": ["Missing evidence must never be manufactured as HEALTHY", "Gateway and Authorization enforcement are mandatory"],
       "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.operations.summary",
-      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1}, "toolEligible": true,
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":3000},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
     },
     {
@@ -106,9 +123,9 @@
       "securityNotes": ["Never exposed in tools/list"],
       "mcpClass": "TRUSTED_HUMAN_ONLY", "owner": "udp", "operationClass": "COMMAND", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "urban.merge.confirm", "gatewayBindingRef": "capability://urban.merge.confirm",
-      "baseCostEnvelope": {"hardMaxToolCalls": 0, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 0, "hardMaxResultBytes": 0, "hardMaxElapsedMs": 0},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 0}, "toolEligible": false,
-      "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
+      "baseCostEnvelope": {"hardMaxToolCalls":0,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":0,"hardMaxResultBytes":0,"hardMaxElapsedMs":0},
+      "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":0}, "toolEligible": false,
+      "inputSchema": {"type":"object","additionalProperties":false,"properties":{}}
     }
   ]
 }
