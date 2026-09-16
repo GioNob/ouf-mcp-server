@@ -31,7 +31,7 @@ func (f aggregateSelfFixture) SystemStatus(context.Context, orchestration.Identi
 
 func aggregateInput() aggregateRequest {
 	return aggregateRequest{
-		Identity: orchestration.Identity{ServicePrincipalID: "ouf-mcp-server", PrincipalID: "operator", TenantID: "tenant-a", ActorType: "HUMAN_USER"},
+		Identity:  orchestration.Identity{ServicePrincipalID: "ouf-mcp-server", PrincipalID: "operator", TenantID: "tenant-a", ActorType: "HUMAN_USER"},
 		Arguments: []byte(`{"limit":50}`), AttemptID: "attempt-a", CorrelationID: "correlation-a", RequestedLimit: 50,
 	}
 }
