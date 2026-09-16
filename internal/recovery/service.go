@@ -24,6 +24,7 @@ type OwnerEvidence struct {
 type Store interface {
 	MarkStaleAndClaim(context.Context, time.Time, time.Time, string, time.Duration, int) ([]Candidate, error)
 	ApplyOwnerEvidence(context.Context, uuid.UUID, string, OwnerEvidence) error
+	ExpireUnknown(context.Context, time.Time, time.Time, int) (int, error)
 }
 type OwnerPort interface {
 	QueryOutcome(context.Context, OwnerQuery) (OwnerEvidence, error)
@@ -31,7 +32,7 @@ type OwnerPort interface {
 type AuditPort interface {
 	AppendRecoveryAudit(context.Context, uuid.UUID, string, string) error
 }
-type Result struct{ Claimed, Reconciled, StillUnknown int }
+type Result struct{ Claimed, Reconciled, StillUnknown, Unresolved int }
 type Service struct {
 	Store          Store
 	Owner          OwnerPort
@@ -39,11 +40,12 @@ type Service struct {
 	WorkerID       string
 	Lease          time.Duration
 	AdmissionGrace time.Duration
+	MaxUnknownHold time.Duration
 	Batch          int
 }
 
 func (s Service) RunOnce(ctx context.Context, now time.Time) (Result, error) {
-	if s.WorkerID == "" || s.Lease <= 0 || s.AdmissionGrace <= 0 || s.Batch < 1 {
+	if s.WorkerID == "" || s.Lease <= 0 || s.AdmissionGrace <= 0 || s.MaxUnknownHold <= 0 || s.Batch < 1 {
 		return Result{}, errors.New("invalid recovery worker configuration")
 	}
 	candidates, err := s.Store.MarkStaleAndClaim(ctx, now, now.Add(-s.AdmissionGrace), s.WorkerID, s.Lease, s.Batch)
@@ -75,6 +77,10 @@ func (s Service) RunOnce(ctx context.Context, now time.Time) (Result, error) {
 		} else {
 			result.Reconciled++
 		}
+	}
+	result.Unresolved, err = s.Store.ExpireUnknown(ctx, now, now.Add(-s.MaxUnknownHold), s.Batch)
+	if err != nil {
+		return result, err
 	}
 	return result, nil
 }

@@ -161,11 +161,12 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	var reservedCalls, consumedCalls, reservedBytes, consumedBytes int64
-	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes); err != nil {
+	var reservedCalls, consumedCalls, reservedBytes, consumedBytes, reservedObjects, consumedObjects, objectDebt int64
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes,reserved_distinct_objects,consumed_distinct_objects,current_unresolved_object_debt_total from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes, &reservedObjects, &consumedObjects, &objectDebt); err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > in.Maximum.ToolCalls*int64(in.RetryThreshold) || reservedBytes+consumedBytes+in.Maximum.ResultBytes > in.Maximum.ResultBytes*int64(in.RetryThreshold) {
+	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > in.Maximum.DistinctObjects*int64(in.RetryThreshold)
+	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > in.Maximum.ToolCalls*int64(in.RetryThreshold) || reservedBytes+consumedBytes+in.Maximum.ResultBytes > in.Maximum.ResultBytes*int64(in.RetryThreshold) || objectBudgetExceeded {
 		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
 	}
 	groupID := uuid.New()
@@ -198,10 +199,10 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),null)`, uuid.New(), in.AttemptID, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes)
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation(reservation_id,attempt_id,budget_window_id,reserved_tool_calls,reserved_result_bytes,state,created_at,reserved_distinct_objects_max) values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),$6)`, uuid.New(), in.AttemptID, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls+$2,reserved_result_bytes=reserved_result_bytes+$3 where budget_window_id=$1`, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes)
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls+$2,reserved_result_bytes=reserved_result_bytes+$3,reserved_distinct_objects=reserved_distinct_objects+$4 where budget_window_id=$1`, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	}
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
@@ -219,9 +220,9 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var windowID uuid.UUID
-	var calls, bytes int64
+	var calls, bytes, objects int64
 	var state string
-	if err = tx.QueryRow(ctx, `select budget_window_id,reserved_tool_calls,reserved_result_bytes,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&windowID, &calls, &bytes, &state); err != nil {
+	if err = tx.QueryRow(ctx, `select budget_window_id,reserved_tool_calls,reserved_result_bytes,reserved_distinct_objects_max,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&windowID, &calls, &bytes, &objects, &state); err != nil {
 		return err
 	}
 	if state == "RECONCILED" {
@@ -231,9 +232,12 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 	if outcome.Success {
 		final = "SUCCEEDED"
 	}
-	_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,consumed_tool_calls=consumed_tool_calls+$4,consumed_result_bytes=consumed_result_bytes+$5 where budget_window_id=$1`, windowID, calls, bytes, actual.ToolCalls, actual.ResultBytes)
+	if actual.DistinctObjects < 0 || actual.DistinctObjects > objects {
+		return errors.New("actual distinct objects exceed reservation")
+	}
+	_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,reserved_distinct_objects=reserved_distinct_objects-$4,consumed_tool_calls=consumed_tool_calls+$5,consumed_result_bytes=consumed_result_bytes+$6,consumed_distinct_objects=consumed_distinct_objects+$7 where budget_window_id=$1`, windowID, calls, bytes, objects, actual.ToolCalls, actual.ResultBytes, actual.DistinctObjects)
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',reconciled_at=transaction_timestamp() where attempt_id=$1`, id)
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',actual_tool_calls=$2,actual_result_bytes=$3,actual_distinct_objects=$4,reconciled_at=transaction_timestamp() where attempt_id=$1`, id, actual.ToolCalls, actual.ResultBytes, actual.DistinctObjects)
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
@@ -303,19 +307,19 @@ func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	admittedRows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id,br.reserved_tool_calls,br.reserved_result_bytes,ta.service_principal_id,ta.manifest_checksum from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.budget_reservation br using(attempt_id) where ta.state='ADMITTED' and ta.dispatch_state='NOT_DISPATCHED' and ta.admitted_at<$1 order by ta.admitted_at,ta.attempt_id limit $2`, admittedBefore, limit)
+	admittedRows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id,br.reserved_tool_calls,br.reserved_result_bytes,br.reserved_distinct_objects_max,ta.service_principal_id,ta.manifest_checksum from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.budget_reservation br using(attempt_id) where ta.state='ADMITTED' and ta.dispatch_state='NOT_DISPATCHED' and ta.admitted_at<$1 order by ta.admitted_at,ta.attempt_id limit $2`, admittedBefore, limit)
 	if err != nil {
 		return nil, err
 	}
 	type expiredAdmission struct {
-		id, window, group uuid.UUID
-		calls, bytes      int64
-		service, manifest string
+		id, window, group     uuid.UUID
+		calls, bytes, objects int64
+		service, manifest     string
 	}
 	var expiredAdmissions []expiredAdmission
 	for admittedRows.Next() {
 		var a expiredAdmission
-		if err = admittedRows.Scan(&a.id, &a.window, &a.group, &a.calls, &a.bytes, &a.service, &a.manifest); err != nil {
+		if err = admittedRows.Scan(&a.id, &a.window, &a.group, &a.calls, &a.bytes, &a.objects, &a.service, &a.manifest); err != nil {
 			admittedRows.Close()
 			return nil, err
 		}
@@ -339,7 +343,7 @@ func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.
 		if attemptState != "ADMITTED" {
 			continue
 		}
-		if _, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3 where budget_window_id=$1`, a.window, a.calls, a.bytes); err != nil {
+		if _, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls-$2,reserved_result_bytes=reserved_result_bytes-$3,reserved_distinct_objects=reserved_distinct_objects-$4 where budget_window_id=$1`, a.window, a.calls, a.bytes, a.objects); err != nil {
 			return nil, err
 		}
 		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state='FAILED',dispatch_state='NOT_DISPATCHED',outcome_code='DISPATCH_NOT_STARTED',completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1 and state='ADMITTED' and dispatch_state='NOT_DISPATCHED'`, a.id); err != nil {
@@ -355,15 +359,18 @@ func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.
 			return nil, err
 		}
 	}
-	rows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) where ta.state='RUNNING' and ta.dispatch_state='DISPATCHED' and ta.lease_until<$1 order by ta.lease_until,ta.attempt_id limit $2`, now, limit)
+	rows, err := tx.Query(ctx, `select ta.attempt_id,ac.budget_window_id,ac.equivalence_group_id,br.reserved_distinct_objects_max from ouf_mcp.tool_attempt ta join ouf_mcp.attempt_admission_context ac using(attempt_id) join ouf_mcp.budget_reservation br using(attempt_id) where ta.state='RUNNING' and ta.dispatch_state='DISPATCHED' and ta.lease_until<$1 order by ta.lease_until,ta.attempt_id limit $2`, now, limit)
 	if err != nil {
 		return nil, err
 	}
-	type staleDispatch struct{ id, window, group uuid.UUID }
+	type staleDispatch struct {
+		id, window, group uuid.UUID
+		objects           int64
+	}
 	var staleDispatches []staleDispatch
 	for rows.Next() {
 		var stale staleDispatch
-		if err = rows.Scan(&stale.id, &stale.window, &stale.group); err != nil {
+		if err = rows.Scan(&stale.id, &stale.window, &stale.group, &stale.objects); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -394,7 +401,15 @@ func (s *Store) MarkStaleAndClaim(ctx context.Context, now, admittedBefore time.
 		if err = execOne(ctx, tx, `update ouf_mcp.retry_guard set blocking_attempts=blocking_attempts+1,updated_at=transaction_timestamp() where equivalence_group_id=$1`, stale.group); err != nil {
 			return nil, err
 		}
-		if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state='UNKNOWN' where attempt_id=$1 and state='RESERVED'`, stale.id); err != nil {
+		if _, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_distinct_objects=reserved_distinct_objects-$2,current_unresolved_object_debt_total=current_unresolved_object_debt_total+$2 where budget_window_id=$1`, stale.window, stale.objects); err != nil {
+			return nil, err
+		}
+		if stale.objects > 0 {
+			if _, err = tx.Exec(ctx, `insert into ouf_mcp.budget_object_debt(attempt_id,budget_window_id,debt_amount,debt_state) values($1,$2,$3,'ACTIVE')`, stale.id, stale.window, stale.objects); err != nil {
+				return nil, err
+			}
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state='UNKNOWN',actual_unresolved_object_debt_max=$2 where attempt_id=$1 and state='RESERVED'`, stale.id, stale.objects); err != nil {
 			return nil, err
 		}
 		if err = execOne(ctx, tx, `update ouf_mcp.idempotency_claim set state='UNKNOWN',lock_version=lock_version+1 where attempt_id=$1 and state='BOUND'`, stale.id); err != nil {
@@ -466,9 +481,9 @@ func (s *Store) ApplyOwnerEvidence(ctx context.Context, id uuid.UUID, worker str
 		}
 		return tx.Commit(ctx)
 	}
-	var reservedCalls, reservedBytes int64
+	var reservedCalls, reservedBytes, reservedObjects int64
 	var reservationState string
-	if err = tx.QueryRow(ctx, `select reserved_tool_calls,reserved_result_bytes,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&reservedCalls, &reservedBytes, &reservationState); err != nil {
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,reserved_result_bytes,reserved_distinct_objects_max,state from ouf_mcp.budget_reservation where attempt_id=$1 for update`, id).Scan(&reservedCalls, &reservedBytes, &reservedObjects, &reservationState); err != nil {
 		return err
 	}
 	if reservationState != "UNKNOWN" {
@@ -476,6 +491,9 @@ func (s *Store) ApplyOwnerEvidence(ctx context.Context, id uuid.UUID, worker str
 	}
 	if evidence.ActualToolCalls < 0 || evidence.ActualResultBytes < 0 || evidence.ActualToolCalls > reservedCalls || evidence.ActualResultBytes > reservedBytes {
 		return errors.New("owner actual cost exceeds reservation")
+	}
+	if reservedObjects > 0 {
+		return errors.New("object-bearing uncertainty requires verified inbox evidence")
 	}
 	finalState, dispatchState, reservationFinal := "FAILED", "ACKNOWLEDGED", "RECONCILED"
 	consumeCalls, consumeBytes := evidence.ActualToolCalls, evidence.ActualResultBytes
@@ -497,7 +515,7 @@ func (s *Store) ApplyOwnerEvidence(ctx context.Context, id uuid.UUID, worker str
 	if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set state=$3,dispatch_state=$4,outcome_code=$5,result_ref=nullif($6,''),completed_at=transaction_timestamp(),recovery_owner=null,recovery_lease_until=null,lock_version=lock_version+1 where attempt_id=$1 and recovery_owner=$2 and state='UNKNOWN'`, id, worker, finalState, dispatchState, evidence.OutcomeCode, evidence.ResultRef); err != nil {
 		return err
 	}
-	if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state=$2,actual_tool_calls=$3,actual_result_bytes=$4,reconciled_at=transaction_timestamp() where attempt_id=$1 and state='UNKNOWN'`, id, reservationFinal, consumeCalls, consumeBytes); err != nil {
+	if err = execOne(ctx, tx, `update ouf_mcp.budget_reservation set state=$2,actual_tool_calls=$3,actual_result_bytes=$4,actual_distinct_objects=0,reconciled_at=transaction_timestamp() where attempt_id=$1 and state='UNKNOWN'`, id, reservationFinal, consumeCalls, consumeBytes); err != nil {
 		return err
 	}
 	if err = execOne(ctx, tx, `update ouf_mcp.idempotency_claim set state='COMPLETED',lock_version=lock_version+1 where attempt_id=$1 and state='UNKNOWN'`, id); err != nil {
