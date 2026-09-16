@@ -200,6 +200,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
+	mux.Handle("/api/internal/v1/mcp/operations/status", operational.NewOwnerAPI(store))
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
