@@ -31,9 +31,9 @@ type authorizationSDKSchema struct {
 
 type mcpManifest struct {
 	Capabilities []struct {
-		CapabilityID                  string `json:"capabilityId"`
+		CapabilityID                    string `json:"capabilityId"`
 		RequiredAuthorizationCapability string `json:"requiredAuthorizationCapability"`
-		OperationClass                string `json:"operationClass"`
+		OperationClass                  string `json:"operationClass"`
 	} `json:"capabilities"`
 }
 
@@ -97,23 +97,23 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 	}
 	principal := sdk.Properties["principal"]
 	for _, field := range []string{"subjectId", "tenantId", "actorType", "authenticationContextRef", "issuer", "audience", "scopes"} {
-		if !contains(principal.Required, field) {
+		if !containsPairwiseString(principal.Required, field) {
 			t.Fatalf("Authorization SDK principal contract missing required field %s", field)
 		}
 	}
 	for _, actor := range []string{"HUMAN", "SERVICE", "AI_AGENT"} {
-		if !contains(principal.Properties["actorType"].Enum, actor) {
+		if !containsPairwiseString(principal.Properties["actorType"].Enum, actor) {
 			t.Fatalf("Authorization SDK actor vocabulary missing %s", actor)
 		}
 	}
 	resource := sdk.Properties["resource"]
 	for _, field := range []string{"resourceType", "tenantId", "attributes"} {
-		if !contains(resource.Required, field) {
+		if !containsPairwiseString(resource.Required, field) {
 			t.Fatalf("Authorization SDK resource contract missing required field %s", field)
 		}
 	}
 	for _, field := range []string{"allowed", "decisionCode", "decisionRef", "bundleId", "bundleVersion"} {
-		if !contains(sdk.Decision.Required, field) {
+		if !containsPairwiseString(sdk.Decision.Required, field) {
 			t.Fatalf("Authorization decision contract missing %s", field)
 		}
 	}
@@ -183,7 +183,7 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 	}
 }
 
-func contains(values []string, value string) bool {
+func containsPairwiseString(values []string, value string) bool {
 	for _, candidate := range values {
 		if candidate == value {
 			return true
