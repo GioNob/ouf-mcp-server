@@ -41,7 +41,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-deployment-security-evidence-${{ github.run_id }}
+          name: mcp-1g-retention-evidence-${{ github.run_id }}
           path: |
             docs/MCP_1A_TRACEABILITY.md
             docs/MCP_1B_TRACEABILITY.md
@@ -49,11 +49,13 @@ jobs:
             docs/MCP_1D_TRACEABILITY.md
             docs/MCP_1E_TRACEABILITY.md
             docs/MCP_1F_TRACEABILITY.md
+            docs/MCP_1G_TRACEABILITY.md
             docs/MCP_GATEWAY_DEPLOYMENT_SECURITY_PAIRWISE.md
             internal/deployment/security_contract.json
             internal/deployment/security_pairwise_test.go
             internal/manifest/capabilities.json
             internal/adapter/postgres/migrations/*.sql
+            internal/adapter/postgres/audit_retention_integration_test.go
             internal/adapter/postgres/maintenance.go
             internal/adapter/postgres/maintenance_test.go
             internal/adapter/postgres/maintenance_integration_test.go
