@@ -31,6 +31,12 @@ func TestDurableLifecycle(t *testing.T) {
 	if err = Migrate(ctx, store.Pool()); err != nil {
 		t.Fatal(err)
 	}
+	runID := uuid.NewString()
+	backendGateway := "gateway-request-" + runID
+	backendSuccess := "backend-success-" + runID
+	backendUnknown := "backend-unknown-" + runID
+	backendDebt := "backend-debt-" + runID
+	backendViolation := "backend-violation-" + runID
 	if err = Migrate(ctx, store.Pool()); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +63,7 @@ func TestDurableLifecycle(t *testing.T) {
 	if _, err = store.Admit(ctx, conflict); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected conflict: %v", err)
 	}
-	running, err := store.MarkRunning(ctx, first.ID, "gateway-request", -time.Second, first.LockVersion)
+	running, err := store.MarkRunning(ctx, first.ID, backendGateway, -time.Second, first.LockVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,10 +96,10 @@ func TestDurableLifecycle(t *testing.T) {
 	if err != nil || governedReplay.AttemptID != reserved.AttemptID || !governedReplay.Replay {
 		t.Fatalf("governed replay %+v %v", governedReplay, err)
 	}
-	if err := store.Dispatch(ctx, reserved.AttemptID, "backend-1", time.Second, reserved.LockVersion); err != nil {
+	if err := store.Dispatch(ctx, reserved.AttemptID, backendSuccess, time.Second, reserved.LockVersion); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Reconcile(ctx, reserved.AttemptID, orchestration.Cost{ToolCalls: 1, ResultBytes: 12}, orchestration.AttemptOutcome{Success: true, Code: "SUCCEEDED", BackendRequestID: "backend-1"}); err != nil {
+	if err := store.Reconcile(ctx, reserved.AttemptID, orchestration.Cost{ToolCalls: 1, ResultBytes: 12}, orchestration.AttemptOutcome{Success: true, Code: "SUCCEEDED", BackendRequestID: backendSuccess}); err != nil {
 		t.Fatal(err)
 	}
 	for n := 2; n <= 3; n++ {
@@ -117,11 +123,11 @@ func TestDurableLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Dispatch(ctx, unknownAttempt.AttemptID, "backend-unknown", -time.Second, unknownAttempt.LockVersion); err != nil {
+	if err = store.Dispatch(ctx, unknownAttempt.AttemptID, backendUnknown, -time.Second, unknownAttempt.LockVersion); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-one", time.Minute, 10)
-	if err != nil || len(claimed) != 1 || claimed[0].BackendRequestID != "backend-unknown" {
+	if err != nil || len(claimed) != 1 || claimed[0].BackendRequestID != backendUnknown {
 		t.Fatalf("claim=%+v err=%v", claimed, err)
 	}
 	if _, err = store.Reserve(ctx, uncertain); !errors.Is(err, ErrIdempotencyOutcomeUnknown) {
@@ -137,7 +143,7 @@ func TestDurableLifecycle(t *testing.T) {
 	if err != nil || len(secondClaim) != 0 {
 		t.Fatalf("duplicate claim=%+v err=%v", secondClaim, err)
 	}
-	if err = store.ApplyOwnerEvidence(ctx, unknownAttempt.AttemptID, "worker-one", recovery.OwnerEvidence{BackendRequestID: "backend-unknown", Outcome: "NOT_DISPATCHED", OutcomeCode: "OWNER_PROVES_NO_DISPATCH"}); err != nil {
+	if err = store.ApplyOwnerEvidence(ctx, unknownAttempt.AttemptID, "worker-one", recovery.OwnerEvidence{BackendRequestID: backendUnknown, Outcome: "NOT_DISPATCHED", OutcomeCode: "OWNER_PROVES_NO_DISPATCH"}); err != nil {
 		t.Fatal(err)
 	}
 	var recoveredState, recoveredDispatch, reservationState, claimState string
@@ -180,14 +186,14 @@ func TestDurableLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Dispatch(ctx, debtAttempt.AttemptID, "backend-debt", -time.Second, debtAttempt.LockVersion); err != nil {
+	if err = store.Dispatch(ctx, debtAttempt.AttemptID, backendDebt, -time.Second, debtAttempt.LockVersion); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err = store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-debt", time.Minute, 10)
 	if err != nil || len(claimed) != 1 || claimed[0].AttemptID != debtAttempt.AttemptID {
 		t.Fatalf("debt recovery claim=%+v err=%v", claimed, err)
 	}
-	if err = store.ApplyOwnerEvidence(ctx, debtAttempt.AttemptID, "worker-debt", recovery.OwnerEvidence{BackendRequestID: "backend-debt", Outcome: "UNKNOWN", OutcomeCode: "OWNER_UNAVAILABLE"}); err != nil {
+	if err = store.ApplyOwnerEvidence(ctx, debtAttempt.AttemptID, "worker-debt", recovery.OwnerEvidence{BackendRequestID: backendDebt, Outcome: "UNKNOWN", OutcomeCode: "OWNER_UNAVAILABLE"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.Pool().Exec(ctx, `update ouf_mcp.tool_attempt set unknown_since=transaction_timestamp()-interval '2 days' where attempt_id=$1`, debtAttempt.AttemptID); err != nil {
@@ -207,7 +213,7 @@ func TestDurableLifecycle(t *testing.T) {
 	ingress := evidence.Service{Store: store}
 	identity := evidence.TrustedIdentity{Authenticated: true, ServicePrincipalID: "udp-owner-workload", BackendOwner: "udp"}
 	hashes := []string{"v1:hmac-sha256:" + strings.Repeat("a", 64), "v1:hmac-sha256:" + strings.Repeat("b", 64)}
-	evidenceInput := evidence.Input{ClaimedOwner: "udp", BackendRequestID: "backend-debt", Kind: "OWNER_RESULT", TerminalState: "SUCCEEDED", OutcomeCode: "SUCCEEDED", ResultRef: "result://udp/debt", ActualDistinctObjects: 2, ObjectHashes: hashes}
+	evidenceInput := evidence.Input{ClaimedOwner: "udp", BackendRequestID: backendDebt, Kind: "OWNER_RESULT", TerminalState: "SUCCEEDED", OutcomeCode: "SUCCEEDED", ResultRef: "result://udp/debt", ActualDistinctObjects: 2, ObjectHashes: hashes}
 	ingested, err := ingress.Ingest(ctx, identity, evidenceInput)
 	if err != nil {
 		t.Fatal(err)
@@ -269,14 +275,14 @@ func TestDurableLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Dispatch(ctx, violationAttempt.AttemptID, "backend-violation", -time.Second, violationAttempt.LockVersion); err != nil {
+	if err = store.Dispatch(ctx, violationAttempt.AttemptID, backendViolation, -time.Second, violationAttempt.LockVersion); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err = store.MarkStaleAndClaim(ctx, time.Now(), time.Now().Add(-time.Minute), "worker-violation", time.Minute, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("violation claim=%+v err=%v", claimed, err)
 	}
-	if err = store.ApplyOwnerEvidence(ctx, violationAttempt.AttemptID, "worker-violation", recovery.OwnerEvidence{BackendRequestID: "backend-violation", Outcome: "UNKNOWN"}); err != nil {
+	if err = store.ApplyOwnerEvidence(ctx, violationAttempt.AttemptID, "worker-violation", recovery.OwnerEvidence{BackendRequestID: backendViolation, Outcome: "UNKNOWN"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.Pool().Exec(ctx, `update ouf_mcp.tool_attempt set unknown_since=transaction_timestamp()-interval '2 days' where attempt_id=$1`, violationAttempt.AttemptID); err != nil {
@@ -285,7 +291,7 @@ func TestDurableLifecycle(t *testing.T) {
 	if count, expireErr := store.ExpireUnknown(ctx, time.Now(), time.Now().Add(-24*time.Hour), 10); expireErr != nil || count != 1 {
 		t.Fatalf("violation expiry count=%d err=%v", count, expireErr)
 	}
-	badInput := evidence.Input{ClaimedOwner: "udp", BackendRequestID: "backend-violation", Kind: "OWNER_RESULT", TerminalState: "SUCCEEDED", OutcomeCode: "SUCCEEDED", ResultRef: "result://udp/invalid", ActualDistinctObjects: 1, ObjectHashes: []string{"v9:hmac-sha256:" + strings.Repeat("c", 64)}}
+	badInput := evidence.Input{ClaimedOwner: "udp", BackendRequestID: backendViolation, Kind: "OWNER_RESULT", TerminalState: "SUCCEEDED", OutcomeCode: "SUCCEEDED", ResultRef: "result://udp/invalid", ActualDistinctObjects: 1, ObjectHashes: []string{"v9:hmac-sha256:" + strings.Repeat("c", 64)}}
 	badEvidence, err := ingress.Ingest(ctx, identity, badInput)
 	if err != nil {
 		t.Fatal(err)
