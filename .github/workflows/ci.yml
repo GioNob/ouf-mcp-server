@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 07203c79b3cfa8325af78ad8ef3b3b019d7df360
+          ref: 7c6b3cee9994220e435b24c07aabc8d8d7180039
           path: .pairwise/gateway
       - uses: actions/setup-go@v6
         with:
@@ -55,6 +55,7 @@ jobs:
             docs/MCP_1G_RETENTION_AGE_FIX_TRACEABILITY.md
             docs/MCP_1H_TRACEABILITY.md
             docs/MCP_OPERATIONAL_AWARENESS_TRACEABILITY.md
+            docs/MCP_OPERATIONAL_AWARENESS_SELF_STATUS_TRACEABILITY.md
             docs/MCP_GATEWAY_DEPLOYMENT_SECURITY_PAIRWISE.md
             deploy/mcp-ha.yaml
             deploy/networkpolicy.yaml
@@ -64,7 +65,11 @@ jobs:
             internal/deployment/mcp_1h_contract_test.go
             internal/manifest/capabilities.json
             internal/kernel/kernel.go
+            internal/kernel/kernel_test.go
+            internal/operational/*.go
             internal/adapter/postgres/migrations/*.sql
+            internal/adapter/postgres/operational_awareness.go
+            internal/adapter/postgres/operational_awareness_integration_test.go
             internal/adapter/postgres/audit_retention_integration_test.go
             internal/adapter/postgres/retention_chain_integration_test.go
             internal/adapter/postgres/maintenance.go
