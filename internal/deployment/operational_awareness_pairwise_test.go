@@ -27,11 +27,9 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := map[string]struct{ scope, route, backend string }{
-		"ouf.ingestion.status":     {"ingestion.operations.read", "mcp-ingestion-status.yaml", "/api/internal/v1/ingestion/operations/status"},
-		"ouf.ingestion.history":    {"ingestion.operations.read", "mcp-ingestion-history.yaml", "/api/internal/v1/ingestion/operations/history"},
-		"ouf.operations.incidents": {"operations.incident.read", "mcp-operations-incidents.yaml", "/api/internal/v1/ingestion/operations/incidents"},
-		"ouf.operations.explain":   {"operations.incident.explain", "mcp-operations-explain.yaml", "/api/internal/v1/ingestion/operations/incidents/explain"},
-		"ouf.operations.summary":   {"operations.status.read", "mcp-operations-summary.yaml", "/api/internal/v1/ingestion/operations/summary"},
+		"ouf.ingestion.status":   {"ingestion.operations.read", "mcp-ingestion-status.yaml", "/api/internal/v1/ingestion/operations/status"},
+		"ouf.ingestion.history":  {"ingestion.operations.read", "mcp-ingestion-history.yaml", "/api/internal/v1/ingestion/operations/history"},
+		"ouf.operations.explain": {"operations.incident.explain", "mcp-operations-explain.yaml", "/api/internal/v1/ingestion/operations/incidents/explain"},
 	}
 	seen := map[string]bool{}
 	for _, c := range manifest.Capabilities {
@@ -53,6 +51,6 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 		seen[c.CapabilityID] = true
 	}
 	if len(seen) != len(expected) {
-		t.Fatalf("remote operational capability coverage=%d want=%d", len(seen), len(expected))
+		t.Fatalf("direct operational capability coverage=%d want=%d", len(seen), len(expected))
 	}
 }
