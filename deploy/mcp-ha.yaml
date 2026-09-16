@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mcp-server, namespace: ouf-mcp}
+spec:
+  replicas: 2
+  selector: {matchLabels: {ouf.component: mcp-server}}
+  template:
+    metadata: {labels: {ouf.component: mcp-server}}
+    spec:
+      serviceAccountName: ouf-mcp-server
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector: {matchLabels: {ouf.component: mcp-server}}
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: mcp
+          image: ghcr.io/gionob/ouf-mcp-server:latest
+          env:
+            - {name: MCP_DATABASE_URL, valueFrom: {secretKeyRef: {name: mcp-db, key: url}}}
+            - {name: MCP_GATEWAY_ENDPOINT, valueFrom: {configMapKeyRef: {name: mcp-runtime, key: gatewayEndpoint}}}
+          resources:
+            requests: {cpu: "250m", memory: "256Mi"}
+            limits: {cpu: "2", memory: "1Gi"}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: mcp-server, namespace: ouf-mcp}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {ouf.component: mcp-server}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mcp-maintenance-worker, namespace: ouf-mcp}
+spec:
+  replicas: 1
+  selector: {matchLabels: {ouf.component: mcp-maintenance-worker}}
+  template:
+    metadata: {labels: {ouf.component: mcp-maintenance-worker}}
+    spec:
+      serviceAccountName: ouf-mcp-maintenance
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: worker
+          image: ghcr.io/gionob/ouf-mcp-server:latest
+          args: ["maintenance-worker"]
+          env:
+            - {name: MCP_DATABASE_URL, valueFrom: {secretKeyRef: {name: mcp-maintenance-db, key: url}}}
