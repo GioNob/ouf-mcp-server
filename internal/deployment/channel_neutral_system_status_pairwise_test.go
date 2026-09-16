@@ -76,7 +76,12 @@ func TestChannelNeutralSystemStatusPairwise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mainRaw), `mux.Handle("/api/internal/v1/mcp/operations/status", operational.NewOwnerAPI(store))`) {
-		t.Fatal("MCP private owner API is not mounted")
+	mainText := string(mainRaw)
+	if !strings.Contains(mainText, `ownerAPI := operational.NewOwnerAPI(store, aggregator)`) ||
+		!strings.Contains(mainText, `mux.Handle("/api/internal/v1/mcp/operations/status", ownerAPI)`) {
+		t.Fatal("MCP private owner API is not mounted through the shared governed owner handler")
+	}
+	if strings.Contains(mainText, `mux.Handle("/mcp", ownerAPI)`) {
+		t.Fatal("private owner handler was mounted on MCP protocol path")
 	}
 }

@@ -193,6 +193,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)
@@ -200,7 +201,10 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
-	mux.Handle("/api/internal/v1/mcp/operations/status", operational.NewOwnerAPI(store))
+	ownerAPI := operational.NewOwnerAPI(store, aggregator)
+	mux.Handle("/api/internal/v1/mcp/operations/status", ownerAPI)
+	mux.Handle("/api/internal/v1/mcp/operations/summary", ownerAPI)
+	mux.Handle("/api/internal/v1/mcp/operations/incidents", ownerAPI)
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
