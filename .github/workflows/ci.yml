@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 7c6b3cee9994220e435b24c07aabc8d8d7180039
+          ref: 2cb86ffba7ee2edc3fcec73efad05905c851da9c
           path: .pairwise/gateway
       - uses: actions/checkout@v4
         with:
@@ -40,6 +40,7 @@ jobs:
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayDeploymentSecurityPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayOperationalAwarenessPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" INGESTION_PAIRWISE_ROOT="$PWD/.pairwise/ingestion" go test ./internal/deployment -run TestOperationalExplainOwnerPairwise -v
+      - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestChannelNeutralSystemStatusPairwise -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
@@ -62,6 +63,7 @@ jobs:
             docs/MCP_1H_TRACEABILITY.md
             docs/MCP_OPERATIONAL_AWARENESS_TRACEABILITY.md
             docs/MCP_OPERATIONAL_AWARENESS_SELF_STATUS_TRACEABILITY.md
+            docs/MCP_CHANNEL_NEUTRAL_OA_TRACEABILITY.md
             docs/MCP_GATEWAY_DEPLOYMENT_SECURITY_PAIRWISE.md
             deploy/mcp-ha.yaml
             deploy/networkpolicy.yaml
@@ -69,6 +71,7 @@ jobs:
             internal/deployment/security_pairwise_test.go
             internal/deployment/operational_awareness_pairwise_test.go
             internal/deployment/operational_awareness_owner_pairwise_test.go
+            internal/deployment/channel_neutral_system_status_pairwise_test.go
             internal/deployment/mcp_1h_contract_test.go
             internal/manifest/capabilities.json
             internal/kernel/kernel.go
