@@ -28,7 +28,7 @@ func concurrencyFixture(t *testing.T) (*Store, context.Context, string) {
 
 func concurrencyRequest(checksum, tenant, fingerprint string) orchestration.AdmissionRequest {
 	return orchestration.AdmissionRequest{
-		Identity: orchestration.Identity{ServicePrincipalID: "mcp-concurrency", PrincipalID: "agent", TenantID: tenant, ActorType: "AI_AGENT", AuthenticationContextRef: "authn-concurrency"},
+		Identity:     orchestration.Identity{ServicePrincipalID: "mcp-concurrency", PrincipalID: "agent", TenantID: tenant, ActorType: "AI_AGENT", AuthenticationContextRef: "authn-concurrency"},
 		CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", ManifestChecksum: checksum,
 		AuthorizationDecisionRef: "authz-concurrency", IdempotencyKey: uuid.NewString(), RequestHash: hash64(uuid.NewString()),
 		SemanticFingerprint: fingerprint, FingerprintVersion: "v1", CorrelationID: uuid.NewString(), Window: time.Minute,
@@ -278,7 +278,6 @@ func TestConcurrencyGateAuthoritativeDebtBeatsStaleCacheDuringAdmission(t *testi
 		t.Fatal(repairErr)
 	}
 	if admissionErr != nil && serializableContention(admissionErr) {
-		// Retry after serialization is required to evaluate the admission invariant.
 		_, admissionErr = s.Reserve(ctx, candidate)
 	}
 	if !errors.Is(admissionErr, ErrBudgetExhausted) {
