@@ -13,7 +13,10 @@ drop trigger if exists audit_event_append_only on ouf_mcp.audit_event;
 create trigger audit_event_append_only before update or delete on ouf_mcp.audit_event
 for each row execute function ouf_mcp.reject_audit_mutation();
 
-grant delete on ouf_mcp.audit_event to ouf_mcp_retention_owner;
+-- The NOLOGIN retention owner needs SELECT/UPDATE for SELECT ... FOR UPDATE and
+-- DELETE for the bounded purge. The audit trigger still rejects UPDATE and any
+-- DELETE not executed as this SECURITY DEFINER owner.
+grant select,update,delete on ouf_mcp.audit_event to ouf_mcp_retention_owner;
 
 create or replace function ouf_mcp.purge_audit_events(p_before timestamptz,p_limit integer)
 returns integer language plpgsql security definer set search_path=pg_catalog,ouf_mcp as $$
