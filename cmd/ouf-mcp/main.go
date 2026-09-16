@@ -191,7 +191,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
 		os.Exit(1)
 	}
-	routedGateway := operational.RoutingGateway{Remote: gatewayClient, Self: store}
+	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
