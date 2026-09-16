@@ -26,13 +26,25 @@ type Identity struct {
 	Scopes                                                                         []string `json:"-"`
 }
 
+type ResourceContext struct {
+	ResourceType   string            `json:"-"`
+	ResourceID     string            `json:"-"`
+	TenantID       string            `json:"-"`
+	OrganizationID string            `json:"-"`
+	Attributes     map[string]string `json:"-"`
+}
+
 type AuthorizationRequest struct {
 	Identity                            Identity
+	Resource                            ResourceContext
 	CapabilityID, Owner, OperationClass string
 }
 type AuthorizationDecision struct {
-	Allowed     bool
-	DecisionRef string
+	Allowed       bool
+	DecisionRef   string
+	DecisionCode  string
+	BundleID      string
+	BundleVersion int64
 }
 type AuthorizationPort interface {
 	Authorize(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
@@ -97,6 +109,7 @@ type AuditPort interface {
 
 type Invocation struct {
 	Identity                                                                 Identity
+	Resource                                                                 ResourceContext
 	CapabilityID, Owner, OperationClass, GatewayBindingRef, ManifestChecksum string
 	Arguments                                                                json.RawMessage
 	IdempotencyKey, CorrelationID                                            string
@@ -123,7 +136,14 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.Identity.ServicePrincipalID == "" || in.Identity.PrincipalID == "" || in.Identity.TenantID == "" || in.CapabilityID == "" || in.Owner == "" || in.GatewayBindingRef == "" {
 		return Result{}, fmt.Errorf("invalid governed invocation")
 	}
-	decision, err := s.Auth.Authorize(ctx, AuthorizationRequest{Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner, OperationClass: in.OperationClass})
+	resource := in.Resource
+	if resource.TenantID == "" {
+		resource.TenantID = in.Identity.TenantID
+	}
+	if resource.ResourceType == "" {
+		resource.ResourceType = "capability"
+	}
+	decision, err := s.Auth.Authorize(ctx, AuthorizationRequest{Identity: in.Identity, Resource: resource, CapabilityID: in.CapabilityID, Owner: in.Owner, OperationClass: in.OperationClass})
 	if err != nil {
 		return Result{}, err
 	}

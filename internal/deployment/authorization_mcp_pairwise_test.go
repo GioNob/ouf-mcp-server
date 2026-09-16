@@ -3,12 +3,13 @@ package deployment
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
@@ -37,26 +38,12 @@ type mcpManifest struct {
 	} `json:"capabilities"`
 }
 
-type cachedAuthorizationFixture struct {
-	requiredScope string
-	decisionRef   string
+type pairwiseBundleSource struct {
+	bundle authorization.ActivePolicyBundle
 }
 
-func (f cachedAuthorizationFixture) Authorize(_ context.Context, in orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
-	if in.Identity.Issuer == "" || in.Identity.Audience == "" || in.Identity.AuthenticationContextRef == "" {
-		return orchestration.AuthorizationDecision{}, errors.New("trusted principal context incomplete")
-	}
-	found := false
-	for _, scope := range in.Identity.Scopes {
-		if scope == f.requiredScope {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return orchestration.AuthorizationDecision{Allowed: false, DecisionRef: f.decisionRef}, nil
-	}
-	return orchestration.AuthorizationDecision{Allowed: true, DecisionRef: f.decisionRef}, nil
+func (s pairwiseBundleSource) FetchActive(context.Context) (authorization.ActivePolicyBundle, error) {
+	return s.bundle, nil
 }
 
 type pairwiseAdmission struct {
@@ -123,6 +110,17 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 		t.Fatal("Authorization SDK must remain scenario-neutral before IAM A/B/C selection")
 	}
 
+	distributionRaw, err := os.ReadFile(filepath.Join(root, "src", "main", "java", "it", "comune", "trieste", "ouf", "onboarding", "api", "AuthorizationBundleApi.java"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	distribution := string(distributionRaw)
+	for _, required := range []string{"/api/internal/v1/authorization/policy-bundle", "/active", "authorization.bundle.read", "SERVICE"} {
+		if !strings.Contains(distribution, required) {
+			t.Fatalf("Authorization bundle distribution contract missing %q", required)
+		}
+	}
+
 	manifestRaw, err := os.ReadFile(filepath.Join("..", "manifest", "capabilities.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +141,36 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 		t.Fatal("MCP manifest does not expose Authorization vocabulary for ouf.system.status")
 	}
 
+	now := time.Now().UTC()
+	bundle := authorization.ActivePolicyBundle{
+		BundleID:      "policy-bundle-pairwise",
+		BundleVersion: 7,
+		ActivatedAt:   now.Add(-time.Minute),
+		Bundle: authorization.PolicyBundle{
+			BundleID:    "policy-bundle-pairwise",
+			Version:     7,
+			PublishedAt: now.Add(-2 * time.Minute),
+			Capabilities: []authorization.CapabilityDescriptor{{
+				CapabilityID:  "ouf.system.status",
+				Operation:     operationClass,
+				RequiredScope: requiredScope,
+				AllowedActors: []string{"HUMAN"},
+			}},
+			Grants: []authorization.Grant{{
+				GrantID:      "pairwise-status-grant",
+				CapabilityID: "ouf.system.status",
+				TenantID:     "tenant:pairwise",
+				SubjectID:    "user:pairwise",
+				ValidFrom:    now.Add(-time.Hour),
+				ValidUntil:   now.Add(time.Hour),
+			}},
+		},
+	}
+	cache := authorization.NewCache(pairwiseBundleSource{bundle: bundle})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
 	identity := orchestration.Identity{
 		ServicePrincipalID:       "service:mcp",
 		PrincipalID:              "user:pairwise",
@@ -157,7 +185,7 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 	admission := &pairwiseAdmission{}
 	gateway := &pairwiseGateway{}
 	service := orchestration.Service{
-		Auth:           cachedAuthorizationFixture{requiredScope: requiredScope, decisionRef: decisionRef},
+		Auth:           cache,
 		Admission:      admission,
 		Gateway:        gateway,
 		FingerprintKey: []byte("01234567890123456789012345678901"),

@@ -15,6 +15,7 @@ import (
 
 	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
+	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/observability"
@@ -85,6 +86,18 @@ func positiveIntEnv(name string, fallback int) (int, error) {
 		return 0, errors.New(name + " must be between 1 and 10000")
 	}
 	return n, nil
+}
+
+func positiveDurationEnv(name string, fallback time.Duration) (time.Duration, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, errors.New(name + " must be a positive duration")
+	}
+	return value, nil
 }
 
 func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string, interval time.Duration, once bool) {
@@ -174,27 +187,58 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("manifest persistence failed", "error", err)
 		os.Exit(1)
 	}
-	authClient, err := httpadapter.NewAuthorization(os.Getenv("MCP_AUTHORIZATION_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
-	if err != nil {
-		logger.Error("authorization client initialization failed", "error", err)
+	workloadToken := os.Getenv("MCP_WORKLOAD_TOKEN")
+	if workloadToken == "" {
+		logger.Error("MCP_WORKLOAD_TOKEN is required")
 		os.Exit(1)
 	}
-	gatewayClient, err := httpadapter.NewGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
+	bundleClient, err := httpadapter.NewPolicyBundle(os.Getenv("MCP_AUTHORIZATION_BUNDLE_ENDPOINT"), workloadToken)
+	if err != nil {
+		logger.Error("authorization policy bundle client initialization failed", "error", err)
+		os.Exit(1)
+	}
+	authCache := authorization.NewCache(bundleClient)
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(ctx, 5*time.Second)
+	err = authCache.Refresh(bootstrapCtx)
+	bootstrapCancel()
+	if err != nil {
+		logger.Error("authorization policy bundle bootstrap failed", "error", err)
+		os.Exit(1)
+	}
+	refreshInterval, err := positiveDurationEnv("MCP_AUTHORIZATION_BUNDLE_REFRESH", 30*time.Second)
+	if err != nil {
+		logger.Error("invalid authorization bundle refresh configuration", "error", err)
+		os.Exit(2)
+	}
+	go func() {
+		ticker := time.NewTicker(refreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				refreshErr := authCache.Refresh(refreshCtx)
+				cancel()
+				if refreshErr != nil {
+					logger.Error("authorization policy bundle refresh failed; retaining last known good bundle", "error", refreshErr)
+				}
+			}
+		}
+	}()
+	gatewayClient, err := httpadapter.NewGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"), workloadToken)
 	if err != nil {
 		logger.Error("Gateway client initialization failed", "error", err)
 		os.Exit(1)
 	}
 	fingerprintKey := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
-	if os.Getenv("MCP_WORKLOAD_TOKEN") == "" {
-		logger.Error("MCP_WORKLOAD_TOKEN is required")
-		os.Exit(1)
-	}
 	if len(fingerprintKey) < 32 {
 		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
-	service := &orchestration.Service{Auth: authClient, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	service := &orchestration.Service{Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
