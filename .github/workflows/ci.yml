@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-source-onboarding
-          ref: c5fa7504c062760be383d4882fd8836e6468ad45
+          ref: d8a7a7334ffa236802b1a288f52dcd461dd5967b
           path: .pairwise/authorization
       - uses: actions/setup-go@v6
         with: {go-version: '1.25.13', cache: true}
@@ -46,6 +46,7 @@ jobs:
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestChannelNeutralSystemStatusPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestOperationalAwarenessAggregationPairwise -v
       - run: AUTHORIZATION_PAIRWISE_ROOT="$PWD/.pairwise/authorization" go test ./internal/deployment -run TestAuthorizationMCPPairwise -v
+      - run: go test ./internal/deployment -run TestAuthorizationLocalRuntimeContract -v
       - run: go test ./internal/deployment -run TestMCP1IObservabilityCapacityAndDRContracts -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
@@ -63,6 +64,7 @@ jobs:
             internal/deployment/
             internal/manifest/capabilities.json
             internal/kernel/
+            internal/authorization/
             internal/observability/
             internal/operational/
             internal/adapter/postgres/migrations/
@@ -72,5 +74,6 @@ jobs:
             internal/adapter/postgres/debt_admission_gate_integration_test.go
             internal/adapter/postgres/performance_profile_integration_test.go
             internal/adapter/httpclient/pairwise_integration_test.go
+            internal/adapter/httpclient/policy_bundle.go
             internal/evidence/gateway_pairwise_test.go
           retention-days: 30
