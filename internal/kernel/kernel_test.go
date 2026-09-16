@@ -59,8 +59,10 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	wantNames := []string{
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
+		"ouf.operations.explain",
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
+		"ouf.system.status",
 		"urban.object.related_search",
 	}
 	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
