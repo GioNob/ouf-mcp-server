@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 2ffb3e9584021ddbfbc35e18a4607e6a19c5a016
+          ref: 18ba4d317fd451954e13ffca4e88c6541e2062fc
           path: .pairwise/gateway
       - uses: actions/setup-go@v6
         with:
@@ -32,6 +32,7 @@ jobs:
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/adapter/httpclient -run TestMCPGatewayUDPPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/evidence -run TestGatewayEvidenceIngressPairwise -v
+      - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayDeploymentSecurityPairwise -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
@@ -40,7 +41,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-maintenance-evidence-${{ github.run_id }}
+          name: mcp-deployment-security-evidence-${{ github.run_id }}
           path: |
             docs/MCP_1A_TRACEABILITY.md
             docs/MCP_1B_TRACEABILITY.md
@@ -48,6 +49,9 @@ jobs:
             docs/MCP_1D_TRACEABILITY.md
             docs/MCP_1E_TRACEABILITY.md
             docs/MCP_1F_TRACEABILITY.md
+            docs/MCP_GATEWAY_DEPLOYMENT_SECURITY_PAIRWISE.md
+            internal/deployment/security_contract.json
+            internal/deployment/security_pairwise_test.go
             internal/manifest/capabilities.json
             internal/adapter/postgres/migrations/*.sql
             internal/adapter/postgres/maintenance.go
