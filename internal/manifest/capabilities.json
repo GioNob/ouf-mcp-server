@@ -1,5 +1,5 @@
 {
-  "version": "1.3.1-operational-awareness",
+  "version": "1.4.0-operational-awareness-aggregation",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -30,7 +30,7 @@
       "preferredAlternatives": ["ouf.operations.summary", "ouf.operations.incidents"],
       "operationalLimits": {"maxIncidents": 20},
       "resultSemantics": "Tenant-scoped MCP status with HEALTHY, RECOVERING or DEGRADED semantics and bounded safe incident references",
-      "securityNotes": ["Authorization, admission, reconciliation and audit remain mandatory", "MCP-owned dispatch is local to avoid a Gateway loop and never exposes raw evidence"],
+      "securityNotes": ["Authorization, admission, reconciliation and audit remain mandatory", "Human-facing access is Gateway-mediated and channel-neutral; the private owner API never exposes the MCP protocol endpoint"],
       "mcpClass": "MCP_TOOL", "owner": "mcp", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.system.status",
       "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":20,"hardMaxResultBytes":262144,"hardMaxElapsedMs":3000},
@@ -74,11 +74,11 @@
       "doNotUseWhen": ["security-sensitive protected evidence is requested without privileged authorization"],
       "preferredAlternatives": ["ouf.operations.summary", "ouf.ingestion.status"],
       "operationalLimits": {"maxLimit": 100},
-      "resultSemantics": "Bounded incident aggregates with lifecycle, severity, safe impact summary and evidence references",
-      "securityNotes": ["NOT_AUTHORIZED must not be mapped to NO_INCIDENTS", "Raw logs and credentials are never returned"],
-      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "resultSemantics": "Bounded cross-producer incident aggregates with lifecycle, severity and safe impact summaries",
+      "securityNotes": ["MCP aggregates only owner-provided governed projections", "Unavailable producer evidence yields partial output and is never mapped to no incidents"],
+      "mcpClass": "MCP_TOOL", "owner": "mcp", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.incident.read", "gatewayBindingRef": "capability://ouf.operations.incidents",
-      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":3000},
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":5000},
       "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"state":{"type":"string","enum":["OPEN","RECOVERING","RESOLVED"]},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
     },
@@ -104,11 +104,11 @@
       "doNotUseWhen": ["the user needs protected raw evidence"],
       "preferredAlternatives": ["ouf.operations.incidents", "ouf.ingestion.history"],
       "operationalLimits": {"maxLimit": 100},
-      "resultSemantics": "Safe catch-up summary that preserves DEGRADED/PARTIAL semantics and resolved outcomes",
-      "securityNotes": ["Missing evidence must never be manufactured as HEALTHY", "Gateway and Authorization enforcement are mandatory"],
-      "mcpClass": "MCP_TOOL", "owner": "ingestion", "operationClass": "READ", "publicationState": "ACTIVE",
+      "resultSemantics": "Safe cross-producer catch-up summary preserving DEGRADED, RECOVERING and partial semantics",
+      "securityNotes": ["Missing producer evidence must never be manufactured as HEALTHY", "Producer calls remain independently Authorization- and Gateway-governed"],
+      "mcpClass": "MCP_TOOL", "owner": "mcp", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.operations.summary",
-      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":3000},
+      "baseCostEnvelope": {"hardMaxToolCalls":1,"hardMaxGraphCalls":0,"hardMaxDistinctObjects":100,"hardMaxResultBytes":524288,"hardMaxElapsedMs":5000},
       "conditionalOutcomeCost": {"mismatchCalls":0,"equivalentRetryCalls":1}, "toolEligible": true,
       "inputSchema": {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"sourceId":{"type":"string","minLength":1,"maxLength":200},"since":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":100}}}
     },
