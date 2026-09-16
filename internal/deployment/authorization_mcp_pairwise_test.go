@@ -67,7 +67,9 @@ func (a *pairwiseAdmission) Reserve(_ context.Context, in orchestration.Admissio
 	a.decisionRef = in.AuthorizationDecisionRef
 	return orchestration.AdmissionDecision{AttemptID: in.AttemptID, LockVersion: 1}, nil
 }
-func (*pairwiseAdmission) Dispatch(context.Context, uuid.UUID, string, time.Duration, int64) error { return nil }
+func (*pairwiseAdmission) Dispatch(context.Context, uuid.UUID, string, time.Duration, int64) error {
+	return nil
+}
 func (*pairwiseAdmission) Reconcile(context.Context, uuid.UUID, orchestration.Cost, orchestration.AttemptOutcome) error {
 	return nil
 }
@@ -161,19 +163,19 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 		FingerprintKey: []byte("01234567890123456789012345678901"),
 	}
 	_, err = service.Call(context.Background(), orchestration.Invocation{
-		Identity:           identity,
-		CapabilityID:       "ouf.system.status",
-		Owner:              "mcp",
-		OperationClass:     operationClass,
-		GatewayBindingRef:  "capability://ouf.system.status",
-		ManifestChecksum:   "sha256:pairwise",
-		Arguments:          json.RawMessage(`{}`),
-		IdempotencyKey:     "pairwise-idempotency",
-		CorrelationID:      "pairwise-correlation",
-		Window:             time.Minute,
-		Timeout:            time.Second,
-		RetryThreshold:     1,
-		Maximum:            orchestration.Cost{ToolCalls: 1, DistinctObjects: 20, ResultBytes: 1024},
+		Identity:          identity,
+		CapabilityID:      "ouf.system.status",
+		Owner:             "mcp",
+		OperationClass:    operationClass,
+		GatewayBindingRef: "capability://ouf.system.status",
+		ManifestChecksum:  "sha256:pairwise",
+		Arguments:         json.RawMessage(`{}`),
+		IdempotencyKey:    "pairwise-idempotency",
+		CorrelationID:     "pairwise-correlation",
+		Window:            time.Minute,
+		Timeout:           time.Second,
+		RetryThreshold:    1,
+		Maximum:           orchestration.Cost{ToolCalls: 1, DistinctObjects: 20, ResultBytes: 1024},
 	})
 	if err != nil {
 		t.Fatal(err)
