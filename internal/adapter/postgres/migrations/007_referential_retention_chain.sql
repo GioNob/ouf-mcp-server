@@ -16,6 +16,9 @@ grant select,delete on ouf_mcp.security_incident,
  ouf_mcp.budget_window,
  ouf_mcp.application_session
  to ouf_mcp_retention_owner;
+-- PostgreSQL requires UPDATE privilege for SELECT ... FOR UPDATE. This is
+-- granted only to the NOLOGIN definer owner; no workload/maintenance role gets it.
+grant update on ouf_mcp.tool_attempt to ouf_mcp_retention_owner;
 
 create or replace function ouf_mcp.purge_terminal_attempt_graph(p_before timestamptz,p_limit integer)
 returns integer
