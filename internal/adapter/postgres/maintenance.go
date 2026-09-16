@@ -66,7 +66,7 @@ func (s *Store) ReconcileDebtCaches(ctx context.Context, limit int) (DebtCacheRe
 				err = errors.New("debt cache repair CAS affected an unexpected row count")
 			}
 			if err == nil {
-				_, err = tx.Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,safe_detail) values($1,'BUDGET_DEBT_CACHE_REPAIRED','MAINTENANCE_WORKER',jsonb_build_object('budgetWindowId',$2::text,'priorCachedDebt',$3,'authoritativeActiveDebt',$4,'delta',$5))`, uuid.New(), id, cached, authoritative, delta)
+				_, err = tx.Exec(ctx, `insert into ouf_mcp.audit_event(audit_event_id,event_type,actor_type,safe_detail) values($1,'BUDGET_DEBT_CACHE_REPAIRED','MAINTENANCE_WORKER',jsonb_build_object('budgetWindowId',$2::text,'priorCachedDebt',$3::bigint,'authoritativeActiveDebt',$4::bigint,'delta',$5::bigint))`, uuid.New(), id, cached, authoritative, delta)
 			}
 		}
 		if err != nil {
