@@ -40,6 +40,7 @@ jobs:
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" INGESTION_PAIRWISE_ROOT="$PWD/.pairwise/ingestion" go test ./internal/deployment -run TestOperationalExplainOwnerPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestChannelNeutralSystemStatusPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestOperationalAwarenessAggregationPairwise -v
+      - run: go test ./internal/deployment -run TestMCP1IObservabilityCapacityAndDRContracts -v
       - run: bash scripts/verify.sh
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
@@ -48,19 +49,22 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-operational-awareness-evidence-${{ github.run_id }}
+          name: mcp-release-evidence-${{ github.run_id }}
           path: |
             docs/
             deploy/
+            observability/
             internal/deployment/
             internal/manifest/capabilities.json
             internal/kernel/
+            internal/observability/
             internal/operational/
             internal/adapter/postgres/migrations/
             internal/adapter/postgres/operational_awareness.go
             internal/adapter/postgres/operational_awareness_integration_test.go
             internal/adapter/postgres/concurrency_release_gate_integration_test.go
             internal/adapter/postgres/debt_admission_gate_integration_test.go
+            internal/adapter/postgres/performance_profile_integration_test.go
             internal/adapter/httpclient/pairwise_integration_test.go
             internal/evidence/gateway_pairwise_test.go
           retention-days: 30

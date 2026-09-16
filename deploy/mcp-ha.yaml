@@ -5,7 +5,12 @@ spec:
   replicas: 2
   selector: {matchLabels: {ouf.component: mcp-server}}
   template:
-    metadata: {labels: {ouf.component: mcp-server}}
+    metadata:
+      labels: {ouf.component: mcp-server}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
     spec:
       serviceAccountName: ouf-mcp-server
       topologySpreadConstraints:
@@ -17,12 +22,28 @@ spec:
       containers:
         - name: mcp
           image: ghcr.io/gionob/ouf-mcp-server:latest
+          ports: [{name: http, containerPort: 8080}]
           env:
             - {name: MCP_DATABASE_URL, valueFrom: {secretKeyRef: {name: mcp-db, key: url}}}
             - {name: MCP_GATEWAY_ENDPOINT, valueFrom: {configMapKeyRef: {name: mcp-runtime, key: gatewayEndpoint}}}
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 1
           resources:
-            requests: {cpu: "250m", memory: "256Mi"}
-            limits: {cpu: "2", memory: "1Gi"}
+            requests: {cpu: "500m", memory: "768Mi"}
+            limits: {cpu: "2", memory: "1536Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mcp-server, namespace: ouf-mcp}
+spec:
+  selector: {ouf.component: mcp-server}
+  ports: [{name: http, port: 8080, targetPort: http}]
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -48,3 +69,6 @@ spec:
           args: ["maintenance-worker"]
           env:
             - {name: MCP_DATABASE_URL, valueFrom: {secretKeyRef: {name: mcp-maintenance-db, key: url}}}
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "512Mi"}

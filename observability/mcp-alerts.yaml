@@ -1,0 +1,35 @@
+apiVersion: ouf.trieste.it/v1
+kind: ObservabilityAlertBaseline
+metadata:
+  name: mcp-alerts
+spec:
+  alerts:
+    - name: McpErrorRateHigh
+      expression: 5xx_rate > 0.05
+      for: 10m
+      action: triage MCP/Gateway/DB
+    - name: BudgetStoreLatencyHigh
+      expression: budget_p99_ms > 150
+      for: 10m
+      action: inspect DB contention, locks and pool
+    - name: ToolSelectionStalledSpike
+      expression: relative_to_baseline
+      action: review manifest/client compatibility regression
+    - name: CapabilityMismatchSpike
+      expression: mismatch_rate_by_capability > 0.10
+      action: review manifest/useWhen regression
+    - name: ApprovalAnomaly
+      expression: repeated_stale_or_invalid_confirm
+      action: security/workflow review
+    - name: DbPoolPendingHigh
+      expression: pool_empty_acquire_rate > baseline_threshold
+      for: 5m
+      action: pool/DB tuning; do not add Redis without Economy Gate evidence
+  slo:
+    availabilityTarget: 0.999
+    orchestrationErrorRateTarget: 0.01
+    zeroTolerance:
+      - budget_bypass
+      - authoritative_action_without_human_evidence
+      - sensitive_payload_in_logs
+      - unbounded_retry_loop
