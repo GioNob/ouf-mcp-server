@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -166,17 +167,18 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 
 func (a Aggregator) callProducers(ctx context.Context, in aggregateRequest, producers []producerSpec) <-chan producerResult {
 	results := make(chan producerResult, len(producers))
+	var wg sync.WaitGroup
+	wg.Add(len(producers))
 	for _, producer := range producers {
 		producer := producer
 		go func() {
+			defer wg.Done()
 			body, ok := a.callProducer(ctx, in, producer)
 			results <- producerResult{Producer: producer, Body: body, OK: ok}
 		}()
 	}
 	go func() {
-		for range producers {
-			<-time.After(0)
-		}
+		wg.Wait()
 		close(results)
 	}()
 	return results
