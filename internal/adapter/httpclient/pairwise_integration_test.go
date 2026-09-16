@@ -35,7 +35,7 @@ func TestMCPGatewayUDPPairwise(t *testing.T) {
 				return
 			}
 			if backendID == "udp-unavailable" {
-				http.Error(w, "unavailable", 503)
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if backendID == "udp-mismatch" {
