@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-source-onboarding
-          ref: e74cb172e4c6a6b715acf730224b9aa06d0d8e96
+          ref: eeffed582a8792b6116e15f01dc5e57f8b318298
           path: .pairwise/authorization
       - name: Verify common fixture provenance
         run: cmp .pairwise/authorization/authorization-sdk/src/test/resources/authorization-conformance-v1.json internal/authorization/testdata/authorization-conformance-v1.json
