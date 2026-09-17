@@ -2,8 +2,8 @@ package authorization
 
 import (
 	"context"
- "encoding/json"
- "crypto/sha256"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -19,20 +19,29 @@ type BundleSource interface {
 }
 
 type Cache struct {
-	source BundleSource
-	now    func() time.Time
-	active atomic.Pointer[cachedSnapshot]
- maxStaleness time.Duration
+	source       BundleSource
+	now          func() time.Time
+	active       atomic.Pointer[cachedSnapshot]
+	maxStaleness time.Duration
 }
 
 func NewCache(source BundleSource) *Cache {
-	return &Cache{source: source, now: time.Now, maxStaleness: 300*time.Second}
+	return &Cache{source: source, now: time.Now, maxStaleness: 300 * time.Second}
 }
 
-type cachedSnapshot struct { ActivePolicyBundle; verifiedAt time.Time; digest [32]byte }
-func NewCacheWithMaxStaleness(source BundleSource, age time.Duration) (*Cache,error) {
- if age<time.Second || age>24*time.Hour { return nil, errors.New("policy max staleness must be 1 second..24 hours") }
- c:=NewCache(source);c.maxStaleness=age;return c,nil
+type cachedSnapshot struct {
+	ActivePolicyBundle
+	verifiedAt time.Time
+	digest     [32]byte
+}
+
+func NewCacheWithMaxStaleness(source BundleSource, age time.Duration) (*Cache, error) {
+	if age < time.Second || age > 24*time.Hour {
+		return nil, errors.New("policy max staleness must be 1 second..24 hours")
+	}
+	c := NewCache(source)
+	c.maxStaleness = age
+	return c, nil
 }
 
 func (c *Cache) Refresh(ctx context.Context) error {
@@ -46,22 +55,39 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	if err := bundle.Validate(); err != nil {
 		return fmt.Errorf("invalid authorization policy bundle: %w", err)
 	}
- // Detach all mutable slices/maps from the transport before publishing a snapshot.
- raw,err:=json.Marshal(bundle);if err!=nil{return err};var detached ActivePolicyBundle
- if err=json.Unmarshal(raw,&detached);err!=nil{return err}
- semantic,_:=json.Marshal(detached.Bundle); digest:=sha256.Sum256(semantic)
- verified:=c.now()
- for {
- current:=c.active.Load()
- if current!=nil {
-  if detached.BundleID!=current.BundleID || detached.BundleVersion<current.BundleVersion || detached.ActivatedAt.Before(current.ActivatedAt) {return errors.New("authorization rollback or lineage switch rejected")}
-  if detached.BundleVersion==current.BundleVersion && digest!=current.digest {return errors.New("immutable authorization version changed")}
-  if detached.ActivatedAt.Equal(current.ActivatedAt) && detached.BundleVersion!=current.BundleVersion {return errors.New("authorization activation timestamp collision")}
-  if verified.Before(current.verifiedAt) {return errors.New("older refresh rejected")}
- }
- next:=&cachedSnapshot{ActivePolicyBundle:detached,verifiedAt:verified,digest:digest}
- if c.active.CompareAndSwap(current,next){break}
- }
+	// Detach all mutable slices/maps from the transport before publishing a snapshot.
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		return err
+	}
+	var detached ActivePolicyBundle
+	if err = json.Unmarshal(raw, &detached); err != nil {
+		return err
+	}
+	semantic, _ := json.Marshal(detached.Bundle)
+	digest := sha256.Sum256(semantic)
+	verified := c.now()
+	for {
+		current := c.active.Load()
+		if current != nil {
+			if detached.BundleID != current.BundleID || detached.BundleVersion < current.BundleVersion || detached.ActivatedAt.Before(current.ActivatedAt) {
+				return errors.New("authorization rollback or lineage switch rejected")
+			}
+			if detached.BundleVersion == current.BundleVersion && digest != current.digest {
+				return errors.New("immutable authorization version changed")
+			}
+			if detached.ActivatedAt.Equal(current.ActivatedAt) && detached.BundleVersion != current.BundleVersion {
+				return errors.New("authorization activation timestamp collision")
+			}
+			if verified.Before(current.verifiedAt) {
+				return errors.New("older refresh rejected")
+			}
+		}
+		next := &cachedSnapshot{ActivePolicyBundle: detached, verifiedAt: verified, digest: digest}
+		if c.active.CompareAndSwap(current, next) {
+			break
+		}
+	}
 	return nil
 }
 
@@ -91,7 +117,7 @@ func (c *Cache) Authorize(_ context.Context, in orchestration.AuthorizationReque
 }
 
 type ActivePolicyBundle struct {
- ContentHash string `json:"contentHash,omitempty"`
+	ContentHash   string       `json:"contentHash,omitempty"`
 	BundleID      string       `json:"bundleId"`
 	BundleVersion int64        `json:"bundleVersion"`
 	ActivatedAt   time.Time    `json:"activatedAt"`
@@ -120,21 +146,34 @@ func (b PolicyBundle) Validate() error {
 	if b.BundleID == "" || b.Version < 1 || b.PublishedAt.IsZero() {
 		return errors.New("bundle identity is incomplete")
 	}
-	if len(b.Capabilities)>10000 || len(b.Grants)>10000{return errors.New("bundle cardinality limit")}
- caps:=map[string]bool{};grants:=map[string]bool{}
- for _, c := range b.Capabilities {
- if caps[c.CapabilityID]{return errors.New("duplicate capability")};caps[c.CapabilityID]=true
+	if len(b.Capabilities) > 10000 || len(b.Grants) > 10000 {
+		return errors.New("bundle cardinality limit")
+	}
+	caps := map[string]bool{}
+	grants := map[string]bool{}
+	for _, c := range b.Capabilities {
+		if caps[c.CapabilityID] {
+			return errors.New("duplicate capability")
+		}
+		caps[c.CapabilityID] = true
 		if c.CapabilityID == "" || c.Operation == "" || c.RequiredScope == "" {
 			return errors.New("capability descriptor is incomplete")
 		}
 	}
 	for _, g := range b.Grants {
- if grants[g.GrantID] || !caps[g.CapabilityID]{return errors.New("invalid grant reference")};grants[g.GrantID]=true
- if g.Constraints!=nil {if err:=g.Constraints.validate();err!=nil{return err}}
+		if grants[g.GrantID] || !caps[g.CapabilityID] {
+			return errors.New("invalid grant reference")
+		}
+		grants[g.GrantID] = true
+		if g.Constraints != nil {
+			if err := g.Constraints.validate(); err != nil {
+				return err
+			}
+		}
 		if g.GrantID == "" || g.CapabilityID == "" || g.TenantID == "" || g.ValidFrom.IsZero() || g.ValidUntil.IsZero() || !g.ValidUntil.After(g.ValidFrom) {
 			return errors.New("grant is incomplete")
 		}
-		if g.SubjectID == "" && g.ServicePrincipalID == "" && (g.Constraints==nil || g.Constraints.ExternalRoleRef=="") {
+		if g.SubjectID == "" && g.ServicePrincipalID == "" && (g.Constraints == nil || g.Constraints.ExternalRoleRef == "") {
 			return errors.New("grant requires subject or service principal")
 		}
 	}
@@ -149,15 +188,15 @@ type CapabilityDescriptor struct {
 }
 
 type Grant struct {
- Constraints *GrantConstraints `json:"constraints,omitempty"`
-	GrantID            string    `json:"grantId"`
-	CapabilityID       string    `json:"capabilityId"`
-	TenantID           string    `json:"tenantId"`
-	SubjectID          string    `json:"subjectId"`
-	ServicePrincipalID string    `json:"servicePrincipalId"`
-	OrganizationID     string    `json:"organizationId"`
-	ValidFrom          time.Time `json:"validFrom"`
-	ValidUntil         time.Time `json:"validUntil"`
+	Constraints        *GrantConstraints `json:"constraints,omitempty"`
+	GrantID            string            `json:"grantId"`
+	CapabilityID       string            `json:"capabilityId"`
+	TenantID           string            `json:"tenantId"`
+	SubjectID          string            `json:"subjectId"`
+	ServicePrincipalID string            `json:"servicePrincipalId"`
+	OrganizationID     string            `json:"organizationId"`
+	ValidFrom          time.Time         `json:"validFrom"`
+	ValidUntil         time.Time         `json:"validUntil"`
 }
 
 func evaluate(bundle PolicyBundle, principal orchestration.Identity, resource orchestration.ResourceContext, capabilityID, operation string, now time.Time) orchestration.AuthorizationDecision {
@@ -185,11 +224,16 @@ func evaluate(bundle PolicyBundle, principal orchestration.Identity, resource or
 	if !contains(principal.Scopes, descriptor.RequiredScope) {
 		return deny("SCOPE_MISSING")
 	}
-	label:=resource.Attributes["dataAccessLabel"];requestedDetail:=resource.Attributes["detailLevel"]
- if resource.Attributes["requiresDataAccessLabel"]=="true" && label=="" {return deny("DATA_LABEL_REQUIRED")}
- if requestedDetail=="SECURITY_SENSITIVE" && principal.ActorType!="HUMAN" {return deny("HUMAN_REQUIRED")}
- allow:=false
- for _, grant := range bundle.Grants {
+	label := resource.Attributes["dataAccessLabel"]
+	requestedDetail := resource.Attributes["detailLevel"]
+	if resource.Attributes["requiresDataAccessLabel"] == "true" && label == "" {
+		return deny("DATA_LABEL_REQUIRED")
+	}
+	if requestedDetail == "SECURITY_SENSITIVE" && principal.ActorType != "HUMAN" {
+		return deny("HUMAN_REQUIRED")
+	}
+	allow := false
+	for _, grant := range bundle.Grants {
 		if grant.CapabilityID != capabilityID || grant.TenantID != principal.TenantID {
 			continue
 		}
@@ -205,17 +249,39 @@ func evaluate(bundle PolicyBundle, principal orchestration.Identity, resource or
 		if grant.ServicePrincipalID != "" && grant.ServicePrincipalID != principal.ServicePrincipalID {
 			continue
 		}
-  if grant.Constraints!=nil {if !grant.Constraints.matches(principal,resource,now){continue};if grant.Constraints.Effect=="DENY"{return deny("EXPLICIT_DENY")}}
-  if label!="" && label!="OPEN" && label!="ANONYMOUS" && (grant.Constraints==nil || !contains(grant.Constraints.AllowedDataLabels,label)){continue}
-  if requestedDetail!="" && requestedDetail!="PUBLIC_OPERATIONAL" && (grant.Constraints==nil || !contains(grant.Constraints.AllowedDetailLevels,requestedDetail)){continue}
-  allow=true
+		if grant.Constraints != nil {
+			if !grant.Constraints.matches(principal, resource, now) {
+				continue
+			}
+			if grant.Constraints.Effect == "DENY" {
+				return deny("EXPLICIT_DENY")
+			}
+		}
+		if label != "" && label != "OPEN" && label != "ANONYMOUS" && (grant.Constraints == nil || !contains(grant.Constraints.AllowedDataLabels, label)) {
+			continue
+		}
+		if requestedDetail != "" && requestedDetail != "PUBLIC_OPERATIONAL" && (grant.Constraints == nil || !contains(grant.Constraints.AllowedDetailLevels, requestedDetail)) {
+			continue
+		}
+		allow = true
 	}
- if !allow {return deny("NO_APPLICABLE_GRANT")}
- scope:=map[string]string{"tenantId":resource.TenantID,"resourceType":resource.ResourceType}
- if resource.ResourceID!="" {scope["resourceId"]=resource.ResourceID}
- for _,key:=range []string{"module","sourceRef","jobRef","dataAccessLabel"} {if value,ok:=resource.Attributes[key];ok {scope[key]=value}}
- detail:=resource.Attributes["detailLevel"];if detail=="" {detail="PUBLIC_OPERATIONAL"}
- return orchestration.AuthorizationDecision{Allowed:true,DecisionRef:ref,DecisionCode:"ALLOW",BundleID:bundle.BundleID,BundleVersion:bundle.Version,ResourceScope:scope,PermittedDetailLevel:detail}
+	if !allow {
+		return deny("NO_APPLICABLE_GRANT")
+	}
+	scope := map[string]string{"tenantId": resource.TenantID, "resourceType": resource.ResourceType}
+	if resource.ResourceID != "" {
+		scope["resourceId"] = resource.ResourceID
+	}
+	for _, key := range []string{"module", "sourceRef", "jobRef", "dataAccessLabel"} {
+		if value, ok := resource.Attributes[key]; ok {
+			scope[key] = value
+		}
+	}
+	detail := resource.Attributes["detailLevel"]
+	if detail == "" {
+		detail = "PUBLIC_OPERATIONAL"
+	}
+	return orchestration.AuthorizationDecision{Allowed: true, DecisionRef: ref, DecisionCode: "ALLOW", BundleID: bundle.BundleID, BundleVersion: bundle.Version, ResourceScope: scope, PermittedDetailLevel: detail}
 }
 
 func contains(values []string, wanted string) bool {
