@@ -154,7 +154,7 @@ func TestCacheRejectsStaleActivationAndOrgGrantWithoutOrgContext(t *testing.T) {
 	}
 }
 
-func TestCacheAcceptsAuthoritativeNewerActivationWithLowerVersion(t *testing.T) {
+func TestCacheRejectsNewerActivationWithLowerVersion(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	source := &bundleSourceFixture{bundle: validBundle(now)}
 	cache := NewCache(source)
@@ -168,7 +168,43 @@ func TestCacheAcceptsAuthoritativeNewerActivationWithLowerVersion(t *testing.T) 
 	next.Bundle.BundleID = "bundle-rollback"
 	next.Bundle.Version = 1
 	source.bundle = next
-	if err := cache.Refresh(context.Background()); err != nil {
-		t.Fatalf("authoritative newer activation must be accepted: %v", err)
+	if err := cache.Refresh(context.Background()); err == nil {
+		t.Fatal("rollback must require a new monotonic bundle version")
+	}
+}
+
+func TestCacheFreshnessImmutabilityAndRevocation(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	source := &bundleSourceFixture{bundle: validBundle(now)}
+	cache, _ := NewCacheWithMaxStaleness(source, time.Minute)
+	cache.now = func() time.Time { return now }
+	ctx := context.Background()
+	request := orchestration.AuthorizationRequest{Identity: orchestration.Identity{PrincipalID: "user-a", TenantID: "tenant-a", ActorType: "HUMAN", AuthenticationContextRef: "mfa", Issuer: "issuer", Audience: "ouf", Scopes: []string{"operations.status.read"}}, CapabilityID: "ouf.system.status", OperationClass: "READ"}
+	if err := cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pinned := cache.active.Load()
+	source.bundle.Bundle.Grants[0].SubjectID = "other"
+	if d, e := cache.Authorize(ctx, request); e != nil || !d.Allowed {
+		t.Fatal("source mutation changed snapshot", d, e)
+	}
+	if err := cache.Refresh(ctx); err == nil {
+		t.Fatal("same version mutation accepted")
+	}
+	now = now.Add(time.Minute)
+	if _, err := cache.Authorize(ctx, request); !errors.Is(err, ErrPolicyUnavailable) {
+		t.Fatal("stale snapshot accepted", err)
+	}
+	source.bundle.BundleVersion++
+	source.bundle.Bundle.Version++
+	source.bundle.ActivatedAt = now
+	if err := cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d, e := cache.Authorize(ctx, request); e != nil || d.Allowed {
+		t.Fatal("revocation ineffective", d, e)
+	}
+	if !evaluate(pinned.Bundle, request.Identity, orchestration.ResourceContext{TenantID: "tenant-a", ResourceType: "capability"}, request.CapabilityID, request.OperationClass, now).Allowed {
+		t.Fatal("old pinned snapshot mutated")
 	}
 }

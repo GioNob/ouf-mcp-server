@@ -197,7 +197,16 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("authorization policy bundle client initialization failed", "error", err)
 		os.Exit(1)
 	}
-	authCache := authorization.NewCache(bundleClient)
+	maxStaleness, err := positiveDurationEnv("MCP_AUTHORIZATION_MAX_STALENESS", 300*time.Second)
+	if err != nil {
+		logger.Error("invalid policy max staleness", "error", err)
+		os.Exit(2)
+	}
+	authCache, err := authorization.NewCacheWithMaxStaleness(bundleClient, maxStaleness)
+	if err != nil {
+		logger.Error("invalid policy max staleness", "error", err)
+		os.Exit(2)
+	}
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(ctx, 5*time.Second)
 	err = authCache.Refresh(bootstrapCtx)
 	bootstrapCancel()
@@ -206,7 +215,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		os.Exit(1)
 	}
 	refreshInterval, err := positiveDurationEnv("MCP_AUTHORIZATION_BUNDLE_REFRESH", 30*time.Second)
-	if err != nil {
+	if err != nil || refreshInterval >= maxStaleness {
 		logger.Error("invalid authorization bundle refresh configuration", "error", err)
 		os.Exit(2)
 	}

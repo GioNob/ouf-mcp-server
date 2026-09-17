@@ -20,7 +20,15 @@ var (
 	ErrToolSelectionStall = errors.New("tool selection stalled")
 )
 
+type IdentityClaims struct {
+	ExternalRoleRefs []string  `json:"externalRoleRefs"`
+	Acr              string    `json:"acr"`
+	Amr              []string  `json:"amr"`
+	AuthenticatedAt  time.Time `json:"authenticatedAt"`
+}
+
 type Identity struct {
+	Claims                                                                         *IdentityClaims `json:"-"`
 	ServicePrincipalID, PrincipalID, TenantID, ActorType, AuthenticationContextRef string
 	Issuer, Audience                                                               string   `json:"-"`
 	Scopes                                                                         []string `json:"-"`
@@ -40,11 +48,13 @@ type AuthorizationRequest struct {
 	CapabilityID, Owner, OperationClass string
 }
 type AuthorizationDecision struct {
-	Allowed       bool
-	DecisionRef   string
-	DecisionCode  string
-	BundleID      string
-	BundleVersion int64
+	PermittedDetailLevel string
+	ResourceScope        map[string]string
+	Allowed              bool
+	DecisionRef          string
+	DecisionCode         string
+	BundleID             string
+	BundleVersion        int64
 }
 type AuthorizationPort interface {
 	Authorize(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
