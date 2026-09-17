@@ -18,8 +18,10 @@ func TestCommonJavaGoConformance(t *testing.T) {
 		Bundle PolicyBundle `json:"bundle"`
 		Cases  []struct {
 			ID        string `json:"id"`
+ Bundle *PolicyBundle `json:"bundle"`
 			Principal struct {
-				SubjectID                string   `json:"subjectId"`
+				Claims *orchestration.IdentityClaims `json:"claims"`
+ SubjectID                string   `json:"subjectId"`
 				TenantID                 string   `json:"tenantId"`
 				ActorType                string   `json:"actorType"`
 				ServicePrincipalID       *string  `json:"servicePrincipalId"`
@@ -47,13 +49,14 @@ func TestCommonJavaGoConformance(t *testing.T) {
 	for _, c := range fixture.Cases {
 		t.Run(c.ID, func(t *testing.T) {
 			p := c.Principal
-			identity := orchestration.Identity{PrincipalID: p.SubjectID, TenantID: p.TenantID, ActorType: p.ActorType, AuthenticationContextRef: p.AuthenticationContextRef, Issuer: p.Issuer, Audience: p.Audience, Scopes: p.Scopes}
+			identity := orchestration.Identity{Claims:p.Claims,PrincipalID: p.SubjectID, TenantID: p.TenantID, ActorType: p.ActorType, AuthenticationContextRef: p.AuthenticationContextRef, Issuer: p.Issuer, Audience: p.Audience, Scopes: p.Scopes}
 			if p.ServicePrincipalID != nil {
 				identity.ServicePrincipalID = *p.ServicePrincipalID
 			}
 			r := c.Resource
 			resource := orchestration.ResourceContext{ResourceType: r.ResourceType, ResourceID: r.ResourceID, TenantID: r.TenantID, OrganizationID: r.OrganizationID, Attributes: r.Attributes}
-			decision := evaluate(fixture.Bundle, identity, resource, c.CapabilityID, c.Operation, c.Now)
+			bundle:=fixture.Bundle;if c.Bundle!=nil{bundle=*c.Bundle}
+ decision := evaluate(bundle, identity, resource, c.CapabilityID, c.Operation, c.Now)
 			if decision.DecisionCode != c.DecisionCode || decision.Allowed != (c.DecisionCode == "ALLOW") || decision.BundleID != "conformance" || decision.BundleVersion != 7 {
 				t.Fatalf("decision mismatch: %+v", decision)
 			}
