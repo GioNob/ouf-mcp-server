@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"time"
+
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
 type GrantConstraints struct {
