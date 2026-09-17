@@ -1,7 +1,10 @@
 package authorization
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"strings"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"time"
 )
@@ -66,4 +69,30 @@ func (c GrantConstraints) matches(p orchestration.Identity, r orchestration.Reso
 		return false
 	}
 	return true
+}
+
+// Preserve strict field validation even when decoding optional conditions.
+func (c *GrantConstraints) UnmarshalJSON(raw []byte) error {
+	type plain GrantConstraints
+	var decoded plain
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"effect", "externalRoleRef", "resourceType", "resourceId", "requiredAcr"} {
+		value, exists := fields[key]
+		if exists && string(value) != "null" {
+			var text string
+			if err := json.Unmarshal(value, &text); err != nil || strings.TrimSpace(text) == "" {
+				return errors.New("blank or invalid grant constraint")
+			}
+		}
+	}
+	*c = GrantConstraints(decoded)
+	return c.validate()
 }
