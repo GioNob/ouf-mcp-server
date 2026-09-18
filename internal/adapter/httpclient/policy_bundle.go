@@ -15,8 +15,8 @@ import (
 )
 
 type PolicyBundleClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
+	Endpoint    *url.URL
+	Client      *http.Client
 	TokenSource TokenSource
 }
 
