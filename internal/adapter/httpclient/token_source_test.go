@@ -46,11 +46,11 @@ func TestClientCredentialsTokenSourceCachesAndReloadsSecretOnRefresh(t *testing.
 	}
 	now := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)
 	source := &ClientCredentialsTokenSource{
-		endpoint: endpoint,
-		clientID: "ouf-mcp-server",
+		endpoint:   endpoint,
+		clientID:   "ouf-mcp-server",
 		secretFile: secretFile,
-		client: server.Client(),
-		clock: func() time.Time { return now },
+		client:     server.Client(),
+		clock:      func() time.Time { return now },
 	}
 
 	first, err := source.Token(context.Background())
@@ -85,11 +85,11 @@ func TestClientCredentialsTokenSourceRejectsIncompleteResponse(t *testing.T) {
 	defer server.Close()
 	endpoint, _ := url.Parse(server.URL)
 	source := &ClientCredentialsTokenSource{
-		endpoint: endpoint,
-		clientID: "ouf-mcp-server",
+		endpoint:   endpoint,
+		clientID:   "ouf-mcp-server",
 		secretFile: secretFile,
-		client: server.Client(),
-		clock: time.Now,
+		client:     server.Client(),
+		clock:      time.Now,
 	}
 	if _, err := source.Token(context.Background()); err == nil {
 		t.Fatal("incomplete token response accepted")
