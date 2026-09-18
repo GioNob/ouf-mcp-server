@@ -16,8 +16,8 @@ import (
 )
 
 type AuthorizationClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
+	Endpoint    *url.URL
+	Client      *http.Client
 	TokenSource TokenSource
 }
 
@@ -59,15 +59,15 @@ func (c *AuthorizationClient) Authorize(ctx context.Context, in orchestration.Au
 }
 
 type GatewayClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
-	WorkloadToken string
+	Endpoint    *url.URL
+	Client      *http.Client
+	TokenSource TokenSource
 }
 
 type RecoveryClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
-	WorkloadToken string
+	Endpoint    *url.URL
+	Client      *http.Client
+	TokenSource TokenSource
 }
 
 func NewRecovery(endpoint, token string) (*RecoveryClient, error) {
