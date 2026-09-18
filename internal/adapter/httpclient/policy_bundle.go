@@ -17,15 +17,22 @@ import (
 type PolicyBundleClient struct {
 	Endpoint      *url.URL
 	Client        *http.Client
-	WorkloadToken string
+	TokenSource TokenSource
 }
 
 func NewPolicyBundle(endpoint, token string) (*PolicyBundleClient, error) {
+	return NewPolicyBundleWithTokenSource(endpoint, StaticTokenSource(token))
+}
+
+func NewPolicyBundleWithTokenSource(endpoint string, source TokenSource) (*PolicyBundleClient, error) {
 	u, err := governed(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	return &PolicyBundleClient{Endpoint: u, Client: sharedClient(), WorkloadToken: token}, nil
+	if source == nil {
+		return nil, errors.New("workload token source is required")
+	}
+	return &PolicyBundleClient{Endpoint: u, Client: sharedClient(), TokenSource: source}, nil
 }
 
 func (c *PolicyBundleClient) FetchActive(ctx context.Context) (authorization.ActivePolicyBundle, error) {
@@ -33,7 +40,11 @@ func (c *PolicyBundleClient) FetchActive(ctx context.Context) (authorization.Act
 	if err != nil {
 		return authorization.ActivePolicyBundle{}, err
 	}
-	headers(req, c.WorkloadToken, "", "", "")
+	token, err := c.TokenSource.Token(ctx)
+	if err != nil {
+		return authorization.ActivePolicyBundle{}, err
+	}
+	headers(req, token, "", "", "")
 	res, err := c.Client.Do(req)
 	if err != nil {
 		return authorization.ActivePolicyBundle{}, err
