@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,6 +115,25 @@ func workloadTokenSource() (httpadapter.TokenSource, error) {
 		return httpadapter.StaticTokenSource(token), nil
 	}
 	return nil, errors.New("workload identity is not configured")
+}
+
+func fingerprintKey() ([]byte, error) {
+	if path := os.Getenv("MCP_FINGERPRINT_KEY_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, errors.New("MCP fingerprint key file cannot be read")
+		}
+		key := []byte(strings.TrimSpace(string(raw)))
+		if len(key) < 32 {
+			return nil, errors.New("MCP fingerprint key must contain at least 32 bytes")
+		}
+		return key, nil
+	}
+	key := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
+	if len(key) < 32 {
+		return nil, errors.New("MCP fingerprint key must contain at least 32 bytes")
+	}
+	return key, nil
 }
 
 func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string, interval time.Duration, once bool) {
@@ -262,9 +282,9 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("Gateway client initialization failed", "error", err)
 		os.Exit(1)
 	}
-	fingerprintKey := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
-	if len(fingerprintKey) < 32 {
-		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
+	fingerprintKey, err := fingerprintKey()
+	if err != nil {
+		logger.Error("fingerprint key initialization failed", "error", err)
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
