@@ -45,3 +45,8 @@ Repository CI proves token-source behavior and client wiring. Deployed acceptanc
 - secret rotation/revocation acceptance remains part of AUT-04/R6 unless explicitly exercised earlier.
 
 No HUMAN token or credential is stored by MCP.
+
+
+## CI history
+
+Initial PR #26 run `35323708501` reached the repository verification gate with functional tests passing, then failed because `gofmt` changes were required in `policy_bundle.go` and `token_source_test.go`. No runtime behavior failed. The branch was updated to the exact canonical Go formatting before rerunning CI.
