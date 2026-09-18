@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -92,7 +93,7 @@ func (s *ClientCredentialsTokenSource) Token(ctx context.Context) (string, error
 		ExpiresIn   int64  `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, res.Body, 64<<10))
+	decoder := json.NewDecoder(io.LimitReader(res.Body, 64<<10))
 	if err := decoder.Decode(&payload); err != nil {
 		return "", errors.New("invalid OIDC token response")
 	}
