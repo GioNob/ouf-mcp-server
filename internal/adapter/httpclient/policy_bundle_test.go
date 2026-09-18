@@ -34,7 +34,7 @@ func TestPolicyBundleTransportIntegrity(t *testing.T) {
 			}))
 			defer server.Close()
 			endpoint, _ := url.Parse(server.URL)
-			client := &PolicyBundleClient{Endpoint: endpoint, Client: server.Client(), WorkloadToken: "fixture"}
+			client := &PolicyBundleClient{Endpoint: endpoint, Client: server.Client(), TokenSource: StaticTokenSource("fixture")}
 			_, err := client.FetchActive(context.Background())
 			// Whitespace is removed by the documented compact-JSON transport hash.
 			wantValid := name == "valid" || name == "tampered"
@@ -53,7 +53,7 @@ func TestPolicyBundleSlowBodyRespectsContext(t *testing.T) {
 	}))
 	defer server.Close()
 	endpoint, _ := url.Parse(server.URL)
-	client := &PolicyBundleClient{Endpoint: endpoint, Client: server.Client(), WorkloadToken: "fixture"}
+	client := &PolicyBundleClient{Endpoint: endpoint, Client: server.Client(), TokenSource: StaticTokenSource("fixture")}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if _, err := client.FetchActive(ctx); err == nil {
