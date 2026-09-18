@@ -16,17 +16,23 @@ import (
 )
 
 type AuthorizationClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
-	WorkloadToken string
+	Endpoint    *url.URL
+	Client      *http.Client
+	TokenSource TokenSource
 }
 
 func NewAuthorization(endpoint string, token string) (*AuthorizationClient, error) {
+	return NewAuthorizationWithTokenSource(endpoint, StaticTokenSource(token))
+}
+func NewAuthorizationWithTokenSource(endpoint string, source TokenSource) (*AuthorizationClient, error) {
 	u, e := governed(endpoint)
 	if e != nil {
 		return nil, e
 	}
-	return &AuthorizationClient{u, sharedClient(), token}, nil
+	if source == nil {
+		return nil, errors.New("workload token source is required")
+	}
+	return &AuthorizationClient{u, sharedClient(), source}, nil
 }
 func (c *AuthorizationClient) Authorize(ctx context.Context, in orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
 	body, _ := json.Marshal(in)
@@ -34,7 +40,11 @@ func (c *AuthorizationClient) Authorize(ctx context.Context, in orchestration.Au
 	if e != nil {
 		return orchestration.AuthorizationDecision{}, e
 	}
-	headers(req, c.WorkloadToken, "", "", "")
+	token, e := c.TokenSource.Token(ctx)
+	if e != nil {
+		return orchestration.AuthorizationDecision{}, e
+	}
+	headers(req, token, "", "", "")
 	res, e := c.Client.Do(req)
 	if e != nil {
 		return orchestration.AuthorizationDecision{}, e
@@ -49,23 +59,29 @@ func (c *AuthorizationClient) Authorize(ctx context.Context, in orchestration.Au
 }
 
 type GatewayClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
-	WorkloadToken string
+	Endpoint    *url.URL
+	Client      *http.Client
+	TokenSource TokenSource
 }
 
 type RecoveryClient struct {
-	Endpoint      *url.URL
-	Client        *http.Client
-	WorkloadToken string
+	Endpoint    *url.URL
+	Client      *http.Client
+	TokenSource TokenSource
 }
 
 func NewRecovery(endpoint, token string) (*RecoveryClient, error) {
+	return NewRecoveryWithTokenSource(endpoint, StaticTokenSource(token))
+}
+func NewRecoveryWithTokenSource(endpoint string, source TokenSource) (*RecoveryClient, error) {
 	u, e := governed(endpoint)
 	if e != nil {
 		return nil, e
 	}
-	return &RecoveryClient{u, sharedClient(), token}, nil
+	if source == nil {
+		return nil, errors.New("workload token source is required")
+	}
+	return &RecoveryClient{u, sharedClient(), source}, nil
 }
 func (c *RecoveryClient) QueryOutcome(ctx context.Context, in recovery.OwnerQuery) (recovery.OwnerEvidence, error) {
 	body, _ := json.Marshal(in)
@@ -73,7 +89,11 @@ func (c *RecoveryClient) QueryOutcome(ctx context.Context, in recovery.OwnerQuer
 	if e != nil {
 		return recovery.OwnerEvidence{}, e
 	}
-	headers(req, c.WorkloadToken, in.CorrelationID, "", "")
+	token, e := c.TokenSource.Token(ctx)
+	if e != nil {
+		return recovery.OwnerEvidence{}, e
+	}
+	headers(req, token, in.CorrelationID, "", "")
 	res, e := c.Client.Do(req)
 	if e != nil {
 		return recovery.OwnerEvidence{}, e
@@ -88,11 +108,17 @@ func (c *RecoveryClient) QueryOutcome(ctx context.Context, in recovery.OwnerQuer
 }
 
 func NewGateway(endpoint string, token string) (*GatewayClient, error) {
+	return NewGatewayWithTokenSource(endpoint, StaticTokenSource(token))
+}
+func NewGatewayWithTokenSource(endpoint string, source TokenSource) (*GatewayClient, error) {
 	u, e := governed(endpoint)
 	if e != nil {
 		return nil, e
 	}
-	return &GatewayClient{u, sharedClient(), token}, nil
+	if source == nil {
+		return nil, errors.New("workload token source is required")
+	}
+	return &GatewayClient{u, sharedClient(), source}, nil
 }
 func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -102,7 +128,11 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	if e != nil {
 		return orchestration.GatewayResponse{}, e
 	}
-	headers(req, c.WorkloadToken, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
+	token, e := c.TokenSource.Token(callCtx)
+	if e != nil {
+		return orchestration.GatewayResponse{}, e
+	}
+	headers(req, token, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
 	res, e := c.Client.Do(req)
 	if e != nil {
 		return orchestration.GatewayResponse{}, e

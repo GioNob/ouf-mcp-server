@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -100,6 +101,41 @@ func positiveDurationEnv(name string, fallback time.Duration) (time.Duration, er
 	return value, nil
 }
 
+func workloadTokenSource() (httpadapter.TokenSource, error) {
+	endpoint := os.Getenv("MCP_OIDC_TOKEN_ENDPOINT")
+	clientID := os.Getenv("MCP_OIDC_CLIENT_ID")
+	secretFile := os.Getenv("MCP_OIDC_CLIENT_SECRET_FILE")
+	if endpoint != "" || clientID != "" || secretFile != "" {
+		if endpoint == "" || clientID == "" || secretFile == "" {
+			return nil, errors.New("MCP_OIDC_TOKEN_ENDPOINT, MCP_OIDC_CLIENT_ID and MCP_OIDC_CLIENT_SECRET_FILE must be configured together")
+		}
+		return httpadapter.NewClientCredentialsTokenSource(endpoint, clientID, secretFile)
+	}
+	if token := os.Getenv("MCP_WORKLOAD_TOKEN"); token != "" {
+		return httpadapter.StaticTokenSource(token), nil
+	}
+	return nil, errors.New("workload identity is not configured")
+}
+
+func fingerprintKey() ([]byte, error) {
+	if path := os.Getenv("MCP_FINGERPRINT_KEY_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, errors.New("MCP fingerprint key file cannot be read")
+		}
+		key := []byte(strings.TrimSpace(string(raw)))
+		if len(key) < 32 {
+			return nil, errors.New("MCP fingerprint key must contain at least 32 bytes")
+		}
+		return key, nil
+	}
+	key := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
+	if len(key) < 32 {
+		return nil, errors.New("MCP fingerprint key must contain at least 32 bytes")
+	}
+	return key, nil
+}
+
 func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string, interval time.Duration, once bool) {
 	if interval <= 0 {
 		logger.Error("maintenance interval must be positive")
@@ -116,7 +152,12 @@ func runMaintenance(ctx context.Context, logger *slog.Logger, databaseURL string
 		logger.Error("database schema is not ready", "error", err)
 		os.Exit(1)
 	}
-	recoveryClient, err := httpadapter.NewRecovery(os.Getenv("MCP_GATEWAY_RECOVERY_ENDPOINT"), os.Getenv("MCP_WORKLOAD_TOKEN"))
+	tokenSource, err := workloadTokenSource()
+	if err != nil {
+		logger.Error("workload identity initialization failed", "error", err)
+		os.Exit(1)
+	}
+	recoveryClient, err := httpadapter.NewRecoveryWithTokenSource(os.Getenv("MCP_GATEWAY_RECOVERY_ENDPOINT"), tokenSource)
 	if err != nil {
 		logger.Error("recovery client initialization failed", "error", err)
 		os.Exit(1)
@@ -187,12 +228,12 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("manifest persistence failed", "error", err)
 		os.Exit(1)
 	}
-	workloadToken := os.Getenv("MCP_WORKLOAD_TOKEN")
-	if workloadToken == "" {
-		logger.Error("MCP_WORKLOAD_TOKEN is required")
+	tokenSource, err := workloadTokenSource()
+	if err != nil {
+		logger.Error("workload identity initialization failed", "error", err)
 		os.Exit(1)
 	}
-	bundleClient, err := httpadapter.NewPolicyBundle(os.Getenv("MCP_AUTHORIZATION_BUNDLE_ENDPOINT"), workloadToken)
+	bundleClient, err := httpadapter.NewPolicyBundleWithTokenSource(os.Getenv("MCP_AUTHORIZATION_BUNDLE_ENDPOINT"), tokenSource)
 	if err != nil {
 		logger.Error("authorization policy bundle client initialization failed", "error", err)
 		os.Exit(1)
@@ -236,14 +277,14 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 			}
 		}
 	}()
-	gatewayClient, err := httpadapter.NewGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"), workloadToken)
+	gatewayClient, err := httpadapter.NewGatewayWithTokenSource(os.Getenv("MCP_GATEWAY_ENDPOINT"), tokenSource)
 	if err != nil {
 		logger.Error("Gateway client initialization failed", "error", err)
 		os.Exit(1)
 	}
-	fingerprintKey := []byte(os.Getenv("MCP_FINGERPRINT_KEY"))
-	if len(fingerprintKey) < 32 {
-		logger.Error("MCP_FINGERPRINT_KEY must contain at least 32 bytes")
+	fingerprintKey, err := fingerprintKey()
+	if err != nil {
+		logger.Error("fingerprint key initialization failed", "error", err)
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
