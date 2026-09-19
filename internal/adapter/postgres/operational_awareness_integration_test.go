@@ -64,6 +64,19 @@ func TestSystemStatusIsTenantScopedAndSafe(t *testing.T) {
 	if strings.Contains(string(body), "evidence_payload_hash") || strings.Contains(string(body), strings.Repeat("a", 64)) {
 		t.Fatalf("protected evidence leaked: %s", body)
 	}
+	// Persist only the redaction decision, not the operational payload.
+	if err := store.Audit(ctx, orchestration.AuditEvent{EventType: "PUBLIC_STATUS_FIXTURE", Identity: orchestration.Identity{ActorType: "HUMAN", ServicePrincipalID: "service"}, AttemptID: attempt.ID, ManifestChecksum: manifestHash, OutcomeCode: "SUCCEEDED", AuthorizationDecisionRef: "bundle:1:ouf.system.status", PermittedDetailLevel: "PUBLIC_OPERATIONAL", Redacted: true}); err != nil {
+		t.Fatal(err)
+	}
+	var auditRaw []byte
+	if err := store.Pool().QueryRow(ctx, "select safe_detail from ouf_mcp.audit_event where attempt_id=$1 and event_type='PUBLIC_STATUS_FIXTURE'", attempt.ID).Scan(&auditRaw); err != nil {
+		t.Fatal(err)
+	}
+	var detail map[string]any
+	if json.Unmarshal(auditRaw, &detail) != nil || len(detail) != 4 || detail["redacted"] != true || detail["permittedDetailLevel"] != "PUBLIC_OPERATIONAL" || detail["authorizationDecisionRef"] != "bundle:1:ouf.system.status" {
+		t.Fatalf("redaction audit lost: %s", auditRaw)
+	}
+
 	other, err := store.SystemStatus(ctx, orchestration.Identity{TenantID: "other-" + id})
 	if err != nil {
 		t.Fatal(err)
