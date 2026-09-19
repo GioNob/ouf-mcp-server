@@ -1,5 +1,5 @@
 {
-  "version": "1.4.0-operational-awareness-aggregation",
+  "version": "1.4.1-public-operational-status",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -28,8 +28,8 @@
       "useWhen": ["the user asks whether the MCP layer is healthy or whether OUF itself has unresolved orchestration problems"],
       "doNotUseWhen": ["raw logs, credentials, SQL or protected evidence payloads are requested"],
       "preferredAlternatives": ["ouf.operations.summary", "ouf.operations.incidents"],
-      "operationalLimits": {"maxIncidents": 20},
-      "resultSemantics": "Tenant-scoped MCP status with HEALTHY, RECOVERING or DEGRADED semantics and bounded safe incident references",
+      "operationalLimits": {"maxModules": 1},
+      "resultSemantics": "Fixed PUBLIC_OPERATIONAL MCP snapshot: module, status, actionRequired, partial, visibilityClass and redacted; no incident references or counters",
       "securityNotes": ["Authorization, admission, reconciliation and audit remain mandatory", "Human-facing access is Gateway-mediated and channel-neutral; the private owner API never exposes the MCP protocol endpoint"],
       "mcpClass": "MCP_TOOL", "owner": "mcp", "operationClass": "READ", "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "operations.status.read", "gatewayBindingRef": "capability://ouf.system.status",

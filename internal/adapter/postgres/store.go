@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -266,8 +267,11 @@ func (s *Store) AppendAudit(ctx context.Context, eventType, actorType, servicePr
 	return err
 }
 func (s *Store) Audit(ctx context.Context, event orchestration.AuditEvent) error {
-	detail := fmt.Sprintf(`{"outcomeCode":%q}`, event.OutcomeCode)
-	return s.AppendAudit(ctx, event.EventType, event.Identity.ActorType, event.Identity.ServicePrincipalID, &event.AttemptID, event.ManifestChecksum, []byte(detail))
+	detail, err := json.Marshal(map[string]any{"outcomeCode": event.OutcomeCode, "authorizationDecisionRef": event.AuthorizationDecisionRef, "permittedDetailLevel": event.PermittedDetailLevel, "redacted": event.Redacted})
+	if err != nil {
+		return err
+	}
+	return s.AppendAudit(ctx, event.EventType, event.Identity.ActorType, event.Identity.ServicePrincipalID, &event.AttemptID, event.ManifestChecksum, detail)
 }
 
 type MaintenanceResult struct{ OrphansMarkedUnknown, ExpiredSessionsDeleted int64 }

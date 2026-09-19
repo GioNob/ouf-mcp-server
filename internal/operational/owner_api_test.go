@@ -2,6 +2,7 @@ package operational
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,10 +15,37 @@ type ownerStatusFixture struct {
 	called   bool
 }
 
+func TestOwnerPublicStatusCannotBeRaisedByCaller(t *testing.T) {
+	h := NewOwnerAPI(aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"DEGRADED","actionRequired":true,"partial":false,"incidents":["secret"],"securityIncidentCount":10,"future":"secret"}`)})
+	for _, decision := range []string{"", "bundle:1:ouf.system.status"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/mcp/operations/status", nil)
+		req.Header.Set("X-OUF-Gateway-Verified", "true")
+		req.Header.Set("X-OUF-Tenant-ID", "tenant-a")
+		req.Header.Set("X-OUF-Principal-ID", "user-a")
+		req.Header.Set("X-OUF-Authorization-Decision-Ref", decision)
+		req.Header.Set("X-OUF-Permitted-Detail-Level", "SECURITY_SENSITIVE")
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		if decision == "" {
+			if res.Code != http.StatusForbidden {
+				t.Fatal(res.Code)
+			}
+			continue
+		}
+		var body map[string]any
+		if res.Code != 200 || json.Unmarshal(res.Body.Bytes(), &body) != nil || len(body) != 6 || body["visibilityClass"] != "PUBLIC_OPERATIONAL" || body["redacted"] != true || body["status"] != "DEGRADED" {
+			t.Fatalf("invalid public result: %d %s", res.Code, res.Body.String())
+		}
+		if _, ok := body["incidents"]; ok {
+			t.Fatal("incident disclosure")
+		}
+	}
+}
+
 func (f *ownerStatusFixture) SystemStatus(_ context.Context, identity orchestration.Identity) ([]byte, error) {
 	f.called = true
 	f.identity = identity
-	return []byte(`{"module":"MCP","status":"HEALTHY","partial":false}`), nil
+	return []byte(`{"module":"MCP","status":"HEALTHY","actionRequired":false,"partial":false}`), nil
 }
 
 func TestOwnerAPIRequiresGatewayAndTenantContext(t *testing.T) {
@@ -43,6 +71,7 @@ func TestOwnerAPIRequiresGatewayAndTenantContext(t *testing.T) {
 				req.Header.Set("X-OUF-Tenant-ID", tc.tenant)
 			}
 			req.Header.Set("X-OUF-Principal-ID", "principal-a")
+			req.Header.Set("X-OUF-Authorization-Decision-Ref", "bundle:1:ouf.system.status")
 			resp := httptest.NewRecorder()
 			h.ServeHTTP(resp, req)
 			if resp.Code != tc.want {

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/statusview"
 	"github.com/google/uuid"
 )
 
@@ -109,9 +111,11 @@ type GatewayPort interface {
 	Execute(context.Context, GatewayRequest, time.Duration) (GatewayResponse, error)
 }
 type AuditEvent struct {
-	EventType, ManifestChecksum, OutcomeCode string
-	Identity                                 Identity
-	AttemptID                                uuid.UUID
+	AuthorizationDecisionRef, PermittedDetailLevel string
+	Redacted                                       bool
+	EventType, ManifestChecksum, OutcomeCode       string
+	Identity                                       Identity
+	AttemptID                                      uuid.UUID
 }
 type AuditPort interface {
 	Audit(context.Context, AuditEvent) error
@@ -153,11 +157,27 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if resource.ResourceType == "" {
 		resource.ResourceType = "capability"
 	}
+	publicStatus := in.CapabilityID == statusview.Capability
+	if publicStatus {
+		// This capability has a fixed public response contract. No tool argument
+		// or caller-provided attribute may raise that disclosure ceiling.
+		if detail := resource.Attributes["detailLevel"]; detail != "" && detail != statusview.Public {
+			return Result{}, ErrUnauthorized
+		}
+		resource.Attributes = maps.Clone(resource.Attributes)
+		if resource.Attributes == nil {
+			resource.Attributes = make(map[string]string)
+		}
+		resource.Attributes["detailLevel"] = statusview.Public
+	}
 	decision, err := s.Auth.Authorize(ctx, AuthorizationRequest{Identity: in.Identity, Resource: resource, CapabilityID: in.CapabilityID, Owner: in.Owner, OperationClass: in.OperationClass})
 	if err != nil {
 		return Result{}, err
 	}
 	if !decision.Allowed || decision.DecisionRef == "" {
+		return Result{}, ErrUnauthorized
+	}
+	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
 	requestHash := sha256.Sum256(in.Arguments)
@@ -196,17 +216,34 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		outcome.Code = response.Problem.Code
 	}
 	actual := Cost{ToolCalls: 1, ResultBytes: int64(len(response.Body))}
+	redacted := false
+	if publicStatus && callErr == nil && response.Problem == nil && response.Status >= 200 && response.Status < 300 && actual.ResultBytes <= in.Maximum.ResultBytes {
+		response.Body, callErr = statusview.Project(response.Body)
+		redacted = callErr == nil
+		if callErr != nil {
+			outcome.Code = "INVALID_PUBLIC_STATUS"
+		}
+	}
+	if publicStatus && (response.Problem != nil || response.Status < 200 || response.Status >= 300) {
+		code := "STATUS_UNAVAILABLE"
+		if response.Status == 401 || response.Status == 403 {
+			code = "NOT_AUTHORIZED"
+		}
+		response.Body = nil
+		response.Problem = &Problem{Status: response.Status, Code: code, Title: code}
+	}
 	if callErr == nil && response.Problem == nil && response.Status >= 200 && response.Status < 300 {
 		outcome.Success, outcome.Code = true, "SUCCEEDED"
 	}
-	if int64(len(response.Body)) > in.Maximum.ResultBytes {
+	if actual.ResultBytes > in.Maximum.ResultBytes || int64(len(response.Body)) > in.Maximum.ResultBytes {
 		callErr, outcome.Code = ErrResultLimit, "RESULT_LIMIT_EXCEEDED"
+		outcome.Success = false
 	}
 	if err := s.Admission.Reconcile(ctx, admitted.AttemptID, actual, outcome); err != nil {
 		return Result{}, err
 	}
 	if s.Audit != nil {
-		if err := s.Audit.Audit(ctx, AuditEvent{EventType: "TOOL_ATTEMPT_RECONCILED", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: outcome.Code}); err != nil {
+		if err := s.Audit.Audit(ctx, AuditEvent{EventType: "TOOL_ATTEMPT_RECONCILED", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: outcome.Code, AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel, Redacted: redacted}); err != nil {
 			return Result{}, err
 		}
 	}

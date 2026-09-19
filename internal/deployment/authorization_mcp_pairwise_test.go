@@ -67,7 +67,7 @@ type pairwiseGateway struct {
 
 func (g *pairwiseGateway) Execute(_ context.Context, in orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
 	g.decisionRef = in.AuthorizationDecisionRef
-	return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"ok":true}`)}, nil
+	return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"module":"MCP","status":"HEALTHY","actionRequired":false,"partial":false}`)}, nil
 }
 
 func TestAuthorizationMCPPairwise(t *testing.T) {

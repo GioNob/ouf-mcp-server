@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/statusview"
 )
 
 type SelfStatusProvider interface {
@@ -59,7 +60,14 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.URL.Path {
 	case "/api/internal/v1/mcp/operations/status":
+		if strings.TrimSpace(r.Header.Get("X-OUF-Principal-ID")) == "" || strings.TrimSpace(r.Header.Get("X-OUF-Authorization-Decision-Ref")) == "" {
+			http.Error(w, "NOT_AUTHORIZED", http.StatusForbidden)
+			return
+		}
 		body, err = h.self.SystemStatus(r.Context(), identity)
+		if err == nil {
+			body, err = statusview.Project(body)
+		}
 	case "/api/internal/v1/mcp/operations/summary", "/api/internal/v1/mcp/operations/incidents":
 		if h.aggregator == nil {
 			http.Error(w, "operational aggregator unavailable", http.StatusServiceUnavailable)

@@ -16,7 +16,7 @@ I valori del laboratorio non sono default universali di prodotto.
 | Policy v4 | Pubblicata; respinta dalla cache MCP | Incidente, non configurazione da ripetere |
 | Ripristino | v5 PUBLISHED con contenuto derivato da v3 | Esito riportato dall'operatore; nessuna nuova verifica live in questa modifica |
 | Correzione cache | [PR MCP #27](https://github.com/GioNob/ouf-mcp-server/pull/27), commit codice `423f279` | Al checkpoint non mergiata né distribuita |
-| `PUBLIC_OPERATIONAL` | Blocco individuato | Manca l'enforcement della proiezione pubblica end-to-end |
+| `PUBLIC_OPERATIONAL` | Correzione preparata, non deployata | Profilo fisso pubblico, autorizzazione e proiezione owner/MCP; collaudo live ancora necessario |
 
 Questa guida non dichiara concluso il collaudo MCP. Un token valido e un elenco
 di strumenti non equivalgono a una chiamata autorizzata e completata.
@@ -418,8 +418,10 @@ L'adapter IAM stabilisce il contesto trusted e la prova di scrittura.
    nuovo grant. Conservare integralmente tutte le altre capability e grant,
    compreso il grant amministrativo che evita il lockout.
 4. Verificare prima che il consumer accetti quei vincoli. Per lo stato
-   `PUBLIC_OPERATIONAL` questa condizione è ancora bloccata: non ripubblicare
-   il grant di prova solo seguendo l'esempio storico sotto.
+   `PUBLIC_OPERATIONAL` richiede sia la correzione cache sia la proiezione descritta
+   in [PUBLIC_OPERATIONAL_STATUS.md](PUBLIC_OPERATIONAL_STATUS.md). Sul server
+   non risultano ancora deployate: non ripubblicare il grant di prova seguendo
+   soltanto l'esempio storico sotto.
 
 ### Backup ACTIVE tramite identità workload
 
@@ -578,12 +580,13 @@ utente giusto, scope, grant valido e una chiamata reale. La prova positiva
 deve preservare negazioni per altro soggetto/tenant, scope mancante e dettaglio
 non consentito. Non registrare bearer o password nei log di collaudo.
 
-Il tool `ouf.system.status` oggi ha schema senza parametri: scrivere
-`PUBLIC_OPERATIONAL` nel prompt non lo aggiunge alla richiesta. Il backend
-restituisce dati del tenant; manca una proiezione pubblica verificata con
-propagazione del dettaglio consentito fino all'owner. Non eliminare il vincolo
-né etichettare semplicemente il risultato come pubblico per passare il test.
-Registrare come **BLOCCATO**, non come installazione conclusa.
+Il tool `ouf.system.status` conserva lo schema senza parametri. La correzione
+[PUBLIC_OPERATIONAL_STATUS.md](PUBLIC_OPERATIONAL_STATUS.md) imposta il dettaglio
+pubblico nel contesto interno prima dell'autorizzazione e limita la risposta
+sia nell'API owner sia dopo il Gateway. Il prompt non seleziona il dettaglio.
+Il profilo fisso non restituisce contatori né riferimenti agli incidenti.
+Il server resta **BLOCCATO fino a deploy e collaudo live**: non eliminare i
+vincoli dal grant per superare una negazione.
 
 ## 11. Segreti, chiusura sessione e passaggio di consegne
 
