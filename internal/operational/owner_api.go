@@ -75,16 +75,16 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.auth == nil {
-			http.Error(w, "authorization unavailable", 503)
+			http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		decision, authErr := h.auth.Authorize(r.Context(), orchestration.AuthorizationRequest{Identity: identity, CapabilityID: statusview.Capability, Owner: "mcp", OperationClass: "READ", Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: identity.TenantID, Attributes: map[string]string{"detailLevel": statusview.Public}}})
 		if authErr != nil {
-			http.Error(w, "authorization unavailable", 503)
+			http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if !decision.Allowed || decision.DecisionRef != r.Header.Get("X-OUF-Authorization-Decision-Ref") || decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != identity.TenantID || decision.ResourceScope["resourceType"] != "capability" {
-			http.Error(w, "NOT_AUTHORIZED", 403)
+			http.Error(w, "NOT_AUTHORIZED", http.StatusForbidden)
 			return
 		}
 		body, err = h.self.SystemStatus(r.Context(), identity)
