@@ -419,9 +419,10 @@ L'adapter IAM stabilisce il contesto trusted e la prova di scrittura.
    compreso il grant amministrativo che evita il lockout.
 4. Verificare prima che il consumer accetti quei vincoli. Per lo stato
    `PUBLIC_OPERATIONAL` richiede sia la correzione cache sia la proiezione descritta
-   in [PUBLIC_OPERATIONAL_STATUS.md](PUBLIC_OPERATIONAL_STATUS.md). Sul server
-   non risultano ancora deployate: non ripubblicare il grant di prova seguendo
-   soltanto l'esempio storico sotto.
+   in [PUBLIC_OPERATIONAL_STATUS.md](PUBLIC_OPERATIONAL_STATUS.md). Il 19 settembre
+   2026 il deploy `ouf-mcp:340cbc0` e le rotte Gateway hanno superato la chiamata
+   live dello stato pubblico. Gli esempi personali sotto restano di collaudo;
+   l'accesso ordinario segue [il modello per ruoli](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md).
 
 ### Backup ACTIVE tramite identità workload
 
