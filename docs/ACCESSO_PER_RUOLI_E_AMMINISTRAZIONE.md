@@ -1,9 +1,22 @@
 # Accesso per ruoli e amministrazione dei permessi
 
-L'accesso ordinario usa i ruoli attestati dall'IAM e le policy OUF che li
-associano alle capability. Il login non pubblica grant e non rinnova le policy.
-L'admin gestisce i permessi OUF; assegnare un ruolo a una persona resta una
-responsabilità dell'IAM. Non viene creato un archivio locale degli utenti.
+L'IAM esterno identifica la persona e attesta i ruoli dell'organizzazione
+(per esempio `funzionario-informatico`). OUF decide quali capability associare
+a quei ruoli e può anche concedere abilitazioni nominali a una persona.
+Entrambe sono modalità ordinarie: un grant nominale non è necessariamente
+un'eccezione o un permesso temporaneo di collaudo.
+
+**L'amministratore OUF è una designazione applicativa OUF**, distinta dai ruoli
+dell'Ente. Non occorre creare `admin OUF` nel Keycloak di Maggioli. Un admin OUF
+può proporre e confermare, attraverso i canali governati previsti, nomine e
+revoche di altri admin OUF e abilitazioni nominali o per ruolo. Non modifica
+tramite OUF i ruoli organizzativi o le credenziali custoditi dall'IAM.
+
+**Il primo admin è definito nel bootstrap dell'installazione**, usando issuer,
+subject canonico e tenant dell'identità esterna. Non si auto-nomina il primo
+utente che accede. Il bootstrap viene chiuso permanentemente; le nomine
+successive appartengono alla policy OUF. Il login non pubblica grant e non
+rinnova le policy. OUF non conserva password né duplica l'anagrafica IAM.
 
 Autorità: PET Authorization v1.5 §§6.3–7.2, 11–14, 34.2; PET MCP v1.4
 §§37, 83–84 e Operational Awareness §33. Roadmap di coordinamento:
@@ -33,11 +46,13 @@ implicitamente: il mapper IAM deve emettere il claim canonico esplicito.
 Questi header sono utilizzabili soltanto sulle porte private isolate al
 Gateway; `X-OUF-Gateway-Verified` da solo non autentica una connessione.
 
-## Configurazione ordinaria nel laboratorio
+## Esempio opzionale di accesso per ruolo nel laboratorio
 
-Ruolo applicativo proposto: `ouf-operations-viewer`. In Keycloak creare o
-riusare un ruolo governato con quel riferimento; assegnarlo a Giovanni
-nell'IAM. Configurare per `ouf-chatgpt` un role mapper verso l'access token,
+Per il solo collaudo del trasporto dei ruoli si può usare `ouf-operations-viewer`.
+In un'integrazione reale riusare un ruolo organizzativo attestato dall'IAM
+(per esempio `funzionario-informatico`) e mapparlo alle capability in OUF.
+Non è richiesto introdurre nuovi ruoli applicativi nel Keycloak del fornitore.
+Se si usa il ruolo di laboratorio, assegnarlo tramite l'amministrazione IAM. Configurare per `ouf-chatgpt` un role mapper verso l'access token,
 claim JSON multivalore `externalRoleRefs`, che riporti gli identificatori
 effettivamente assegnati. Non usare un attributo modificabile dall'utente o
 un hardcoded claim per dichiarare il ruolo. Il valore emesso deve coincidere
@@ -67,11 +82,13 @@ amministrativa va scelta esplicitamente e sottoposta a revisione periodica.
 Non coincide con la durata del token e non deve essere rinnovata a ogni login.
 Non impostare una scadenza automatica di 24 ore per l'abilitazione ordinaria.
 
-La sostituzione del grant personale di prova richiede backup dell'ACTIVE,
+Se si sceglie di collaudare il solo grant di ruolo, la sostituzione del grant
+personale di prova richiede backup dell'ACTIVE,
 nuova versione che conservi tutti gli altri grant e capability, verifica del
 diff e pubblicazione umana autenticata. Rimuovere il grant personale di prova
 nella stessa versione: lasciarlo attivo renderebbe inefficace il test di revoca
-del solo ruolo. Non aggiungere scope o grant amministrativi a Giovanni per
+del solo ruolo. Questa rimozione serve a isolare il test: in esercizio i grant
+nominali possono coesistere con quelli di ruolo. Non aggiungere scope o grant amministrativi a Giovanni per
 consentirgli una lettura operativa.
 
 ## Ordine di rilascio e verifica
@@ -99,8 +116,10 @@ il runbook IAM e policy, misurando la propagazione.
 
 ## Amministrazione conversazionale dei permessi
 
-Esperienza richiesta dall'utente: l'admin chiede quali ruoli autorizzano una
-capability, vede scope e vincoli, prepara assegnazioni/revoche ruolo→capability,
+Esperienza richiesta dall'utente: l'admin consulta le abilitazioni effettive di
+una persona, distingue grant nominali, ruoli organizzativi e nomina ad admin OUF,
+vede scope e vincoli, prepara assegnazioni/revoche ruolo→capability,
+abilitazioni nominali e nomine/revoche di amministratori OUF,
 simula l'effetto e conferma una modifica esatta nella Trusted Human Surface.
 La chat deve poi poter consultare l'esito e la versione pubblicata.
 
@@ -112,7 +131,8 @@ da riutilizzare aggiungendo header che dichiarino un amministratore.
 
 Da implementare come incremento distinto, riusando il dominio esistente:
 
-- Letture delegate bounded del catalogo e delle mappature di ruolo, con
+- Letture delegate bounded del catalogo, delle abilitazioni nominali, degli admin
+  OUF e delle mappature di ruolo, con
   capability amministrative dedicate e nessuna credenziale esposta.
 - Proposta e simulazione autorizzate via MCP, senza effetto sull'ACTIVE.
 - Scheda THS con diff, tenant, ruolo, capability, vincoli, durata e impatto;
@@ -120,6 +140,18 @@ Da implementare come incremento distinto, riusando il dominio esistente:
   dell'approvatore. Eventuale separazione proposer/approver è una policy.
 - Pubblicazione/revoca umana, audit e stato interrogabile; negare modifiche
   stale, auto-escalation non autorizzata e conferme provenienti dal tool.
+- Profilo applicativo completo dell'admin OUF e protezione dalla revoca
+  dell'ultimo amministratore: restano da implementare, non sono un bypass
+  implicito dell'evaluator o dei vincoli del dominio.
+
+La designazione del primo amministratore è implementata nella
+[PR Onboarding #28](https://github.com/GioNob/ouf-source-onboarding/pull/28),
+con [guida di bootstrap](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/designated-bootstrap-admin/docs/OUF_ADMIN_BOOTSTRAP.md).
+La PR richiede issuer, subject e tenant espliciti, un principal HUMAN verificato
+con scope bootstrap e un grant nominale applicabile nella prima policy.
+L'installazione già inizializzata continua a usare la policy attiva; non si
+riapre il bootstrap. Verificare merge e versione rilasciata prima di utilizzare
+le nuove proprietà di configurazione.
 
 `approve/publish/activate` human-only non diventano tool-eligible. Nessun
 accesso Keycloak Admin API o gestione account è introdotto da questo requisito.

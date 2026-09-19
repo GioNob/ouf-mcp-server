@@ -689,3 +689,18 @@ I test coprono prova solo in header, diniego prima dell'ammissione, revoca o
 cambio della decisione owner, tenant diverso e dettaglio non pubblico.
 Il repository Gateway esegue anche un gate con APISIX 3.18 reale, JWT firmati
 con chiavi esclusivamente di test e JWKS locale alla CI.
+
+## Identità esterna, amministrazione OUF e primo bootstrap
+
+I ruoli organizzativi attestati dall'IAM e il ruolo di amministratore OUF sono
+concetti distinti. OUF associa capability ai ruoli dell'Ente e alle persone
+nominali; la nomina di un admin OUF è governata dalla policy OUF e non richiede
+un ruolo `admin OUF` nel Keycloak del fornitore. Il grant nominale di 24 ore
+usato nel collaudo non prescrive la durata delle abilitazioni ordinarie.
+
+Il primo admin va designato nel bootstrap dell'installazione attraverso issuer,
+subject canonico e tenant verificati dall'IAM. Le nomine successive sono
+modifiche di policy OUF confermate sul canale umano. Non riaprire il bootstrap
+su un'installazione già attiva e non modificare gli account IAM per aggirare
+una revoca OUF. Per lo stato dell'implementazione e le configurazioni vedere
+[accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md).
