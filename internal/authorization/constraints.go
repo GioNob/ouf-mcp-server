@@ -11,14 +11,16 @@ import (
 )
 
 type GrantConstraints struct {
-	Effect                      string            `json:"effect"`
-	ExternalRoleRef             string            `json:"externalRoleRef"`
-	ResourceType                string            `json:"resourceType"`
-	ResourceID                  string            `json:"resourceId"`
+	// Optional strings must remain absent during the cache's JSON deep copy.
+	// Explicit blank strings on the wire remain invalid in UnmarshalJSON.
+	Effect                      string            `json:"effect,omitempty"`
+	ExternalRoleRef             string            `json:"externalRoleRef,omitempty"`
+	ResourceType                string            `json:"resourceType,omitempty"`
+	ResourceID                  string            `json:"resourceId,omitempty"`
 	ResourceAttributes          map[string]string `json:"resourceAttributes"`
 	AllowedDataLabels           []string          `json:"allowedDataLabels"`
 	AllowedDetailLevels         []string          `json:"allowedDetailLevels"`
-	RequiredAcr                 string            `json:"requiredAcr"`
+	RequiredAcr                 string            `json:"requiredAcr,omitempty"`
 	RequiredAmr                 []string          `json:"requiredAmr"`
 	MaxAuthenticationAgeSeconds *int64            `json:"maxAuthenticationAgeSeconds"`
 }
