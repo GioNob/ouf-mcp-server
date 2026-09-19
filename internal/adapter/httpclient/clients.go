@@ -133,6 +133,9 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		return orchestration.GatewayResponse{}, e
 	}
 	headers(req, token, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
+	if in.Identity.Delegation != "" {
+		req.Header.Set("X-OUF-Delegation", in.Identity.Delegation)
+	}
 	res, e := c.Client.Do(req)
 	if e != nil {
 		return orchestration.GatewayResponse{}, e

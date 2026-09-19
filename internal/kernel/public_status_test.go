@@ -64,18 +64,24 @@ func TestPublicStatusToolWithConstrainedPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := &statusOwner{}
-	ownerAPI := operational.NewOwnerAPI(owner)
+	ownerAPI := operational.NewOwnerAPI(owner).WithAuthorization(cache)
 	var gatewayCalls atomic.Int32
 	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gatewayCalls.Add(1)
 		if r.Header.Get("Authorization") != "Bearer fixture-workload" {
 			t.Error("missing workload bearer")
 		}
+		if r.Header.Get("X-OUF-Delegation") != "fixture-delegation" {
+			t.Error("delegation header lost")
+		}
 		var in orchestration.GatewayRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			t.Error(err)
 			w.WriteHeader(400)
 			return
+		}
+		if in.CorrelationID == "" || in.IdempotencyKey == "" || in.Identity.Delegation != "" {
+			t.Error("generated governance identifiers missing or proof serialized")
 		}
 		if in.AuthorizationDecisionRef != "public-test:1:ouf.system.status" || in.GatewayBindingRef != "capability://ouf.system.status" {
 			t.Error("decision/binding lost")
@@ -85,12 +91,18 @@ func TestPublicStatusToolWithConstrainedPolicy(t *testing.T) {
 		request.Header.Set("X-OUF-Principal-ID", in.Identity.PrincipalID)
 		request.Header.Set("X-OUF-Tenant-ID", in.Identity.TenantID)
 		request.Header.Set("X-OUF-Authorization-Decision-Ref", in.AuthorizationDecisionRef)
+		request.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		request.Header.Set("X-OUF-Service-Principal", "ouf-mcp-server")
+		request.Header.Set("X-OUF-Token-Issuer", "issuer")
+		request.Header.Set("X-OUF-Token-Audience", "ouf-api-gateway")
+		request.Header.Set("X-OUF-Authentication-Context-Ref", "1")
+		request.Header.Set("X-OUF-Granted-Scopes", "operations.status.read")
 		ownerAPI.ServeHTTP(w, request)
 	}))
 	defer gateway.Close()
 	u, _ := url.Parse(gateway.URL)
 	admission := &statusAdmission{}
-	service := &orchestration.Service{Auth: cache, Admission: admission, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("fixture-workload")}, FingerprintKey: make([]byte, 32)}
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: admission, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("fixture-workload")}, FingerprintKey: make([]byte, 32)}
 	h, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +119,7 @@ func TestPublicStatusToolWithConstrainedPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := gatewayCalls.Load()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				for k, v := range map[string]string{"X-Correlation-ID": "public-status-fixture", "Idempotency-Key": tc.name, "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": tc.subject, "X-OUF-Tenant-ID": tc.tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "ouf-api-gateway", "X-OUF-Granted-Scopes": tc.scope} {
+				for k, v := range map[string]string{"X-OUF-Delegation": "fixture-delegation", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": tc.subject, "X-OUF-Tenant-ID": tc.tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "ouf-api-gateway", "X-OUF-Granted-Scopes": tc.scope} {
 					r.Header.Set(k, v)
 				}
 				h.ServeHTTP(w, r)

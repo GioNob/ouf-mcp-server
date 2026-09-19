@@ -611,3 +611,80 @@ La PR #27 corregge la cache e contiene regressioni; merge, deploy e successivo
 collaudo live sono passaggi separati ancora da registrare. Le nuove istruzioni
 sono state confrontate con codice/contratti e controllate sintatticamente;
 non sono state rieseguite sul server durante la redazione.
+
+## 13. Ripresa del 19 settembre: stato e delega Gateway
+
+Checkpoint osservato, non una dichiarazione di deploy delle modifiche successive:
+
+- MCP `8c4046a` avviato; container precedente conservato come
+  `ouf-mcp-rollback-33eb219`. Inspect originale in
+  `/run/ouf-mcp-backup-re8wb1zo.json` (temporaneo, perso al reboot).
+- Policy `ouf-lab-authorization:6` pubblicata, draft
+  `0fd3b6c7-653e-4091-9653-e1066d12fc79`, revisione 1. Mantiene i grant
+  precedenti e aggiunge la lettura pubblica per `giovanni-chatgpt`.
+- Grant di prova valido fino al **20 settembre 2026, 05:27:26 UTC**.
+  Alla scadenza serve una nuova pubblicazione autorizzata; non disattivare i
+  controlli temporali e non trasformare automaticamente il grant in permanente.
+- La creazione del draft ha restituito **HTTP 200** con `state: DRAFT`.
+  Non ripeterla perché si aspettava 201: conservare ID, revisione ed ETag,
+  rileggere il draft e verificare il contenuto prima del publish.
+- La chiamata successiva ha restituito `STATUS_UNAVAILABLE`, HTTP 404.
+  APISIX esponeva `/mcp`, metadata OAuth, lettura bundle e due rotte legacy
+  per related-search, ma mancava **POST `/internal/capabilities/v1/execute`**.
+
+### Correzione coordinata MCP e Gateway
+
+Usare insieme questa versione MCP e la materializzazione descritta in
+[`ouf-api-gateway/docs/MCP_STATUS_EXECUTE_DEPLOYMENT.md`](https://github.com/GioNob/ouf-api-gateway/blob/fix/mcp-execute-mediation/docs/MCP_STATUS_EXECUTE_DEPLOYMENT.md).
+La nuova rotta è deliberatamente limitata a `ouf.system.status`, READ,
+argomenti vuoti e soggetto HUMAN. Non significa che tutto il catalogo MCP sia
+eseguibile. La rotta non usa `/mcp` come backend: arriva all'API owner
+`/api/internal/v1/mcp/operations/status` senza ricorsione di protocollo.
+
+Dopo la verifica OIDC del token umano, il Gateway emette una prova opaca
+`X-OUF-Delegation`, valida al massimo 60 secondi e mai oltre la scadenza del
+JWT originale. È vincolata a issuer, audience, workload, tenant, soggetto,
+client, scope e contesto di autenticazione. La chiave dedicata rimane solo
+nel Gateway; MCP non la riceve e non può emettere prove.
+
+MCP conserva la prova soltanto nel contesto della richiesta, esclusa dalla
+serializzazione JSON e dalle registrazioni di audit/ammissione, e la inoltra
+come header insieme al proprio token workload. Il Gateway verifica entrambi,
+confronta l'identità nell'envelope e ricostruisce gli header owner. Non inoltra
+al backend né bearer né prova. L'owner MCP rivaluta il bundle locale prima
+di leggere lo stato e richiede la medesima decisione pubblica e lo stesso tenant.
+
+La prova attesta l'identità delegata, **non** sostituisce grant, budget,
+ammissione, idempotenza o autorizzazione owner. La traccia di ammissione resta
+responsabilità del workload MCP; il Gateway verifica la coerenza dei riferimenti.
+Per questo profilo, il client iniziatore è confrontato con il campo storico
+`ServicePrincipalID` dell'envelope; verso l'owner quel campo è ricostruito con
+il workload autenticato. Il grant di prova è vincolato al soggetto umano.
+
+In produzione `RequireDelegation` è attivo: una chiamata senza prova viene
+negata prima dell'ammissione. Deploy parziale o bundle stale falliscono chiusi.
+Gli identificativi di correlazione e idempotenza mancanti sono generati per
+singola invocazione; quelli forniti dal chiamante sono conservati.
+
+### Verifica dopo il deploy coordinato
+
+1. Verificare versione MCP e presenza della rotta execute APISIX.
+2. Verificare refresh del bundle v6 senza errori di vincoli e grant non scaduto.
+3. Riconnettere ChatGPT come **giovanni-chatgpt**, non `ouf-admin`.
+4. Chiamare `ouf_system_status` senza argomenti: il profilo è già
+   `PUBLIC_OPERATIONAL`, non esiste un parametro per aumentare il dettaglio.
+5. Registrare il risultato effettivo. Sono ammessi soltanto `module`, `status`,
+   `actionRequired`, `partial`, `visibilityClass`, `redacted`.
+
+La presenza degli strumenti o una risposta HTTP di connessione non provano
+l'esecuzione della capability. Il gate finale è la chiamata autenticata reale.
+
+### Riferimenti PET e test
+
+PET MCP §37: separazione token umano/workload e assenza di token persistiti;
+§83: delega verificabile e rivalutazione fine-grained owner. PET Gateway T29.1:
+controlli coarse e mediazione, con proiezione pubblica effettuata dall'owner.
+I test coprono prova solo in header, diniego prima dell'ammissione, revoca o
+cambio della decisione owner, tenant diverso e dettaglio non pubblico.
+Il repository Gateway esegue anche un gate con APISIX 3.18 reale, JWT firmati
+con chiavi esclusivamente di test e JWKS locale alla CI.

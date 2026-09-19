@@ -119,3 +119,16 @@ func TestPublicStatusSanitizesUpstreamFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionRequiresDelegationBeforeAdmission(t *testing.T) {
+	a := &statusAuth{decision: statusDecision()}
+	admission := &fakeAdmission{}
+	gateway := &fakeGateway{}
+	_, err := (Service{RequireDelegation: true, Auth: a, Admission: admission, Gateway: gateway}).Call(context.Background(), statusInvocation())
+	if !errors.Is(err, ErrUnauthorized) || admission.reserves != 0 || gateway.calls != 0 {
+		t.Fatalf("missing delegation admitted: %v", err)
+	}
+	if a.request.CapabilityID != "" {
+		t.Fatal("missing delegation reached policy evaluation")
+	}
+}

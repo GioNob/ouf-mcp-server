@@ -17,6 +17,7 @@ type ownerStatusFixture struct {
 
 func TestOwnerPublicStatusCannotBeRaisedByCaller(t *testing.T) {
 	h := NewOwnerAPI(aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"DEGRADED","actionRequired":true,"partial":false,"incidents":["secret"],"securityIncidentCount":10,"future":"secret"}`)})
+	h.WithAuthorization(ownerAuthFixture{})
 	for _, decision := range []string{"", "bundle:1:ouf.system.status"} {
 		req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/mcp/operations/status", nil)
 		req.Header.Set("X-OUF-Gateway-Verified", "true")
@@ -50,7 +51,7 @@ func (f *ownerStatusFixture) SystemStatus(_ context.Context, identity orchestrat
 
 func TestOwnerAPIRequiresGatewayAndTenantContext(t *testing.T) {
 	fixture := &ownerStatusFixture{}
-	h := NewOwnerAPI(fixture)
+	h := NewOwnerAPI(fixture).WithAuthorization(ownerAuthFixture{})
 
 	for _, tc := range []struct {
 		name    string
@@ -93,5 +94,60 @@ func TestOwnerAPIDoesNotExposeMCPProtocolPath(t *testing.T) {
 	h.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("owner API accepted MCP protocol path: %d", resp.Code)
+	}
+}
+
+type ownerAuthFixture struct{}
+
+func (ownerAuthFixture) Authorize(_ context.Context, in orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	return orchestration.AuthorizationDecision{Allowed: true, DecisionRef: "bundle:1:ouf.system.status", PermittedDetailLevel: "PUBLIC_OPERATIONAL", ResourceScope: map[string]string{"tenantId": in.Identity.TenantID, "resourceType": "capability"}}, nil
+}
+
+type ownerDecisionFixture struct {
+	decision orchestration.AuthorizationDecision
+	err      error
+}
+
+func (f ownerDecisionFixture) Authorize(context.Context, orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	return f.decision, f.err
+}
+
+func TestOwnerReauthorizationStopsRead(t *testing.T) {
+	base, _ := (ownerAuthFixture{}).Authorize(context.Background(), orchestration.AuthorizationRequest{Identity: orchestration.Identity{TenantID: "tenant-a"}})
+	for _, name := range []string{"unavailable", "denied", "stale-reference", "wrong-tenant", "raised-detail", "wrong-resource"} {
+		t.Run(name, func(t *testing.T) {
+			provider := &ownerStatusFixture{}
+			handler := NewOwnerAPI(provider)
+			decision := base
+			decision.ResourceScope = map[string]string{"tenantId": "tenant-a", "resourceType": "capability"}
+			switch name {
+			case "denied":
+				decision.Allowed = false
+			case "stale-reference":
+				decision.DecisionRef = "bundle:2:ouf.system.status"
+			case "wrong-tenant":
+				decision.ResourceScope["tenantId"] = "other"
+			case "raised-detail":
+				decision.PermittedDetailLevel = "SECURITY_SENSITIVE"
+			case "wrong-resource":
+				decision.ResourceScope["resourceType"] = "other"
+			}
+			if name != "unavailable" {
+				handler.WithAuthorization(ownerDecisionFixture{decision: decision})
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/mcp/operations/status", nil)
+			req.Header.Set("X-OUF-Gateway-Verified", "true")
+			req.Header.Set("X-OUF-Principal-ID", "human")
+			req.Header.Set("X-OUF-Tenant-ID", "tenant-a")
+			req.Header.Set("X-OUF-Authorization-Decision-Ref", base.DecisionRef)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != 403 && res.Code != 503 {
+				t.Fatalf("unexpected status %d", res.Code)
+			}
+			if provider.called {
+				t.Fatal("read occurred before authorization")
+			}
+		})
 	}
 }

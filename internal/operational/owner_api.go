@@ -16,16 +16,23 @@ type SelfStatusProvider interface {
 }
 
 type ownerAPI struct {
+	auth       orchestration.AuthorizationPort
 	self       SelfStatusProvider
 	aggregator *Aggregator
 }
 
-func NewOwnerAPI(self SelfStatusProvider, aggregator ...*Aggregator) http.Handler {
+func NewOwnerAPI(self SelfStatusProvider, aggregator ...*Aggregator) *ownerAPI {
 	api := &ownerAPI{self: self}
 	if len(aggregator) > 0 {
 		api.aggregator = aggregator[0]
 	}
 	return api
+}
+
+// WithAuthorization installs the owner-local policy evaluator. Status fails closed without it.
+func (h *ownerAPI) WithAuthorization(auth orchestration.AuthorizationPort) *ownerAPI {
+	h.auth = auth
+	return h
 }
 
 func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +56,9 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := orchestration.Identity{
+		Issuer:                   r.Header.Get("X-OUF-Token-Issuer"),
+		Audience:                 r.Header.Get("X-OUF-Token-Audience"),
+		Scopes:                   strings.Fields(r.Header.Get("X-OUF-Granted-Scopes")),
 		ServicePrincipalID:       r.Header.Get("X-OUF-Service-Principal"),
 		PrincipalID:              r.Header.Get("X-OUF-Principal-ID"),
 		TenantID:                 tenantID,
@@ -61,6 +71,19 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/internal/v1/mcp/operations/status":
 		if strings.TrimSpace(r.Header.Get("X-OUF-Principal-ID")) == "" || strings.TrimSpace(r.Header.Get("X-OUF-Authorization-Decision-Ref")) == "" {
+			http.Error(w, "NOT_AUTHORIZED", http.StatusForbidden)
+			return
+		}
+		if h.auth == nil {
+			http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		decision, authErr := h.auth.Authorize(r.Context(), orchestration.AuthorizationRequest{Identity: identity, CapabilityID: statusview.Capability, Owner: "mcp", OperationClass: "READ", Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: identity.TenantID, Attributes: map[string]string{"detailLevel": statusview.Public}}})
+		if authErr != nil {
+			http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !decision.Allowed || decision.DecisionRef != r.Header.Get("X-OUF-Authorization-Decision-Ref") || decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != identity.TenantID || decision.ResourceScope["resourceType"] != "capability" {
 			http.Error(w, "NOT_AUTHORIZED", http.StatusForbidden)
 			return
 		}

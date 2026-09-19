@@ -288,7 +288,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
-	service := &orchestration.Service{Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
 	if err != nil {
@@ -299,6 +299,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", metrics.Instrument("mcp", handler))
 	ownerAPI := operational.NewOwnerAPI(store, aggregator)
+	ownerAPI.WithAuthorization(authCache)
 	mux.Handle("/api/internal/v1/mcp/operations/status", metrics.Instrument("operations_status", ownerAPI))
 	mux.Handle("/api/internal/v1/mcp/operations/summary", metrics.Instrument("operations_summary", ownerAPI))
 	mux.Handle("/api/internal/v1/mcp/operations/incidents", metrics.Instrument("operations_incidents", ownerAPI))
