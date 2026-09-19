@@ -1,5 +1,13 @@
 # OUF MCP Server
 
+## Installazione e collaudo del collegamento ChatGPT
+
+La [guida Keycloak, ChatGPT e policy MCP](docs/INSTALLAZIONE_KEYCLOAK_CHATGPT.md)
+documenta i binding `ouf-lab`, gli scope/mapper, il Device Flow amministrativo,
+le procedure policy/deploy/rollback e i limiti del collaudo del 18 settembre 2026.
+Il [verbale del difetto cache](docs/CONSTRAINED_POLICY_CACHE_INCIDENT.md)
+separa la correzione software dall'accettazione live ancora bloccata.
+
 MCP 1A/1B implements the protocol kernel and durable lifecycle defined by MCP Server PET v1.2 in Reality Baseline Package v1.6.
 
 - Go 1.25.13 and official MCP Go SDK v1.7.0 are pinned.

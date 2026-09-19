@@ -1,5 +1,9 @@
 # Constrained policy cache refresh — 2026-09-18
 
+Operator setup and recovery instructions: [Keycloak / ChatGPT installation
+runbook](INSTALLAZIONE_KEYCLOAK_CHATGPT.md), including identity separation,
+scope and mapper configuration, Device Flow, policy publication and rollback.
+
 ## Failure and correction
 
 A published grant with `effect`, `resourceType` and `allowedDetailLevels`
