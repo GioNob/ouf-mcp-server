@@ -167,7 +167,7 @@ func modernOnly(next http.Handler) http.Handler {
 		}
 		delegation := r.Header.Get("X-OUF-Delegation")
 		if len(delegation) > 16384 || strings.ContainsAny(delegation, "\r\n") {
-			http.Error(w, "invalid delegation context", 400)
+			http.Error(w, "invalid delegation context", http.StatusBadRequest)
 			return
 		}
 		identity := requestIdentity{
