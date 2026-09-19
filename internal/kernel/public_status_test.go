@@ -64,7 +64,7 @@ func TestPublicStatusToolWithConstrainedPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := &statusOwner{}
-	ownerAPI := operational.NewOwnerAPI(owner)
+	ownerAPI := operational.NewOwnerAPI(owner).WithAuthorization(cache)
 	var gatewayCalls atomic.Int32
 	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gatewayCalls.Add(1)
@@ -85,6 +85,12 @@ func TestPublicStatusToolWithConstrainedPolicy(t *testing.T) {
 		request.Header.Set("X-OUF-Principal-ID", in.Identity.PrincipalID)
 		request.Header.Set("X-OUF-Tenant-ID", in.Identity.TenantID)
 		request.Header.Set("X-OUF-Authorization-Decision-Ref", in.AuthorizationDecisionRef)
+		request.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		request.Header.Set("X-OUF-Service-Principal", "ouf-mcp-server")
+		request.Header.Set("X-OUF-Token-Issuer", "issuer")
+		request.Header.Set("X-OUF-Token-Audience", "ouf-api-gateway")
+		request.Header.Set("X-OUF-Authentication-Context-Ref", "1")
+		request.Header.Set("X-OUF-Granted-Scopes", "operations.status.read")
 		ownerAPI.ServeHTTP(w, request)
 	}))
 	defer gateway.Close()

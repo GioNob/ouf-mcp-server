@@ -12,6 +12,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -107,6 +108,12 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if !ok {
 		return errorResult("UNAUTHENTICATED", false), nil, nil
 	}
+	if identity.CorrelationID == "" {
+		identity.CorrelationID = uuid.NewString()
+	}
+	if identity.IdempotencyKey == "" {
+		identity.IdempotencyKey = uuid.NewString()
+	}
 	result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
 		return errorResult(err.Error(), false), nil, nil
@@ -158,8 +165,14 @@ func modernOnly(next http.Handler) http.Handler {
 			http.Error(w, "trusted Gateway context required", http.StatusUnauthorized)
 			return
 		}
+		delegation := r.Header.Get("X-OUF-Delegation")
+		if len(delegation) > 16384 || strings.ContainsAny(delegation, "\r\n") {
+			http.Error(w, "invalid delegation context", 400)
+			return
+		}
 		identity := requestIdentity{
 			Identity: orchestration.Identity{
+				Delegation:               delegation,
 				ServicePrincipalID:       r.Header.Get("X-OUF-Service-Principal"),
 				PrincipalID:              r.Header.Get("X-OUF-Principal-ID"),
 				TenantID:                 r.Header.Get("X-OUF-Tenant-ID"),

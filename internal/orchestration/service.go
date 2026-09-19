@@ -30,6 +30,8 @@ type IdentityClaims struct {
 }
 
 type Identity struct {
+	// Opaque Gateway-signed delegation, request memory only: never serialized/persisted.
+	Delegation                                                                     string          `json:"-"`
 	Claims                                                                         *IdentityClaims `json:"-"`
 	ServicePrincipalID, PrincipalID, TenantID, ActorType, AuthenticationContextRef string
 	Issuer, Audience                                                               string   `json:"-"`
@@ -139,16 +141,20 @@ type Result struct {
 }
 
 type Service struct {
-	Auth           AuthorizationPort
-	Admission      AdmissionPort
-	Gateway        GatewayPort
-	Audit          AuditPort
-	FingerprintKey []byte
+	RequireDelegation bool
+	Auth              AuthorizationPort
+	Admission         AdmissionPort
+	Gateway           GatewayPort
+	Audit             AuditPort
+	FingerprintKey    []byte
 }
 
 func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.Identity.ServicePrincipalID == "" || in.Identity.PrincipalID == "" || in.Identity.TenantID == "" || in.CapabilityID == "" || in.Owner == "" || in.GatewayBindingRef == "" {
 		return Result{}, fmt.Errorf("invalid governed invocation")
+	}
+	if s.RequireDelegation && in.Identity.Delegation == "" {
+		return Result{}, ErrUnauthorized
 	}
 	resource := in.Resource
 	if resource.TenantID == "" {
