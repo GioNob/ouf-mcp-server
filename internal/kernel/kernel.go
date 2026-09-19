@@ -11,6 +11,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/trustedclaims"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -185,6 +186,12 @@ func modernOnly(next http.Handler) http.Handler {
 			CorrelationID:  r.Header.Get("X-Correlation-ID"),
 			IdempotencyKey: r.Header.Get("Idempotency-Key"),
 		}
+		claims, err := trustedclaims.Read(r)
+		if err != nil {
+			http.Error(w, "invalid trusted claims", http.StatusBadRequest)
+			return
+		}
+		identity.Identity.Claims = claims
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
 	})
 }

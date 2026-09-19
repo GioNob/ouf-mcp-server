@@ -9,6 +9,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/statusview"
+	"github.com/GioNob/ouf-mcp-server/internal/trustedclaims"
 )
 
 type SelfStatusProvider interface {
@@ -68,6 +69,11 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var body []byte
 	var err error
+	identity.Claims, err = trustedclaims.Read(r)
+	if err != nil {
+		http.Error(w, "invalid trusted claims", http.StatusBadRequest)
+		return
+	}
 	switch r.URL.Path {
 	case "/api/internal/v1/mcp/operations/status":
 		if strings.TrimSpace(r.Header.Get("X-OUF-Principal-ID")) == "" || strings.TrimSpace(r.Header.Get("X-OUF-Authorization-Decision-Ref")) == "" {
