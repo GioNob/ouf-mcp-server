@@ -12,11 +12,18 @@ può proporre e confermare, attraverso i canali governati previsti, nomine e
 revoche di altri admin OUF e abilitazioni nominali o per ruolo. Non modifica
 tramite OUF i ruoli organizzativi o le credenziali custoditi dall'IAM.
 
-**Il primo admin è definito nel bootstrap dell'installazione**, usando issuer,
-subject canonico e tenant dell'identità esterna. Non si auto-nomina il primo
-utente che accede. Il bootstrap viene chiuso permanentemente; le nomine
-successive appartengono alla policy OUF. Il login non pubblica grant e non
-rinnova le policy. OUF non conserva password né duplica l'anagrafica IAM.
+**Il bootstrap associa il superadmin OUF a un ruolo organizzativo IAM**,
+identificato da issuer attendibile, tenant e riferimento stabile del ruolo.
+L'associazione è protetta e separata dai grant ordinari: gli admin ordinari
+non possono modificarla o neutralizzarla con una policy DENY.
+Il bootstrap non è una nomina automatica del primo utente che accede.
+
+Il superadmin uscente propone il nuovo ruolo; un titolare del ruolo destinatario
+si autentica e conferma. Solo allora la sostituzione è atomica. Fino alla
+conferma resta attivo il ruolo precedente. Questo permette all'installatore di
+configurare OUF e poi cedere la responsabilità al ruolo appropriato del Comune.
+Il login non pubblica grant e non rinnova le policy. OUF non conserva password
+né duplica l'anagrafica IAM.
 
 Autorità: PET Authorization v1.5 §§6.3–7.2, 11–14, 34.2; PET MCP v1.4
 §§37, 83–84 e Operational Awareness §33. Roadmap di coordinamento:
@@ -140,18 +147,36 @@ Da implementare come incremento distinto, riusando il dominio esistente:
   dell'approvatore. Eventuale separazione proposer/approver è una policy.
 - Pubblicazione/revoca umana, audit e stato interrogabile; negare modifiche
   stale, auto-escalation non autorizzata e conferme provenienti dal tool.
-- Profilo applicativo completo dell'admin OUF e protezione dalla revoca
-  dell'ultimo amministratore: restano da implementare, non sono un bypass
-  implicito dell'evaluator o dei vincoli del dominio.
+- Profilo amministrativo sulle altre capability di dominio: questo incremento
+  protegge la governance dei permessi, senza introdurre un bypass implicito
+  degli evaluator degli altri moduli.
 
-La designazione del primo amministratore è implementata nella
+Il bootstrap e il trasferimento protetto sono implementati nella
 [PR Onboarding #28](https://github.com/GioNob/ouf-source-onboarding/pull/28),
-con [guida di bootstrap](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/designated-bootstrap-admin/docs/OUF_ADMIN_BOOTSTRAP.md).
-La PR richiede issuer, subject e tenant espliciti, un principal HUMAN verificato
-con scope bootstrap e un grant nominale applicabile nella prima policy.
-L'installazione già inizializzata continua a usare la policy attiva; non si
-riapre il bootstrap. Verificare merge e versione rilasciata prima di utilizzare
-le nuove proprietà di configurazione.
+con [guida operativa](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/designated-bootstrap-admin/docs/OUF_ADMIN_BOOTSTRAP.md).
+Le proprietà sono `ouf.authorization.bootstrap.admin-issuer`,
+`ouf.authorization.bootstrap.admin-tenant` e
+`ouf.authorization.bootstrap.superadmin-role`. Il principal deve essere HUMAN,
+con ruolo verificato e scope richiesto. Non serve un grant nominale nella prima
+policy. La precedente proposta basata sul subject del primo admin è superata.
+
+Sulle installazioni già inizializzate non si riapre il bootstrap:
+`POST /api/trusted-human/v1/authorization/superadmin:adopt` richiede sia il
+ruolo configurato sia l'autorità amministrativa nella policy ACTIVE. È
+un'adozione esplicita una tantum, non un recupero senza amministratori.
+
+Il trasferimento usa revisioni ETag e una proposta con durata di 15 minuti;
+la conferma richiede issuer, tenant e ruolo destinatario verificati. Il
+superadmin precedente può annullare la proposta. I grant ordinari eventualmente
+posseduti dal ruolo uscente rimangono indipendenti. La stessa persona può
+confermare se l'IAM le attesta entrambi i ruoli: non è prevista una regola
+obbligatoria di separazione tra due persone.
+
+La CI Onboarding copre bootstrap, adozione, autenticazione bearer, concorrenza,
+rollback, scadenza, separazione tenant e impossibilità per un admin ordinario
+di cambiare il superadmin. Verificare merge e versione rilasciata prima
+dell'uso: il superamento della CI non certifica il deploy IAM/Gateway reale.
+Non sono introdotti custodi, break-glass o nuovi meccanismi di revoca IAM.
 
 `approve/publish/activate` human-only non diventano tool-eligible. Nessun
 accesso Keycloak Admin API o gestione account è introdotto da questo requisito.

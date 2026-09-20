@@ -698,9 +698,15 @@ nominali; la nomina di un admin OUF è governata dalla policy OUF e non richiede
 un ruolo `admin OUF` nel Keycloak del fornitore. Il grant nominale di 24 ore
 usato nel collaudo non prescrive la durata delle abilitazioni ordinarie.
 
-Il primo admin va designato nel bootstrap dell'installazione attraverso issuer,
-subject canonico e tenant verificati dall'IAM. Le nomine successive sono
-modifiche di policy OUF confermate sul canale umano. Non riaprire il bootstrap
-su un'installazione già attiva e non modificare gli account IAM per aggirare
-una revoca OUF. Per lo stato dell'implementazione e le configurazioni vedere
+Nel bootstrap configurare l'associazione superadmin con issuer attendibile,
+tenant e ruolo organizzativo IAM (`superadmin-role`), non con il subject del
+primo utente. Il ruolo può essere quello dell'installatore; dopo la
+configurazione il superadmin propone il ruolo destinatario del Comune e un
+suo titolare autenticato conferma il trasferimento atomico. Gli admin ordinari
+non possono modificare questa associazione protetta.
+
+Su un'installazione già attiva usare la procedura esplicita di adozione,
+che richiede contemporaneamente autorità amministrativa ACTIVE e ruolo IAM
+configurato. Non riaprire il bootstrap. Per configurazione, stato di rilascio,
+adozione e trasferimento vedere
 [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md).
