@@ -39,3 +39,27 @@ func TestDelegationIsHeaderOnlyAndNotSerialized(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSummaryRoutesRemainGatewayBoundAndCarryDelegation(t *testing.T) {
+	for _, capability := range []string{"ouf.operations.summary", "ouf.ingestion.operations.summary", "ouf.gateway.operations.summary"} {
+		t.Run(capability, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/execute/"+capability || r.Header.Get("X-OUF-Delegation") != "signed-proof" {
+					t.Errorf("wrong path or delegation: %s", r.URL.Path)
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if strings.Contains(string(raw), "signed-proof") {
+					t.Error("serialized delegation")
+				}
+				w.Write([]byte(`{"module":"fixture"}`))
+			}))
+			defer server.Close()
+			endpoint, _ := url.Parse(server.URL + "/execute")
+			client := GatewayClient{Endpoint: endpoint, Client: server.Client(), TokenSource: StaticTokenSource("workload")}
+			_, err := client.Execute(context.Background(), orchestration.GatewayRequest{CapabilityID: capability, Identity: orchestration.Identity{Delegation: "signed-proof"}}, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

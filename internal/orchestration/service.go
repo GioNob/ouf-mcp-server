@@ -164,6 +164,17 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		resource.ResourceType = "capability"
 	}
 	publicStatus := in.CapabilityID == statusview.Capability
+	summary := in.CapabilityID == "ouf.operations.summary" || in.CapabilityID == "ouf.ingestion.operations.summary" || in.CapabilityID == "ouf.gateway.operations.summary"
+	if summary {
+		resource.Attributes = maps.Clone(resource.Attributes)
+		if resource.Attributes == nil {
+			resource.Attributes = make(map[string]string)
+		}
+		if d := resource.Attributes["detailLevel"]; d != "" && d != "TENANT_OPERATIONAL" {
+			return Result{}, ErrUnauthorized
+		}
+		resource.Attributes["detailLevel"] = "TENANT_OPERATIONAL"
+	}
 	if publicStatus {
 		// This capability has a fixed public response contract. No tool argument
 		// or caller-provided attribute may raise that disclosure ceiling.
@@ -184,6 +195,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, ErrUnauthorized
 	}
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
+		return Result{}, ErrUnauthorized
+	}
+	if summary && (decision.PermittedDetailLevel != "TENANT_OPERATIONAL" || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
 	requestHash := sha256.Sum256(in.Arguments)

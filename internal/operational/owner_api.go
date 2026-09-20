@@ -1,11 +1,14 @@
 package operational
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/statusview"
@@ -57,6 +60,7 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := orchestration.Identity{
+		Delegation:               r.Header.Get("X-OUF-Delegation"),
 		Issuer:                   r.Header.Get("X-OUF-Token-Issuer"),
 		Audience:                 r.Header.Get("X-OUF-Token-Audience"),
 		Scopes:                   strings.Fields(r.Header.Get("X-OUF-Granted-Scopes")),
@@ -98,12 +102,34 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			body, err = statusview.Project(body)
 		}
 	case "/api/internal/v1/mcp/operations/summary", "/api/internal/v1/mcp/operations/incidents":
+		capability := "ouf.operations.summary"
+		if strings.HasSuffix(r.URL.Path, "/incidents") {
+			capability = "ouf.operations.incidents"
+		}
+		if identity.PrincipalID == "" || identity.Delegation == "" || r.Header.Get("X-OUF-Authorization-Decision-Ref") == "" {
+			http.Error(w, "NOT_AUTHORIZED", 403)
+			return
+		}
+		if h.auth == nil {
+			http.Error(w, "authorization unavailable", 503)
+			return
+		}
+		decision, authErr := h.auth.Authorize(r.Context(), orchestration.AuthorizationRequest{Identity: identity, CapabilityID: capability, Owner: "mcp", OperationClass: "READ", Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: identity.TenantID, Attributes: map[string]string{"detailLevel": "TENANT_OPERATIONAL"}}})
+		if authErr != nil {
+			http.Error(w, "authorization unavailable", 503)
+			return
+		}
+		if !decision.Allowed || decision.DecisionRef != r.Header.Get("X-OUF-Authorization-Decision-Ref") || decision.PermittedDetailLevel != "TENANT_OPERATIONAL" || decision.ResourceScope["tenantId"] != identity.TenantID || decision.ResourceScope["resourceType"] != "capability" {
+			http.Error(w, "NOT_AUTHORIZED", 403)
+			return
+		}
+
 		if h.aggregator == nil {
 			http.Error(w, "operational aggregator unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		raw, readErr := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-		if readErr != nil {
+		raw, readErr := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
+		if readErr != nil || len(raw) > 64<<10 {
 			http.Error(w, "invalid operational request", http.StatusBadRequest)
 			return
 		}
@@ -111,15 +137,47 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			raw = []byte(`{}`)
 		}
 		var query struct {
-			Limit int `json:"limit"`
+			Limit    *int       `json:"limit"`
+			State    *string    `json:"state,omitempty"`
+			Since    *time.Time `json:"since,omitempty"`
+			SourceID *string    `json:"sourceId,omitempty"`
 		}
-		if json.Unmarshal(raw, &query) != nil {
-			http.Error(w, "invalid operational request", http.StatusBadRequest)
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&query) != nil || decoder.Decode(new(any)) != io.EOF || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			http.Error(w, "invalid operational request", 400)
+			return
+		}
+		if query.State != nil && (capability != "ouf.operations.incidents" || (*query.State != "OPEN" && *query.State != "RECOVERING" && *query.State != "RESOLVED")) {
+			http.Error(w, "invalid incident state", 400)
+			return
+		}
+		limit := 50
+		if query.Limit != nil {
+			limit = *query.Limit
+		}
+		if limit < 1 || limit > 100 || (query.SourceID != nil && (len(*query.SourceID) < 1 || len(*query.SourceID) > 200)) {
+			http.Error(w, "invalid operational request", 400)
+			return
+		}
+		now := time.Now().UTC()
+		if query.Since == nil {
+			since := now.Add(-24 * time.Hour)
+			query.Since = &since
+		}
+		if query.Since.After(now) || query.Since.Before(now.Add(-30*24*time.Hour)) {
+			http.Error(w, "invalid operational window", 400)
+			return
+		}
+		query.Limit = &limit
+		raw, err = json.Marshal(query)
+		if err != nil {
+			http.Error(w, "invalid operational request", 400)
 			return
 		}
 		in := aggregateRequest{
 			Identity: identity, Arguments: raw, AttemptID: r.Header.Get("X-Tool-Attempt-ID"),
-			CorrelationID: r.Header.Get("X-Correlation-ID"), RequestedLimit: query.Limit,
+			CorrelationID: r.Header.Get("X-Correlation-ID"), RequestedLimit: limit,
 		}
 		if r.URL.Path == "/api/internal/v1/mcp/operations/summary" {
 			body, err = h.aggregator.Summary(r.Context(), in)
@@ -128,6 +186,10 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, orchestration.ErrUnauthorized) {
+		http.Error(w, "NOT_AUTHORIZED", 403)
 		return
 	}
 	if err != nil {
