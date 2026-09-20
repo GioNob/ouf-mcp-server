@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -123,7 +124,27 @@ func (s *Store) Admit(ctx context.Context, in Admission) (Attempt, error) {
 	return out, nil
 }
 
+// Retry only SQLSTATE 40001: PostgreSQL has aborted the transaction, and
+// reserveOnce has rolled it back. No dispatch or other external side effect
+// occurs here. Transport errors and uncertain commit outcomes are never retried.
 func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
+	for attempt := 0; ; attempt++ {
+		decision, err := s.reserveOnce(ctx, in)
+		var conflict *pgconn.PgError
+		if err == nil || attempt >= 2 || !errors.As(err, &conflict) || conflict.Code != "40001" {
+			return decision, err
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 2 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return orchestration.AdmissionDecision{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
 	if in.Window <= 0 || in.RetryThreshold < 1 || in.Maximum.ToolCalls < 1 {
 		return orchestration.AdmissionDecision{}, errors.New("invalid admission policy")
 	}

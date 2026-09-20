@@ -112,7 +112,13 @@ func registerOperationalTool(server *mcp.Server, c manifest.Capability, snapshot
 	checksum, _ := snapshot.Checksum()
 	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
-		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
+		// The summary and each producer share the governed 100-item ceiling.
+		// Reserving 200 here can exhaust the shared window during its two child calls.
+		maxItems := 200
+		if c.CapabilityID == "ouf.operations.summary" {
+			maxItems = 100
+		}
+		return invoke(ctx, c, checksum, args, service, maxItems, 512<<10)
 	})
 }
 
