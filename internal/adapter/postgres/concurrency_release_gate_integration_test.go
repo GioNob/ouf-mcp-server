@@ -291,3 +291,65 @@ func TestConcurrencyGateAuthoritativeDebtBeatsStaleCacheDuringAdmission(t *testi
 		t.Fatalf("debt forgiveness authoritative=%d cached=%d", authoritative, cached)
 	}
 }
+
+// Both child reads must survive a real shared-window serialization conflict,
+// while the parent's reservation and one reservation per child stay intact.
+func TestSummaryProducerAdmissionsRetryAbortedTransactions(t *testing.T) {
+	s, ctx, checksum := concurrencyFixture(t)
+	root := concurrencyRequest(checksum, "tenant-summary-"+uuid.NewString(), "v1:hmac-sha256:"+fmt.Sprintf("%064x", 101))
+	root.RetryThreshold = 3
+	root.Maximum = orchestration.Cost{ToolCalls: 1, ResultBytes: 512 << 10, DistinctObjects: 100}
+	if _, err := s.Reserve(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := s.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err = lock.Exec(ctx, "select budget_window_id from ouf_mcp.budget_window where tenant_id=$1 for update", root.Identity.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		child := root
+		child.IdempotencyKey = uuid.NewString()
+		child.CapabilityID = []string{"ouf.ingestion.operations.summary", "ouf.gateway.operations.summary"}[i]
+		child.Owner = []string{"ingestion", "gateway"}[i]
+		child.SemanticFingerprint = "v1:hmac-sha256:" + fmt.Sprintf("%064x", i+102)
+		go func() { _, err := s.Reserve(ctx, child); results <- err }()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var waiting int
+		if err = s.Pool().QueryRow(ctx, "select count(*) from pg_stat_activity where wait_event_type='Lock' and query like 'insert into ouf_mcp.budget_window%' ").Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child reservations did not reach the held row lock")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err = lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = <-results; err != nil {
+			t.Fatalf("summary child lost to admission contention: %v", err)
+		}
+	}
+	var attempts int
+	var reserved int64
+	if err = s.Pool().QueryRow(ctx, "select count(*) from ouf_mcp.tool_attempt where tenant_id=$1", root.Identity.TenantID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Pool().QueryRow(ctx, "select reserved_tool_calls from ouf_mcp.budget_window where tenant_id=$1", root.Identity.TenantID).Scan(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || reserved != 3 {
+		t.Fatalf("duplicate or missing admission: attempts=%d reserved=%d", attempts, reserved)
+	}
+}
