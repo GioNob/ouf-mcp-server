@@ -720,3 +720,71 @@ conversazionale di [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIO
 e la [configurazione completa THS](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
 Il flusso introduce proposta/rifiuto/conferma con scadenza di 15 minuti,
 non rinnovi automatici dei grant al login. Nessun token va incollato in chat.
+
+
+## Workload Ingestion e stato IAM del 20 settembre 2026
+
+Questa sezione aggiorna il manuale dopo il collaudo THS e l'installazione del workload Ingestion. Non ripetere le configurazioni già concluse soltanto perché le sezioni storiche precedenti descrivono ancora checkpoint intermedi.
+
+### Client `ouf-ingestion`
+
+Il client è un workload M2M distinto dai client umani. Profilo verificato nel realm `ouf`:
+
+- Client ID: `ouf-ingestion`;
+- protocollo: OpenID Connect;
+- Client authentication: ON;
+- Authorization Services: OFF;
+- Service account roles: ON;
+- Standard flow: OFF;
+- Direct access grants: OFF;
+- Device Authorization Grant e altri flussi browser: OFF;
+- Require PKCE: OFF, perché il client usa `client_credentials` e non Authorization Code;
+- redirect URI, Root URL e Web origins: vuoti.
+
+Mapper dedicati:
+- Audience `ouf-api-gateway-audience`: `aud` include `ouf-api-gateway`, access token ON, introspection ON;
+- Hardcoded claim `ouf-lab-tenant`: `tenant_id=ouf-lab`, String, access token/introspection ON;
+- Hardcoded claim `ouf-service-actor-type`: `ouf_actor_type=SERVICE`, String, access token/introspection ON.
+
+Client scope:
+- `authorization.bundle.read` associato come **Default**.
+
+Il token emesso è stato verificato senza stamparlo: issuer, client, audience, tenant, actor, scope, subject e ACR presenti/coerenti. La successiva lettura del PolicyBundle tramite Gateway ha restituito HTTP 200 e bundle ACTIVE 12. Questo dimostra l'accesso del workload alla route, non crea né modifica grant OUF.
+
+### Separazione tra client umani e workload
+
+Non copiare il profilo `client_credentials` nei client umani:
+- `ouf-authorization-ths` usa login browser HUMAN e Standard flow con PKCE S256;
+- `ouf-chatgpt` è il client interattivo del connettore;
+- `ouf-human-admin` è stato usato per Device Flow amministrativo;
+- `ouf-mcp-server` e `ouf-ingestion` sono workload SERVICE.
+
+`ouf_actor_type`, `tenant_id`, audience e scope attestano il contesto del token. Non sostituiscono i grant della policy OUF.
+
+### Secret e rinnovo token Ingestion
+
+Il client secret è conservato sul server e non va rigenerato o copiato in chat. Il rinnovatore host usa `client_credentials`, token brevi e scrittura atomica su `/run/ouf-ingestion-auth/token`; un timer systemd lo rinnova periodicamente. Il consumer monta la directory `/run/ouf-ingestion-auth`, non il singolo file, così `os.replace` non lascia il container sul vecchio inode.
+
+La configurazione corrente usa:
+- `/opt/ouf/secrets/ingestion-client-secret`;
+- `/opt/ouf/secrets/ingestion-summary-receipt-key`;
+- `/opt/ouf/secrets/ingestion-summary.properties`;
+- `/run/ouf-ingestion-auth/token`.
+
+Non esporre questi valori. Verificare proprietà/permessi con l'UID del servizio invece di usare chmod permissivi.
+
+### SSO, account effettivo e `link_id`
+
+Una sessione SSO Keycloak già aperta può autenticare silenziosamente un account diverso da quello atteso. Prima di interpretare un 403 come problema di mapper o policy, verificare l'identità effettiva del nuovo token. Se necessario, eseguire sign-out dal realm nella stessa sessione browser e riconnettere con l'utente corretto.
+
+Il `link_id` del connettore ChatGPT è metadata di routing del collegamento, non un claim IAM e non un argomento di business OUF. Dopo reinstallazioni o riconnessioni gli identificativi storici possono diventare obsoleti: usare il collegamento attuale, non valori copiati da vecchi handoff.
+
+### External roles
+
+Il mapper `ouf-external-roles` del client interattivo usa User Realm Role e scrive `externalRoleRefs` come valore multivalore nell'access token. La presenza di un ruolo nel token non attribuisce automaticamente una capability: OUF applica catalogo, assegnazioni, tenant, validità, scope e vincoli della policy ACTIVE.
+
+Lo stato verificato al termine della sessione è PolicyBundle ACTIVE 12 con assegnazione del ruolo OUF `operational-viewer` al ruolo IAM di collaudo. La successiva rimozione del ruolo IAM e la riconnessione hanno prodotto un diniego atteso. Non ripristinare automaticamente il ruolo per “correggere” quel test negativo.
+
+### Conferme THS
+
+Il chatbot può leggere e preparare proposte, ma la pubblicazione rimane una decisione umana nella Trusted Human Surface. Nessun runbook, script di installazione o retry deve trasformare una proposta in approvazione automatica. Una richiesta interrotta ha esito non verificato: rileggere lo stato autorevole prima di qualsiasi nuova azione.
