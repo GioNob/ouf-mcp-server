@@ -136,6 +136,14 @@ revisioni ETag, pubblicazione e audit tramite
 e `authorization.policy.admin` anche per creare draft. Non è un'API delegabile
 da riutilizzare aggiungendo header che dichiarino un amministratore.
 
+La [PR Onboarding #29](https://github.com/GioNob/ouf-source-onboarding/pull/29)
+aggiunge sul canale umano lookup paginato dei grant nominali/per ruolo, diff
+vincolato alla revisione e simulazione non autoritativa ACTIVE/bozza. È il
+prerequisito owner: non espone ancora questi endpoint al chatbot, non consulta
+la directory IAM e non dimostra i ruoli effettivi di un soggetto. Configurazione,
+limiti e verifiche sono nella
+[guida di revisione](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/permission-review/docs/AUTHORIZATION_REVIEW.md).
+
 Da implementare come incremento distinto, riusando il dominio esistente:
 
 - Letture delegate bounded del catalogo, delle abilitazioni nominali, degli admin
