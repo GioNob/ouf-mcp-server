@@ -16,7 +16,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.ToolName)
-		if tool.MCPClass != "MCP_TOOL" || !tool.ToolEligible {
+		if (tool.MCPClass != "MCP_TOOL" && tool.MCPClass != "MCP_PROPOSAL_ONLY") || !tool.ToolEligible {
 			t.Fatalf("tool registry contains non-tool capability: %#v", tool)
 		}
 		if len(tool.InputSchema) == 0 || strings.Contains(strings.ToLower(string(tool.InputSchema)), `"sql"`) {
@@ -25,6 +25,9 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 	}
 	sort.Strings(names)
 	want := []string{
+		"authorization.permissions.propose",
+		"authorization.permissions.read",
+		"authorization.proposal.read",
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
 		"ouf.operations.explain",

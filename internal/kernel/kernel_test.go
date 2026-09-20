@@ -57,6 +57,9 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	}
 	sort.Strings(gotNames)
 	wantNames := []string{
+		"authorization.permissions.propose",
+		"authorization.permissions.read",
+		"authorization.proposal.read",
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
 		"ouf.operations.explain",

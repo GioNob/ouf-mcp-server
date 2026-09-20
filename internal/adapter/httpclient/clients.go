@@ -124,7 +124,13 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	body, _ := json.Marshal(in)
-	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, c.Endpoint.String(), bytes.NewReader(body))
+	endpoint := *c.Endpoint
+	switch in.CapabilityID {
+	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
+		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode
+	}
+	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if e != nil {
 		return orchestration.GatewayResponse{}, e
 	}

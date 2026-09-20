@@ -710,3 +710,13 @@ che richiede contemporaneamente autorità amministrativa ACTIVE e ruolo IAM
 configurato. Non riaprire il bootstrap. Per configurazione, stato di rilascio,
 adozione e trasferimento vedere
 [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md).
+
+## Chatbot e conferma THS dei permessi
+
+I nuovi strumenti di lettura/proposta richiedono scope e grant OUF dedicati.
+La conferma avviene nella THS Onboarding con un client IAM server separato,
+non nelle impostazioni del plugin. Seguire la sezione amministrazione
+conversazionale di [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md)
+e la [configurazione completa THS](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
+Il flusso introduce proposta/rifiuto/conferma con scadenza di 15 minuti,
+non rinnovi automatici dei grant al login. Nessun token va incollato in chat.

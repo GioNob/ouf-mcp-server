@@ -142,26 +142,44 @@ vincolato alla revisione e simulazione non autoritativa ACTIVE/bozza. È il
 prerequisito owner: non espone ancora questi endpoint al chatbot, non consulta
 la directory IAM e non dimostra i ruoli effettivi di un soggetto. Configurazione,
 limiti e verifiche sono nella
-[guida di revisione](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/permission-review/docs/AUTHORIZATION_REVIEW.md).
+[guida di revisione](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/AUTHORIZATION_REVIEW.md).
 
-Da implementare come incremento distinto, riusando il dominio esistente:
+L'incremento chatbot/THS aggiunge tre strumenti:
 
-- Letture delegate bounded del catalogo, delle abilitazioni nominali, degli admin
-  OUF e delle mappature di ruolo, con
-  capability amministrative dedicate e nessuna credenziale esposta.
-- Proposta e simulazione autorizzate via MCP, senza effetto sull'ACTIVE.
-- Scheda THS con diff, tenant, ruolo, capability, vincoli, durata e impatto;
-  conferma legata a hash/revisione/base ACTIVE e controllo dei privilegi
-  dell'approvatore. Eventuale separazione proposer/approver è una policy.
-- Pubblicazione/revoca umana, audit e stato interrogabile; negare modifiche
-  stale, auto-escalation non autorizzata e conferme provenienti dal tool.
-- Profilo amministrativo sulle altre capability di dominio: questo incremento
-  protegge la governance dei permessi, senza introdurre un bypass implicito
-  degli evaluator degli altri moduli.
+| Strumento | Scopo | Modifica ACTIVE |
+|---|---|---|
+| `authorization.permissions.read` | Grant configurati del tenant, filtro nominale o ruolo | No |
+| `authorization.permissions.propose` | UPSERT/REVOKE di un grant, motivazione obbligatoria | No |
+| `authorization.proposal.read` | Stato della propria proposta | No |
+
+La proposta è `MCP_PROPOSAL_ONLY` / COMMAND: non è marcata come sola lettura,
+perché registra proposta e audit. Dura 15 minuti e restituisce il collegamento
+HTTPS della THS configurato dall'owner. Il chatbot deve presentare quel link,
+non chiedere token né simulare il click umano. Una proposta PENDING non equivale
+a una concessione eseguita. Il browser autentica l'admin tramite un client IAM
+separato; hash, revisione, CSRF e riferimento ACTIVE vincolano la conferma.
+Solo allora l'owner pubblica atomicamente e restituisce PUBLISHED.
+
+Servono tre scope e tre grant OUF dedicati, anche per chi amministra tramite
+chatbot. Non è sufficiente avere lo scope o conoscere il subject di un admin.
+La nomina/revoca di admin ordinari usa grant `authorization.policy.admin`;
+la designazione protetta del superadmin rimane nel suo percorso di handover.
+La simulazione resta nel canale amministrativo di review, non è un quarto tool.
+Non è implementata una directory utenti IAM né un bypass di tutte le altre
+capability di dominio. Le letture riportano configurazione, non attestano
+l'accesso effettivo di una persona di cui non conosciamo i claim.
+
+Configurazione del client IAM THS, cookie, chiavi e collaudo:
+[guida Onboarding](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
+Mediazione e route pubbliche della THS:
+[guida Gateway](https://github.com/GioNob/ouf-api-gateway/blob/main/docs/PERMISSION_PROPOSALS_DEPLOYMENT.md).
+Rilasciare owner, Gateway e infine MCP. La chiave owner distinta non va montata
+in MCP. Dopo il rilascio aggiornare la discovery del plugin; non riusare il
+deploy helper che installa soltanto le route dello stato operativo.
 
 Il bootstrap e il trasferimento protetto sono implementati nella
 [PR Onboarding #28](https://github.com/GioNob/ouf-source-onboarding/pull/28),
-con [guida operativa](https://github.com/GioNob/ouf-source-onboarding/blob/authorization/designated-bootstrap-admin/docs/OUF_ADMIN_BOOTSTRAP.md).
+con [guida operativa](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/OUF_ADMIN_BOOTSTRAP.md).
 Le proprietà sono `ouf.authorization.bootstrap.admin-issuer`,
 `ouf.authorization.bootstrap.admin-tenant` e
 `ouf.authorization.bootstrap.superadmin-role`. Il principal deve essere HUMAN,
