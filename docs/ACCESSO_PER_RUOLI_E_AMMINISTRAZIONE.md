@@ -1,9 +1,29 @@
 # Accesso per ruoli e amministrazione dei permessi
 
-L'accesso ordinario usa i ruoli attestati dall'IAM e le policy OUF che li
-associano alle capability. Il login non pubblica grant e non rinnova le policy.
-L'admin gestisce i permessi OUF; assegnare un ruolo a una persona resta una
-responsabilità dell'IAM. Non viene creato un archivio locale degli utenti.
+L'IAM esterno identifica la persona e attesta i ruoli dell'organizzazione
+(per esempio `funzionario-informatico`). OUF decide quali capability associare
+a quei ruoli e può anche concedere abilitazioni nominali a una persona.
+Entrambe sono modalità ordinarie: un grant nominale non è necessariamente
+un'eccezione o un permesso temporaneo di collaudo.
+
+**L'amministratore OUF è una designazione applicativa OUF**, distinta dai ruoli
+dell'Ente. Non occorre creare `admin OUF` nel Keycloak di Maggioli. Un admin OUF
+può proporre e confermare, attraverso i canali governati previsti, nomine e
+revoche di altri admin OUF e abilitazioni nominali o per ruolo. Non modifica
+tramite OUF i ruoli organizzativi o le credenziali custoditi dall'IAM.
+
+**Il bootstrap associa il superadmin OUF a un ruolo organizzativo IAM**,
+identificato da issuer attendibile, tenant e riferimento stabile del ruolo.
+L'associazione è protetta e separata dai grant ordinari: gli admin ordinari
+non possono modificarla o neutralizzarla con una policy DENY.
+Il bootstrap non è una nomina automatica del primo utente che accede.
+
+Il superadmin uscente propone il nuovo ruolo; un titolare del ruolo destinatario
+si autentica e conferma. Solo allora la sostituzione è atomica. Fino alla
+conferma resta attivo il ruolo precedente. Questo permette all'installatore di
+configurare OUF e poi cedere la responsabilità al ruolo appropriato del Comune.
+Il login non pubblica grant e non rinnova le policy. OUF non conserva password
+né duplica l'anagrafica IAM.
 
 Autorità: PET Authorization v1.5 §§6.3–7.2, 11–14, 34.2; PET MCP v1.4
 §§37, 83–84 e Operational Awareness §33. Roadmap di coordinamento:
@@ -33,11 +53,13 @@ implicitamente: il mapper IAM deve emettere il claim canonico esplicito.
 Questi header sono utilizzabili soltanto sulle porte private isolate al
 Gateway; `X-OUF-Gateway-Verified` da solo non autentica una connessione.
 
-## Configurazione ordinaria nel laboratorio
+## Esempio opzionale di accesso per ruolo nel laboratorio
 
-Ruolo applicativo proposto: `ouf-operations-viewer`. In Keycloak creare o
-riusare un ruolo governato con quel riferimento; assegnarlo a Giovanni
-nell'IAM. Configurare per `ouf-chatgpt` un role mapper verso l'access token,
+Per il solo collaudo del trasporto dei ruoli si può usare `ouf-operations-viewer`.
+In un'integrazione reale riusare un ruolo organizzativo attestato dall'IAM
+(per esempio `funzionario-informatico`) e mapparlo alle capability in OUF.
+Non è richiesto introdurre nuovi ruoli applicativi nel Keycloak del fornitore.
+Se si usa il ruolo di laboratorio, assegnarlo tramite l'amministrazione IAM. Configurare per `ouf-chatgpt` un role mapper verso l'access token,
 claim JSON multivalore `externalRoleRefs`, che riporti gli identificatori
 effettivamente assegnati. Non usare un attributo modificabile dall'utente o
 un hardcoded claim per dichiarare il ruolo. Il valore emesso deve coincidere
@@ -67,11 +89,13 @@ amministrativa va scelta esplicitamente e sottoposta a revisione periodica.
 Non coincide con la durata del token e non deve essere rinnovata a ogni login.
 Non impostare una scadenza automatica di 24 ore per l'abilitazione ordinaria.
 
-La sostituzione del grant personale di prova richiede backup dell'ACTIVE,
+Se si sceglie di collaudare il solo grant di ruolo, la sostituzione del grant
+personale di prova richiede backup dell'ACTIVE,
 nuova versione che conservi tutti gli altri grant e capability, verifica del
 diff e pubblicazione umana autenticata. Rimuovere il grant personale di prova
 nella stessa versione: lasciarlo attivo renderebbe inefficace il test di revoca
-del solo ruolo. Non aggiungere scope o grant amministrativi a Giovanni per
+del solo ruolo. Questa rimozione serve a isolare il test: in esercizio i grant
+nominali possono coesistere con quelli di ruolo. Non aggiungere scope o grant amministrativi a Giovanni per
 consentirgli una lettura operativa.
 
 ## Ordine di rilascio e verifica
@@ -99,8 +123,10 @@ il runbook IAM e policy, misurando la propagazione.
 
 ## Amministrazione conversazionale dei permessi
 
-Esperienza richiesta dall'utente: l'admin chiede quali ruoli autorizzano una
-capability, vede scope e vincoli, prepara assegnazioni/revoche ruolo→capability,
+Esperienza richiesta dall'utente: l'admin consulta le abilitazioni effettive di
+una persona, distingue grant nominali, ruoli organizzativi e nomina ad admin OUF,
+vede scope e vincoli, prepara assegnazioni/revoche ruolo→capability,
+abilitazioni nominali e nomine/revoche di amministratori OUF,
 simula l'effetto e conferma una modifica esatta nella Trusted Human Surface.
 La chat deve poi poter consultare l'esito e la versione pubblicata.
 
@@ -110,16 +136,73 @@ revisioni ETag, pubblicazione e audit tramite
 e `authorization.policy.admin` anche per creare draft. Non è un'API delegabile
 da riutilizzare aggiungendo header che dichiarino un amministratore.
 
-Da implementare come incremento distinto, riusando il dominio esistente:
+La [PR Onboarding #29](https://github.com/GioNob/ouf-source-onboarding/pull/29)
+aggiunge sul canale umano lookup paginato dei grant nominali/per ruolo, diff
+vincolato alla revisione e simulazione non autoritativa ACTIVE/bozza. È il
+prerequisito owner: non espone ancora questi endpoint al chatbot, non consulta
+la directory IAM e non dimostra i ruoli effettivi di un soggetto. Configurazione,
+limiti e verifiche sono nella
+[guida di revisione](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/AUTHORIZATION_REVIEW.md).
 
-- Letture delegate bounded del catalogo e delle mappature di ruolo, con
-  capability amministrative dedicate e nessuna credenziale esposta.
-- Proposta e simulazione autorizzate via MCP, senza effetto sull'ACTIVE.
-- Scheda THS con diff, tenant, ruolo, capability, vincoli, durata e impatto;
-  conferma legata a hash/revisione/base ACTIVE e controllo dei privilegi
-  dell'approvatore. Eventuale separazione proposer/approver è una policy.
-- Pubblicazione/revoca umana, audit e stato interrogabile; negare modifiche
-  stale, auto-escalation non autorizzata e conferme provenienti dal tool.
+L'incremento chatbot/THS aggiunge tre strumenti:
+
+| Strumento | Scopo | Modifica ACTIVE |
+|---|---|---|
+| `authorization.permissions.read` | Grant configurati del tenant, filtro nominale o ruolo | No |
+| `authorization.permissions.propose` | UPSERT/REVOKE di un grant, motivazione obbligatoria | No |
+| `authorization.proposal.read` | Stato della propria proposta | No |
+
+La proposta è `MCP_PROPOSAL_ONLY` / COMMAND: non è marcata come sola lettura,
+perché registra proposta e audit. Dura 15 minuti e restituisce il collegamento
+HTTPS della THS configurato dall'owner. Il chatbot deve presentare quel link,
+non chiedere token né simulare il click umano. Una proposta PENDING non equivale
+a una concessione eseguita. Il browser autentica l'admin tramite un client IAM
+separato; hash, revisione, CSRF e riferimento ACTIVE vincolano la conferma.
+Solo allora l'owner pubblica atomicamente e restituisce PUBLISHED.
+
+Servono tre scope e tre grant OUF dedicati, anche per chi amministra tramite
+chatbot. Non è sufficiente avere lo scope o conoscere il subject di un admin.
+La nomina/revoca di admin ordinari usa grant `authorization.policy.admin`;
+la designazione protetta del superadmin rimane nel suo percorso di handover.
+La simulazione resta nel canale amministrativo di review, non è un quarto tool.
+Non è implementata una directory utenti IAM né un bypass di tutte le altre
+capability di dominio. Le letture riportano configurazione, non attestano
+l'accesso effettivo di una persona di cui non conosciamo i claim.
+
+Configurazione del client IAM THS, cookie, chiavi e collaudo:
+[guida Onboarding](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
+Mediazione e route pubbliche della THS:
+[guida Gateway](https://github.com/GioNob/ouf-api-gateway/blob/main/docs/PERMISSION_PROPOSALS_DEPLOYMENT.md).
+Rilasciare owner, Gateway e infine MCP. La chiave owner distinta non va montata
+in MCP. Dopo il rilascio aggiornare la discovery del plugin; non riusare il
+deploy helper che installa soltanto le route dello stato operativo.
+
+Il bootstrap e il trasferimento protetto sono implementati nella
+[PR Onboarding #28](https://github.com/GioNob/ouf-source-onboarding/pull/28),
+con [guida operativa](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/OUF_ADMIN_BOOTSTRAP.md).
+Le proprietà sono `ouf.authorization.bootstrap.admin-issuer`,
+`ouf.authorization.bootstrap.admin-tenant` e
+`ouf.authorization.bootstrap.superadmin-role`. Il principal deve essere HUMAN,
+con ruolo verificato e scope richiesto. Non serve un grant nominale nella prima
+policy. La precedente proposta basata sul subject del primo admin è superata.
+
+Sulle installazioni già inizializzate non si riapre il bootstrap:
+`POST /api/trusted-human/v1/authorization/superadmin:adopt` richiede sia il
+ruolo configurato sia l'autorità amministrativa nella policy ACTIVE. È
+un'adozione esplicita una tantum, non un recupero senza amministratori.
+
+Il trasferimento usa revisioni ETag e una proposta con durata di 15 minuti;
+la conferma richiede issuer, tenant e ruolo destinatario verificati. Il
+superadmin precedente può annullare la proposta. I grant ordinari eventualmente
+posseduti dal ruolo uscente rimangono indipendenti. La stessa persona può
+confermare se l'IAM le attesta entrambi i ruoli: non è prevista una regola
+obbligatoria di separazione tra due persone.
+
+La CI Onboarding copre bootstrap, adozione, autenticazione bearer, concorrenza,
+rollback, scadenza, separazione tenant e impossibilità per un admin ordinario
+di cambiare il superadmin. Verificare merge e versione rilasciata prima
+dell'uso: il superamento della CI non certifica il deploy IAM/Gateway reale.
+Non sono introdotti custodi, break-glass o nuovi meccanismi di revoca IAM.
 
 `approve/publish/activate` human-only non diventano tool-eligible. Nessun
 accesso Keycloak Admin API o gestione account è introdotto da questo requisito.

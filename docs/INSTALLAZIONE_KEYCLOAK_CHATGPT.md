@@ -689,3 +689,34 @@ I test coprono prova solo in header, diniego prima dell'ammissione, revoca o
 cambio della decisione owner, tenant diverso e dettaglio non pubblico.
 Il repository Gateway esegue anche un gate con APISIX 3.18 reale, JWT firmati
 con chiavi esclusivamente di test e JWKS locale alla CI.
+
+## Identità esterna, amministrazione OUF e primo bootstrap
+
+I ruoli organizzativi attestati dall'IAM e il ruolo di amministratore OUF sono
+concetti distinti. OUF associa capability ai ruoli dell'Ente e alle persone
+nominali; la nomina di un admin OUF è governata dalla policy OUF e non richiede
+un ruolo `admin OUF` nel Keycloak del fornitore. Il grant nominale di 24 ore
+usato nel collaudo non prescrive la durata delle abilitazioni ordinarie.
+
+Nel bootstrap configurare l'associazione superadmin con issuer attendibile,
+tenant e ruolo organizzativo IAM (`superadmin-role`), non con il subject del
+primo utente. Il ruolo può essere quello dell'installatore; dopo la
+configurazione il superadmin propone il ruolo destinatario del Comune e un
+suo titolare autenticato conferma il trasferimento atomico. Gli admin ordinari
+non possono modificare questa associazione protetta.
+
+Su un'installazione già attiva usare la procedura esplicita di adozione,
+che richiede contemporaneamente autorità amministrativa ACTIVE e ruolo IAM
+configurato. Non riaprire il bootstrap. Per configurazione, stato di rilascio,
+adozione e trasferimento vedere
+[accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md).
+
+## Chatbot e conferma THS dei permessi
+
+I nuovi strumenti di lettura/proposta richiedono scope e grant OUF dedicati.
+La conferma avviene nella THS Onboarding con un client IAM server separato,
+non nelle impostazioni del plugin. Seguire la sezione amministrazione
+conversazionale di [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIONE.md)
+e la [configurazione completa THS](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
+Il flusso introduce proposta/rifiuto/conferma con scadenza di 15 minuti,
+non rinnovi automatici dei grant al login. Nessun token va incollato in chat.

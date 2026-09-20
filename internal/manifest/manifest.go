@@ -111,7 +111,7 @@ func (s *Snapshot) Checksum() (string, error) {
 func (s *Snapshot) ToolEligible() []Capability {
 	out := make([]Capability, 0, len(s.Capabilities))
 	for _, c := range s.Capabilities {
-		if c.ToolEligible && c.MCPClass == "MCP_TOOL" && c.PublicationState == "ACTIVE" {
+		if c.ToolEligible && (c.MCPClass == "MCP_TOOL" || c.MCPClass == "MCP_PROPOSAL_ONLY") && c.PublicationState == "ACTIVE" {
 			out = append(out, c)
 		}
 	}
