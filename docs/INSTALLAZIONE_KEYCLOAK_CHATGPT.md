@@ -1,6 +1,6 @@
 # Installazione OUF: Keycloak, ChatGPT e autorizzazione MCP
 
-Aggiornamento: 19 settembre 2026. Runbook dell'ambiente `ouf-lab`, basato
+Aggiornamento: 21 settembre 2026. Runbook dell'ambiente `ouf-lab`, basato
 sulle evidenze della sessione del 18 settembre e sul codice dei repository.
 I valori del laboratorio non sono default universali di prodotto.
 
@@ -720,3 +720,203 @@ conversazionale di [accesso e amministrazione](ACCESSO_PER_RUOLI_E_AMMINISTRAZIO
 e la [configurazione completa THS](https://github.com/GioNob/ouf-source-onboarding/blob/main/docs/PERMISSION_PROPOSALS.md).
 Il flusso introduce proposta/rifiuto/conferma con scadenza di 15 minuti,
 non rinnovi automatici dei grant al login. Nessun token va incollato in chat.
+
+
+## 14. R3 Operational Awareness: lezione live del 21 settembre 2026
+
+Questa sezione registra un caso reale di collaudo cross-module da riutilizzare come
+runbook diagnostico. Non sostituisce i PET: Reality Baseline Package v1.7,
+Authorization PET v1.5, MCP PET v1.4, Gateway PET v1.5, Ingestion PET v1.3 e
+Cross-Module Alignment Matrix v1.7 restano normativi.
+
+### Esito live consolidato
+
+Il 21 settembre 2026 il flusso reale client conversazionale -> MCP -> Gateway ->
+producer Gateway/Ingestion ha raggiunto il primo positive E2E completo per
+`ouf.operations.summary`:
+
+- `/mcp` -> HTTP 200;
+- `ouf.operations.summary` -> HTTP 200;
+- `ouf.gateway.operations.summary` -> HTTP 200;
+- `ouf.ingestion.operations.summary` -> HTTP 200;
+- aggregato finale `HEALTHY`, `partial=false`, nessun producer indisponibile.
+
+La policy ACTIVE risultante era `ouf-lab-authorization:14`, con 15 capability e
+19 grant. Il positive test usava grant temporanei e non costituisce un modello
+di concessione permanente.
+
+### Catena diagnostica che ha isolato il 403 Ingestion
+
+Il sintomo iniziale era:
+
+- parent `ouf.operations.summary` -> 403;
+- producer Gateway -> 200;
+- producer Ingestion -> 403.
+
+La diagnosi corretta è stata ottenuta eliminando una causa per volta:
+
+1. verificare il timestamp della chiamata contro `validUntil`; non attribuire
+   automaticamente un 403 alla scadenza;
+2. leggere i log APISIX raw senza filtri troppo aggressivi;
+3. confrontare producer positivo e producer negativo nello stesso istante;
+4. verificare mount, proprietà Spring, ownership numerica UID/GID e leggibilità
+   di receipt key/token senza stampare i secret;
+5. confrontare fingerprint SHA-256 delle receipt key APISIX/owner, tenendo conto
+   di newline finali nei file;
+6. verificare la provenance dell'immagine live prima di proporre rebuild;
+7. leggere la policy ACTIVE reale e confrontare descriptor/grant producer;
+8. distinguere scope OIDC da capability OUF: lo scope
+   `operations.status.read` nel token non dichiara automaticamente la capability
+   `operations.status.read` nel bundle;
+9. verificare il secondo controllo owner-side Ingestion.
+
+La causa finale era un contratto policy incompleto: il producer Ingestion
+autenticava correttamente `ouf.ingestion.operations.summary`, ma il codice owner
+eseguiva anche il fine-grained check `operations.status.read` su
+`ResourceContext(resourceType=operational, module=INGESTION,
+detailLevel=TENANT_OPERATIONAL)`. La capability e il relativo grant non erano
+presenti nel bundle v13. Il default-deny era quindi corretto.
+
+La correzione governata ha aggiunto:
+
+- descriptor `operations.status.read`, READ, scope
+  `operations.status.read`, actor HUMAN;
+- grant temporaneo nominale con `resourceType=operational`,
+  `resourceAttributes.module=INGESTION`,
+  `allowedDetailLevels=[TENANT_OPERATIONAL]`;
+- nuovi grant temporanei per parent, Gateway producer e Ingestion producer.
+
+Il bundle v14 è stato costruito dal backup completo v13 e verificato come delta
+strettamente additivo prima del publish: nessuna capability/grant preesistente
+rimossa o modificata.
+
+### Capability registry e policy ACTIVE sono piani distinti
+
+Prima di inserire un nuovo descriptor nel bundle, verificare anche il registry
+immutabile:
+
+`GET /api/trusted-human/v1/authorization/capabilities`
+
+Se la capability manca, registrarla tramite THS HUMAN e verificare HTTP 201.
+Un eventuale 409 non va trattato automaticamente come successo: rileggere e
+confrontare owner e descriptor.
+
+Solo dopo creare un draft con il PolicyBundle completo. Il rollback del bundle
+non rimuove una registrazione capability già effettuata.
+
+### Vista ROLES e differenza tra link connector e payload applicativo
+
+`authorization.permissions.read` con `view=ROLES` accetta come input
+applicativo solo:
+
+`{"view":"ROLES"}`
+
+Il `link_id` usato dal client conversazionale per selezionare l'account
+connesso è metadata del connector e non appartiene al JSON OUF.
+
+Nel caso osservato, ripetuti `503 INVALID_ARGUMENT` non dipendevano dal JSON:
+la route APISIX `mcp-permissions-read` puntava ancora a
+`ouf-source-onboarding:8080` mentre il container live esponeva solo
+`ouf-onboarding`. I log APISIX mostravano il fallimento DNS prima di qualunque
+chiamata owner.
+
+La route è stata corretta con un delta minimo e rollbackabile:
+
+`ouf-source-onboarding:8080 -> ouf-onboarding:8080`
+
+Dopo la correzione la vista ROLES ha restituito correttamente il catalogo.
+
+Regola generale: davanti a `503 INVALID_ARGUMENT`, non dedurre dal messaggio
+del client che l'owner abbia validato gli argomenti. Correlare sempre i log
+Gateway e verificare se la richiesta abbia realmente raggiunto l'upstream.
+
+### APISIX dinamico: leggere la fonte live, non solo il repository
+
+Le route APISIX sono dinamiche in etcd. Una configurazione corretta nel
+repository o nella InstallationProjection non prova che la route live sia
+allineata.
+
+Nel laboratorio, `ouf-etcd` era minimal/distroless: nessuna shell, ma
+`/usr/local/bin/etcdctl` era invocabile direttamente con `docker exec`.
+Questa tecnica ha permesso di leggere `/apisix/routes` senza installare tool,
+aprire porte o modificare etcd.
+
+Per modifiche route:
+
+- creare prima un backup completo della route;
+- costruire un candidato e verificare automaticamente che il delta sia unico;
+- usare l'Admin API APISIX, non scrittura diretta in etcd;
+- conservare rollback fino alla fine dell'acceptance;
+- verificare il read-back live.
+
+### Receipt operational owner: controlli riusabili
+
+Le receipt producer sono HMAC separate per Gateway e Ingestion. Per diagnosi:
+
+- verificare solo metadata/fingerprint, mai stampare la key;
+- distinguere raw SHA da trimmed SHA quando i file possono terminare con newline;
+- controllare `SPRING_CONFIG_ADDITIONAL_LOCATION` e il path della receipt key;
+- verificare UID/GID numerici, non affidarsi a nomi NSS assenti sull'host;
+- confrontare claim/path/capability/decisionRef fra producer positivo e negativo;
+- ricordare che l'owner rivaluta la policy locale e può negare anche una receipt
+  crittograficamente valida.
+
+Per summary R3 il `decisionRef` è deterministico:
+`bundleId:version:capabilityId`. MCP Go e Authorization SDK Java devono
+produrre lo stesso formato; APISIX lo firma senza trasformarlo.
+
+### Refresh policy: 200 non basta, confrontare anche il cambio payload
+
+MCP Go e i due owner Java effettuano refresh periodico dell'ACTIVE. Nel passaggio
+v13 -> v14 tutti hanno continuato a ricevere HTTP 200; il cambio della dimensione
+della risposta da circa 8.2 KB a circa 10.7 KB è stato un'ulteriore evidenza che
+i consumer avevano visto il nuovo bundle.
+
+Non riavviare i consumer per forzare una correzione se il refresh è già sano:
+prima verificare versione/hash e semantica della policy.
+
+### Sicurezza delle evidenze
+
+I dump Admin API/etcd possono contenere `client_secret`, admin key o altri
+segreti. Le evidenze da conservare devono essere redatte. Se un secret compare
+in chat/log/artifact, considerarlo esposto e pianificarne la rotazione nel
+normale processo governato; non introdurre una rotazione improvvisa durante una
+diagnosi non correlata.
+
+### Acceptance ancora separata
+
+Il positive E2E non chiude automaticamente tutto R3. Restano gate distinti per
+deny/revocation, partial/staleness, fault+recovery reali, restart/reboot,
+correlation/audit e latenza client conversazionale esterno <-> MCP. Non
+indebolire i controlli per accelerare questi test.
+
+
+### Consolidamento live permissions/THS dopo la diagnosi
+
+Dopo la diagnosi del 21 settembre, il branch Gateway R3 verificato
+`1629652163edce7b3bc4c8f80bf29a3ef1b1ab8a` è stato usato come fonte per
+ricompilare la configurazione, applicare la InstallationProjection attiva e
+materializzare le route permission/THS.
+
+Il candidato ha prodotto `ouf-onboarding:8080` per tutte le sei route
+`mcp-permissions-{read,propose,status}` e
+`authorization-ths-{page,api,login}`.
+
+Il read-back live prima dell'applicazione mostrava:
+
+- `mcp-permissions-read` già corretto;
+- le altre cinque route ancora su `ouf-source-onboarding:8080`.
+
+Sono stati salvati i cinque JSON live come rollback e sostituiti soltanto quei
+cinque route ID tramite Admin API APISIX. Il read-back etcd successivo ha
+confermato `ouf-onboarding:8080` su tutte e sei.
+
+Smoke test finale, non distruttivo: `authorization.permissions.read` con
+`view=ROLES`, identità `ouf-admin`, ha restituito il catalogo atteso
+(`operational-viewer` e relativa assegnazione organizzativa) senza effettuare
+modifiche.
+
+Questa evidenza conferma il binding live delle route di lettura/proposta/status
+e della superficie THS verso l'owner Onboarding corretto. I flussi mutativi
+(proposta, conferma, publish/reject) restano governati e vanno collaudati come
+gate separati.
