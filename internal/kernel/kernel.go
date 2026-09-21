@@ -67,7 +67,7 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.H
 		}
 	}
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
-	return modernOnly(streamable), nil
+	return modernOnlyWithLogger(logger, streamable), nil
 }
 
 type identityKey struct{}
@@ -161,7 +161,21 @@ func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
 }
 
 func modernOnly(next http.Handler) http.Handler {
+	return modernOnlyWithLogger(slog.Default(), next)
+}
+
+func modernOnlyWithLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		defer func() {
+			logger.Info(
+				"mcp request completed",
+				"mcp_method", r.Header.Get("Mcp-Method"),
+				"mcp_name", r.Header.Get("Mcp-Name"),
+				"correlation_id", r.Header.Get("X-Correlation-ID"),
+				"duration_ms", time.Since(started).Milliseconds(),
+			)
+		}()
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.Method != http.MethodPost {

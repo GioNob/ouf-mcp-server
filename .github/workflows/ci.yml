@@ -77,3 +77,13 @@ jobs:
             internal/adapter/httpclient/policy_bundle.go
             internal/evidence/gateway_pairwise_test.go
           retention-days: 30
+  isolated-release-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.25.13', cache: true}
+      - name: Old runtime to candidate and rollback schema compatibility
+        run: bash scripts/verify-release-isolated.sh
