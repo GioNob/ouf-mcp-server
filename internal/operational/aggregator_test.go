@@ -18,6 +18,9 @@ type aggregateCallerFixture struct {
 }
 
 func (f *aggregateCallerFixture) Call(_ context.Context, in orchestration.Invocation) (orchestration.Result, error) {
+	if in.WindowBudget != orchestration.DefaultWindowBudget() || in.RetryThreshold != 3 {
+		return orchestration.Result{}, errors.New("producer budget policy missing or inconsistent")
+	}
 	f.mu.Lock()
 	f.calls = append(f.calls, in.CapabilityID)
 	f.mu.Unlock()

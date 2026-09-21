@@ -87,7 +87,7 @@ func TestDurableLifecycle(t *testing.T) {
 	if _, err = store.Pool().Exec(ctx, "update ouf_mcp.manifest_snapshot set manifest_version='mutated' where manifest_checksum=$1", manifestHash); err == nil {
 		t.Fatal("manifest mutable")
 	}
-	governed := orchestration.AdmissionRequest{Identity: orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "agent", TenantID: "tenant-" + uuid.NewString(), ActorType: "AI_AGENT", AuthenticationContextRef: "authn-1"}, CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", ManifestChecksum: manifestHash, AuthorizationDecisionRef: "decision-1", IdempotencyKey: uuid.NewString(), RequestHash: hash64("governed"), SemanticFingerprint: "v1:hmac-sha256:same", FingerprintVersion: "v1", CorrelationID: uuid.NewString(), Window: time.Minute, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 1024}}
+	governed := orchestration.AdmissionRequest{Identity: orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "agent", TenantID: "tenant-" + uuid.NewString(), ActorType: "AI_AGENT", AuthenticationContextRef: "authn-1"}, CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", ManifestChecksum: manifestHash, AuthorizationDecisionRef: "decision-1", IdempotencyKey: uuid.NewString(), RequestHash: hash64("governed"), SemanticFingerprint: "v1:hmac-sha256:same", FingerprintVersion: "v1", CorrelationID: uuid.NewString(), Window: time.Minute, RetryThreshold: 3, WindowBudget: orchestration.DefaultWindowBudget(), Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 1024}}
 	reserved, err := store.Reserve(ctx, governed)
 	if err != nil {
 		t.Fatal(err)

@@ -74,6 +74,7 @@ type AdmissionRequest struct {
 	Window                                                                          time.Duration
 	RetryThreshold                                                                  int
 	Maximum                                                                         Cost
+	WindowBudget                                                                    Cost
 }
 type AdmissionDecision struct {
 	AttemptID   uuid.UUID
@@ -132,6 +133,7 @@ type Invocation struct {
 	Window, Timeout                                                          time.Duration
 	RetryThreshold                                                           int
 	Maximum                                                                  Cost
+	WindowBudget                                                             Cost
 }
 type Result struct {
 	Body      []byte
@@ -209,7 +211,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		AttemptID: uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
 		IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(requestHash[:]), SemanticFingerprint: fingerprint,
-		FingerprintVersion: "v1", CorrelationID: in.CorrelationID, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum,
+		FingerprintVersion: "v1", CorrelationID: in.CorrelationID, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum, WindowBudget: in.WindowBudget,
 	})
 	if err != nil {
 		return Result{}, err

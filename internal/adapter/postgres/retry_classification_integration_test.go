@@ -23,6 +23,7 @@ func TestRetryClassification(t *testing.T) {
 			s, ctx, checksum := concurrencyFixture(t)
 			req := concurrencyRequest(checksum, uuid.NewString(), "v1:hmac-sha256:retry-classification")
 			req.RetryThreshold = 3
+			req.WindowBudget.ToolCalls = 3
 			req.Window = time.Hour
 			for n := 0; n < 3; n++ {
 				req.IdempotencyKey = uuid.NewString()

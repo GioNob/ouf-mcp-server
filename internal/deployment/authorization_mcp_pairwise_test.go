@@ -203,6 +203,7 @@ func TestAuthorizationMCPPairwise(t *testing.T) {
 		Window:            time.Minute,
 		Timeout:           time.Second,
 		RetryThreshold:    1,
+		WindowBudget:      orchestration.DefaultWindowBudget(),
 		Maximum:           orchestration.Cost{ToolCalls: 1, DistinctObjects: 20, ResultBytes: 1024},
 	})
 	if err != nil {

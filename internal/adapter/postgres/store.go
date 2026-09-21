@@ -19,6 +19,7 @@ import (
 
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
 var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
+var ErrBudgetPolicyMismatch = errors.New("window budget policy missing or inconsistent")
 var ErrIdempotencyOutcomeUnknown = errors.New("idempotency outcome unknown")
 var ErrGroupLocked = errors.New("equivalence group locked by uncertain attempt")
 
@@ -145,7 +146,7 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 }
 
 func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
-	if in.Window <= 0 || in.RetryThreshold < 1 || in.Maximum.ToolCalls < 1 {
+	if in.Window <= 0 || in.RetryThreshold < 1 || in.Maximum.ToolCalls < 1 || in.Maximum.ResultBytes < 0 || in.Maximum.DistinctObjects < 0 || !orchestration.ValidWindowBudget(in.WindowBudget) {
 		return orchestration.AdmissionDecision{}, errors.New("invalid admission policy")
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -179,20 +180,24 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	windowStart := now.Truncate(in.Window)
 	windowEnd := windowStart.Add(in.Window)
 	windowID := uuid.New()
-	err = tx.QueryRow(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end) values($1,$2,$3,$4,$5,$6,$7) on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update set policy_ref=excluded.policy_ref returning budget_window_id`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.ManifestChecksum, windowStart, windowEnd).Scan(&windowID)
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end,limit_tool_calls,limit_result_bytes,limit_distinct_objects) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update set policy_ref=excluded.policy_ref returning budget_window_id`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.ManifestChecksum, windowStart, windowEnd, in.WindowBudget.ToolCalls, in.WindowBudget.ResultBytes, in.WindowBudget.DistinctObjects).Scan(&windowID)
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
 	var reservedCalls, consumedCalls, reservedBytes, consumedBytes, reservedObjects, consumedObjects int64
-	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes,reserved_distinct_objects,consumed_distinct_objects from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes, &reservedObjects, &consumedObjects); err != nil {
+	var limitCalls, limitBytes, limitObjects *int64
+	if err = tx.QueryRow(ctx, `select reserved_tool_calls,consumed_tool_calls,reserved_result_bytes,consumed_result_bytes,reserved_distinct_objects,consumed_distinct_objects,limit_tool_calls,limit_result_bytes,limit_distinct_objects from ouf_mcp.budget_window where budget_window_id=$1 for update`, windowID).Scan(&reservedCalls, &consumedCalls, &reservedBytes, &consumedBytes, &reservedObjects, &consumedObjects, &limitCalls, &limitBytes, &limitObjects); err != nil {
 		return orchestration.AdmissionDecision{}, err
+	}
+	if limitCalls == nil || limitBytes == nil || limitObjects == nil || *limitCalls != in.WindowBudget.ToolCalls || *limitBytes != in.WindowBudget.ResultBytes || *limitObjects != in.WindowBudget.DistinctObjects {
+		return orchestration.AdmissionDecision{}, ErrBudgetPolicyMismatch
 	}
 	var objectDebt int64
 	if err = tx.QueryRow(ctx, `select coalesce(sum(debt_amount),0) from ouf_mcp.budget_object_debt where budget_window_id=$1 and debt_state='ACTIVE'`, windowID).Scan(&objectDebt); err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > in.Maximum.DistinctObjects*int64(in.RetryThreshold)
-	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > in.Maximum.ToolCalls*int64(in.RetryThreshold) || reservedBytes+consumedBytes+in.Maximum.ResultBytes > in.Maximum.ResultBytes*int64(in.RetryThreshold) || objectBudgetExceeded {
+	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && budgetWouldExceed(*limitObjects, in.Maximum.DistinctObjects, reservedObjects, consumedObjects, objectDebt)
+	if budgetWouldExceed(*limitCalls, in.Maximum.ToolCalls, reservedCalls, consumedCalls) || budgetWouldExceed(*limitBytes, in.Maximum.ResultBytes, reservedBytes, consumedBytes) || objectBudgetExceeded {
 		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
 	}
 	groupID := uuid.New()
