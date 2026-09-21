@@ -32,7 +32,7 @@ func concurrencyRequest(checksum, tenant, fingerprint string) orchestration.Admi
 		CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", ManifestChecksum: checksum,
 		AuthorizationDecisionRef: "authz-concurrency", IdempotencyKey: uuid.NewString(), RequestHash: hash64(uuid.NewString()),
 		SemanticFingerprint: fingerprint, FingerprintVersion: "v1", CorrelationID: uuid.NewString(), Window: time.Minute,
-		RetryThreshold: 8, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 1024, DistinctObjects: 2},
+		RetryThreshold: 8, WindowBudget: orchestration.DefaultWindowBudget(), Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 1024, DistinctObjects: 2},
 	}
 }
 
@@ -235,7 +235,7 @@ func TestConcurrencyGateAuthoritativeDebtBeatsStaleCacheDuringAdmission(t *testi
 	s, ctx, checksum := concurrencyFixture(t)
 	tenant := "tenant-debt-gate-" + uuid.NewString()
 	seed := concurrencyRequest(checksum, tenant, "v1:hmac-sha256:"+fmt.Sprintf("%064x", 14))
-	seed.RetryThreshold = 2
+	seed.WindowBudget.DistinctObjects = 2
 	reserved, err := s.Reserve(ctx, seed)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestConcurrencyGateAuthoritativeDebtBeatsStaleCacheDuringAdmission(t *testi
 	}
 
 	candidate := concurrencyRequest(checksum, tenant, "v1:hmac-sha256:"+fmt.Sprintf("%064x", 15))
-	candidate.RetryThreshold = 1
+	candidate.WindowBudget = seed.WindowBudget
 	start := make(chan struct{})
 	var repairErr, admissionErr error
 	wg := sync.WaitGroup{}

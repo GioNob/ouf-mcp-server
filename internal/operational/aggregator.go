@@ -294,7 +294,8 @@ func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, produ
 		GatewayBindingRef: "capability://" + producer.CapabilityID, ManifestChecksum: a.ManifestChecksum,
 		Arguments: in.Arguments, IdempotencyKey: idempotency, CorrelationID: in.CorrelationID,
 		Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3,
-		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
+		WindowBudget: orchestration.DefaultWindowBudget(),
+		Maximum:      orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
 	})
 	if err != nil || result.Problem != nil || len(result.Body) == 0 {
 		return nil, false, errors.Is(err, orchestration.ErrUnauthorized) || (result.Problem != nil && (result.Problem.Status == 401 || result.Problem.Status == 403 || result.Problem.Code == "NOT_AUTHORIZED"))

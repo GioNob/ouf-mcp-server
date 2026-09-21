@@ -18,10 +18,12 @@ func (f *fakeAuth) Authorize(context.Context, AuthorizationRequest) (Authorizati
 type fakeAdmission struct {
 	reserves, running, reconciles int
 	err                           error
+	last                          AdmissionRequest
 }
 
-func (f *fakeAdmission) Reserve(context.Context, AdmissionRequest) (AdmissionDecision, error) {
+func (f *fakeAdmission) Reserve(_ context.Context, in AdmissionRequest) (AdmissionDecision, error) {
 	f.reserves++
+	f.last = in
 	return AdmissionDecision{AttemptID: uuid.New()}, f.err
 }
 func (f *fakeAdmission) Dispatch(context.Context, uuid.UUID, string, time.Duration, int64) error {
@@ -44,7 +46,7 @@ func (f *fakeGateway) Execute(context.Context, GatewayRequest, time.Duration) (G
 }
 
 func invocation() Invocation {
-	return Invocation{Identity: Identity{ServicePrincipalID: "mcp", PrincipalID: "agent", TenantID: "tenant"}, CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", GatewayBindingRef: "capability://urban.object.related_search", ManifestChecksum: "checksum", Arguments: json.RawMessage(`{"targetTypeCodes":["B","A"],"limit":5}`), IdempotencyKey: "idem", CorrelationID: "corr", Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, Maximum: Cost{ToolCalls: 1, ResultBytes: 32}}
+	return Invocation{Identity: Identity{ServicePrincipalID: "mcp", PrincipalID: "agent", TenantID: "tenant"}, CapabilityID: "urban.object.related_search", Owner: "udp", OperationClass: "SEARCH", GatewayBindingRef: "capability://urban.object.related_search", ManifestChecksum: "checksum", Arguments: json.RawMessage(`{"targetTypeCodes":["B","A"],"limit":5}`), IdempotencyKey: "idem", CorrelationID: "corr", Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, WindowBudget: DefaultWindowBudget(), Maximum: Cost{ToolCalls: 1, ResultBytes: 32}}
 }
 func TestAuthorizationDenialPrecedesAdmissionAndGateway(t *testing.T) {
 	a := &fakeAdmission{}
@@ -89,5 +91,16 @@ func TestFingerprintIgnoresCosmeticTargetOrder(t *testing.T) {
 	c, _ := SemanticFingerprint(k, "cap", json.RawMessage(`{"targetTypeCodes":["A","C"],"limit":5}`))
 	if a == c {
 		t.Fatalf("semantic change collapsed")
+	}
+}
+
+func TestIndependentWindowBudgetForwardedToAdmission(t *testing.T) {
+	a := &fakeAdmission{}
+	g := &fakeGateway{response: GatewayResponse{Status: 200}}
+	in := invocation()
+	in.WindowBudget = DefaultWindowBudget()
+	_, err := (Service{Auth: &fakeAuth{true}, Admission: a, Gateway: g, FingerprintKey: make([]byte, 32)}).Call(context.Background(), in)
+	if err != nil || a.last.WindowBudget != in.WindowBudget || a.last.Maximum != in.Maximum || a.last.RetryThreshold != 3 {
+		t.Fatalf("budget dimensions lost or coupled: %+v %v", a.last, err)
 	}
 }

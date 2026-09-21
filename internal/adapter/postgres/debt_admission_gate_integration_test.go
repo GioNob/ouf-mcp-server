@@ -13,7 +13,7 @@ func TestDebtAdmissionReadsActiveDebt(t *testing.T) {
 	s, ctx, checksum := concurrencyFixture(t)
 	tenant := "tenant-debt-" + uuid.NewString()
 	seed := concurrencyRequest(checksum, tenant, "v1:hmac-sha256:"+fmt.Sprintf("%064x", 21))
-	seed.RetryThreshold = 2
+	seed.WindowBudget.DistinctObjects = 2
 	reserved, err := s.Reserve(ctx, seed)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestDebtAdmissionReadsActiveDebt(t *testing.T) {
 	}
 
 	candidate := concurrencyRequest(checksum, tenant, "v1:hmac-sha256:"+fmt.Sprintf("%064x", 22))
-	candidate.RetryThreshold = 1
+	candidate.WindowBudget = seed.WindowBudget
 	if _, err := s.Reserve(ctx, candidate); !errors.Is(err, ErrBudgetExhausted) {
 		t.Fatalf("expected budget exhaustion from ACTIVE debt, got %v", err)
 	}
