@@ -115,3 +115,36 @@ OIDC client secrets or unredacted route dumps containing secrets.
 Positive summary is proven. Keep deny/revocation, partial/staleness,
 fault/recovery, restart/reboot, final correlation/audit and external
 conversational-client latency as distinct acceptance gates.
+
+
+## Post-deploy permissions/THS consolidation
+
+The permission/THS route drift was consolidated live after materializing the
+verified Gateway R3 source at commit
+`1629652163edce7b3bc4c8f80bf29a3ef1b1ab8a`.
+
+The candidate resolved all six affected route IDs to the deployed owner name
+`ouf-onboarding:8080`:
+
+- `mcp-permissions-read`;
+- `mcp-permissions-propose`;
+- `mcp-permissions-status`;
+- `authorization-ths-page`;
+- `authorization-ths-api`;
+- `authorization-ths-login`.
+
+Before deployment, live etcd showed only `mcp-permissions-read` already
+corrected; the other five still referenced `ouf-source-onboarding:8080`.
+Complete rollback copies of those five live route definitions were saved before
+the Admin API update. Only those five route IDs were replaced. A subsequent
+etcd read-back showed all six routes pointing to `ouf-onboarding:8080`.
+
+The non-destructive smoke test then invoked
+`authorization.permissions.read` with `view=ROLES` as the governed
+`ouf-admin` identity. It returned the expected role catalogue, including
+`operational-viewer` and its organizational assignment, and performed no
+mutation.
+
+This closes the specific runtime DNS/upstream drift for the six permission/THS
+routes. It does not by itself close proposal confirmation/publication,
+revocation or restart/reboot acceptance.
