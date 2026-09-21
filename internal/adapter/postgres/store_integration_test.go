@@ -102,12 +102,15 @@ func TestDurableLifecycle(t *testing.T) {
 	if err := store.Reconcile(ctx, reserved.AttemptID, orchestration.Cost{ToolCalls: 1, ResultBytes: 12}, orchestration.AttemptOutcome{Success: true, Code: "SUCCEEDED", BackendRequestID: backendSuccess}); err != nil {
 		t.Fatal(err)
 	}
-	for n := 2; n <= 3; n++ {
+	// A successful invocation no longer consumes the equivalent-retry guard.
+	// Exercise the original threshold with a separate, still-active group.
+	for n := 1; n <= 3; n++ {
 		candidate := governed
+		candidate.Identity.TenantID = "retry-" + runID
 		candidate.IdempotencyKey = uuid.NewString()
 		candidate.RequestHash = hash64(fmt.Sprintf("governed-%d", n))
 		_, err = store.Reserve(ctx, candidate)
-		if n == 2 && err != nil {
+		if n < 3 && err != nil {
 			t.Fatal(err)
 		}
 		if n == 3 && !errors.Is(err, orchestration.ErrToolSelectionStall) {
