@@ -36,6 +36,9 @@ func TestWindowBudgetSuccessfulCallsReachIndependentCap(t *testing.T) {
 		t.Fatalf("replay at cap: %+v %v", d, err)
 	}
 	req.IdempotencyKey = uuid.NewString()
+	if _, err := s.Reserve(ctx, req); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("twenty-first single call bypassed cap: %v", err)
+	}
 	req.CapabilityID = "another.capability"
 	req.SemanticFingerprint = "v1:hmac-sha256:other"
 	req.Maximum.ToolCalls = 2
