@@ -889,3 +889,34 @@ Il positive E2E non chiude automaticamente tutto R3. Restano gate distinti per
 deny/revocation, partial/staleness, fault+recovery reali, restart/reboot,
 correlation/audit e latenza client conversazionale esterno <-> MCP. Non
 indebolire i controlli per accelerare questi test.
+
+
+### Consolidamento live permissions/THS dopo la diagnosi
+
+Dopo la diagnosi del 21 settembre, il branch Gateway R3 verificato
+`1629652163edce7b3bc4c8f80bf29a3ef1b1ab8a` è stato usato come fonte per
+ricompilare la configurazione, applicare la InstallationProjection attiva e
+materializzare le route permission/THS.
+
+Il candidato ha prodotto `ouf-onboarding:8080` per tutte le sei route
+`mcp-permissions-{read,propose,status}` e
+`authorization-ths-{page,api,login}`.
+
+Il read-back live prima dell'applicazione mostrava:
+
+- `mcp-permissions-read` già corretto;
+- le altre cinque route ancora su `ouf-source-onboarding:8080`.
+
+Sono stati salvati i cinque JSON live come rollback e sostituiti soltanto quei
+cinque route ID tramite Admin API APISIX. Il read-back etcd successivo ha
+confermato `ouf-onboarding:8080` su tutte e sei.
+
+Smoke test finale, non distruttivo: `authorization.permissions.read` con
+`view=ROLES`, identità `ouf-admin`, ha restituito il catalogo atteso
+(`operational-viewer` e relativa assegnazione organizzativa) senza effettuare
+modifiche.
+
+Questa evidenza conferma il binding live delle route di lettura/proposta/status
+e della superficie THS verso l'owner Onboarding corretto. I flussi mutativi
+(proposta, conferma, publish/reject) restano governati e vanno collaudati come
+gate separati.
