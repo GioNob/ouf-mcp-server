@@ -15,9 +15,10 @@ MCP-A43 distinguish initial admission from a persisted equivalent-retry
 classification. MCP-A39 preserves the UNKNOWN admission barrier.
 
 The PET does not explicitly specify the repeated-success case. This patch
-adopts a conservative interpretation: an authoritatively successful attempt
-does not establish a retry; every other prior attempt in the same group and
-window does. This includes pending work, not only failures, so parallel
+adopts a conservative interpretation: an independent authoritatively successful
+attempt does not establish a retry. An attempt already classified as a retry
+remains charged after success, as required by MCP-A43. Every other prior attempt
+in the same group and window also counts. This includes pending work, so parallel
 invocations cannot evade the existing threshold before results arrive.
 This interpretation requires review before merge; it is not a claim that
 the complete implementation already conforms to every PET requirement.
@@ -27,7 +28,8 @@ the complete implementation already conforms to every PET requirement.
 - Keep the existing serializable transaction, window/guard locking, semantic
   group identity, threshold 3 and idempotency handling.
 - Keep `blocking_attempts` and any existing `blocked` flag authoritative.
-- Count prior attempts whose persisted state is not `SUCCEEDED`, with a
+- Count prior attempts whose persisted state is not `SUCCEEDED` OR whose
+  admission-time `is_equivalent_retry` is true, with a
   threshold-bounded query. Reject when that count plus the candidate reaches
   the existing threshold. Do not clear failure history after a success.
 - Persist `is_equivalent_retry` on the admission context for new attempts.
@@ -66,7 +68,11 @@ columns; those admissions have unknown historical classification.
 `TestRetryClassification` covers three successful equivalent calls without a
 stall, failure and in-flight loops stalled at the unchanged third attempt,
 repeat denial, persisted classification, replay/conflict and preservation of
-the ordinary budget. Existing lifecycle/recovery/debt/concurrency tests remain
+the ordinary budget. `TestRetryClassificationMixedOutcomes` verifies failure
+followed by successful retry retains its charge, while success followed by
+failure leaves the next retry admissible. Repeated reconciliation must not
+change classification or double-charge the ordinary budget.
+Existing lifecycle/recovery/debt/concurrency tests remain
 mandatory. The lifecycle fixture now tests the stalled loop in a separate
 pending group rather than relying on a successful call consuming retry quota.
 

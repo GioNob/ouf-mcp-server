@@ -76,3 +76,46 @@ func TestRetryClassification(t *testing.T) {
 		})
 	}
 }
+
+func TestRetryClassificationMixedOutcomes(t *testing.T) {
+	for _, firstSuccess := range []bool{false, true} {
+		s, ctx, checksum := concurrencyFixture(t)
+		req := concurrencyRequest(checksum, uuid.NewString(), "v1:hmac-sha256:mixed-outcomes")
+		req.RetryThreshold = 3
+		req.Window = time.Hour
+		// Failure followed by success must retain the successful retry charge.
+		// Success followed by failure must not charge the independent success.
+		for n, success := range []bool{firstSuccess, !firstSuccess} {
+			req.IdempotencyKey = uuid.NewString()
+			d, err := s.Reserve(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := uuid.NewString()
+			if err = s.Dispatch(ctx, d.AttemptID, backend, time.Minute, d.LockVersion); err != nil {
+				t.Fatal(err)
+			}
+			outcome := orchestration.AttemptOutcome{Success: success, BackendRequestID: backend}
+			for replay := 0; replay < 2; replay++ {
+				if err = s.Reconcile(ctx, d.AttemptID, orchestration.Cost{ToolCalls: 1, ResultBytes: 12}, outcome); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var retry bool
+			if err = s.Pool().QueryRow(ctx, `select is_equivalent_retry from ouf_mcp.attempt_admission_context where attempt_id=$1`, d.AttemptID).Scan(&retry); err != nil {
+				t.Fatal(err)
+			}
+			if retry != (n == 1 && !firstSuccess) {
+				t.Fatalf("persisted classification changed after reconcile: firstSuccess=%v n=%d retry=%v", firstSuccess, n, retry)
+			}
+		}
+		req.IdempotencyKey = uuid.NewString()
+		_, err := s.Reserve(ctx, req)
+		if !firstSuccess && !errors.Is(err, orchestration.ErrToolSelectionStall) {
+			t.Fatalf("successful retry lost its charge: %v", err)
+		}
+		if firstSuccess && err != nil {
+			t.Fatalf("independent success consumed retry quota: %v", err)
+		}
+	}
+}

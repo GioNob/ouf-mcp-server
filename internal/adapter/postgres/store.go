@@ -209,17 +209,17 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	if blocking > 0 {
 		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
-	// Successful owner outcomes do not establish an equivalent retry. Retain
-	// every failure and in-flight/uncertain attempt in the window: a success
-	// cannot erase another attempt's failure or unresolved side effects.
+	// Independent successful outcomes do not establish an equivalent retry.
+	// Once classified as a retry, an attempt remains charged even on success
+	// (MCP-A43). Retain failures and in-flight/uncertain attempts as well.
 	// Read authoritative attempt states under the existing serializable
 	// admission transaction; recovery success is handled by the same rule.
-	var nonSuccessfulAttempts int
-	err = tx.QueryRow(ctx, `select count(*) from (select 1 from ouf_mcp.attempt_admission_context ac join ouf_mcp.tool_attempt ta using(attempt_id) where ac.equivalence_group_id=$1 and ta.state<>'SUCCEEDED' limit $2) pending`, groupID, in.RetryThreshold).Scan(&nonSuccessfulAttempts)
+	var retryRelevantAttempts int
+	err = tx.QueryRow(ctx, `select count(*) from (select 1 from ouf_mcp.attempt_admission_context ac join ouf_mcp.tool_attempt ta using(attempt_id) where ac.equivalence_group_id=$1 and (ta.state<>'SUCCEEDED' or ac.is_equivalent_retry is true) limit $2) pending`, groupID, in.RetryThreshold).Scan(&retryRelevantAttempts)
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	if blocked || nonSuccessfulAttempts+1 >= in.RetryThreshold {
+	if blocked || retryRelevantAttempts+1 >= in.RetryThreshold {
 		return orchestration.AdmissionDecision{}, orchestration.ErrToolSelectionStall
 	}
 	if in.AttemptID == uuid.Nil {
@@ -231,7 +231,7 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	}
 	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID)
 	if err == nil {
-		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context(attempt_id,budget_window_id,equivalence_group_id,owner,actor_type,authentication_context_ref,authorization_decision_ref,semantic_fingerprint,fingerprint_version,is_equivalent_retry) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion, nonSuccessfulAttempts > 0)
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context(attempt_id,budget_window_id,equivalence_group_id,owner,actor_type,authentication_context_ref,authorization_decision_ref,semantic_fingerprint,fingerprint_version,is_equivalent_retry) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion, retryRelevantAttempts > 0)
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation(reservation_id,attempt_id,budget_window_id,reserved_tool_calls,reserved_result_bytes,state,created_at,reserved_distinct_objects_max) values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),$6)`, uuid.New(), in.AttemptID, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
