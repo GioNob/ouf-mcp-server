@@ -89,6 +89,57 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	}
 }
 
+func TestModernProfileLogsBoundedRequestMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	h, err := NewHTTPHandler(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		h.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"raw-test","version":"1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+	req.Header.Set("Mcp-Method", "server/discover")
+	req.Header.Set("Mcp-Name", "example-tool")
+	req.Header.Set("X-Correlation-ID", "corr-test-123")
+	req.Header.Set("Authorization", "Bearer SHOULD-NOT-APPEAR")
+	req.Header.Set("X-OUF-Delegation", "SHOULD-NOT-APPEAR")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	got := logs.String()
+	for _, want := range []string{
+		"mcp_method=server/discover",
+		"mcp_name=example-tool",
+		"correlation_id=corr-test-123",
+		"duration_ms=",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in log: %s", want, got)
+		}
+	}
+	for _, forbidden := range []string{
+		"SHOULD-NOT-APPEAR",
+		"Bearer",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sensitive value leaked in log: %s", got)
+		}
+	}
+}
+
 func TestDiscoverResponseDoesNotCreateTransportSession(t *testing.T) {
 	ts := testServer(t)
 	defer ts.Close()
