@@ -3,11 +3,12 @@
 ## Candidate composition
 
 This candidate combines these reviewed source commits without merging the
-source PRs or changing the live installation:
+source PRs. The initial preparation did not change the live installation;
+the later authorized cutover is recorded below:
 
 | Source | Commit | Purpose |
 | --- | --- | --- |
-| PR 35 | d0a2675eb306eff5b84126f0a09fa645649cd149 | Current live telemetry baseline |
+| PR 35 | d0a2675eb306eff5b84126f0a09fa645649cd149 | Pre-cutover live telemetry baseline |
 | PR 36 | a2a36817132da925ca996cd7d9cb5299f0526bbc | Independent successes and persistent retry classification |
 | PR 37 | ce5101ed6b42bd25972d686beac908f87f4b7956 | Independent pinned window caps |
 
@@ -107,3 +108,66 @@ does not prove that immediate same-window production rollback is safe.
 Do not remove `ouf-mcp-rollback-before-latency` or the prior rollback image during
 candidate acceptance. Cleanup of sensitive temporary deployment files follows
 the existing handoff only after they are no longer needed.
+
+## Recorded VPS and live acceptance — 2026-09-22
+
+Evidence below comes from operator-provided VPS command output in the deployment
+session, including a read-only SQL transaction for the five live attempts.
+Deployed source: `2ea473c8310add50a2d2b19a2dddd2e47f01000c`.
+Subsequent documentation commits do not change the deployed binary.
+
+### Isolated gate and authorized cutover
+
+- VPS isolated gate using container Go and sudo Docker passed:
+  `UPGRADE_007_TO_009_PASS`, `ROLLBACK_SCHEMA_COMPATIBILITY_PASS`,
+  `ISOLATED_RELEASE_ACCEPTANCE_PASS`.
+- Pre-cutover database archive indexing and an isolated restore check passed.
+  A second quiesced backup was taken and its archive checked after clean stop.
+  The quiesced archive was not separately restore-tested.
+- Runtime configuration was saved. Before/after stop checks found no attempts
+  in ADMITTED, RUNNING, UNKNOWN or UNRESOLVED states.
+- After explicit operator authorization, candidate migrations applied successfully;
+  the migration ledger contains versions 1–9 and the new retry/cap columns exist.
+- Live container `ouf-mcp` runs image `ouf-mcp:2ea473c`; liveness and readiness
+  returned HTTP 204. Previous `ouf-mcp:d0a2675` container is retained as
+  `ouf-mcp-rollback-before-retry-budget`; earlier rollback containers remain.
+- Candidate binary SHA-256:
+  `2da5a2310acfc931180983601765bb6d35dc054b54fa1bda1b7ce2d4d648d86f`.
+  Binary copied back from the built image matched this hash.
+
+### Live independent-success classification: PASS
+
+Five sequential independent `ouf.system.status` calls were checked by correlation
+ID using LEFT JOINs from five expected IDs to tool_attempt,
+attempt_admission_context and budget_window in a READ ONLY transaction.
+All five were found exactly once, capability matched, state was SUCCEEDED and
+is_equivalent_retry was false (not NULL).
+
+| Call | Correlation ID | State | is_equivalent_retry | UTC window |
+| --- | --- | --- | --- | --- |
+| 1 | 72c622a8-a366-4f30-b4a3-e1ceec6d7e22 | SUCCEEDED | false | 06:54:00–06:55:00 |
+| 2 | 8de03233-e7b9-4146-8aa5-456eb5f2241d | SUCCEEDED | false | 06:54:00–06:55:00 |
+| 3 | 2bb0a4fe-4d3e-4d55-b76c-38a0261a6a14 | SUCCEEDED | false | 06:54:00–06:55:00 |
+| 4 | e3c435b9-576c-4c59-91c4-2373f5512b63 | SUCCEEDED | false | 06:54:00–06:55:00 |
+| 5 | a9dd6836-678c-47b6-9fa2-3ceb36ec9fe4 | SUCCEEDED | false | 06:55:00–06:56:00 |
+
+Calls 1–4 share equivalence group
+`55a2a083-da72-46e8-a3bf-a515d5ffb25e`.
+Call 5 belongs to `dc86f504-c9bd-4e45-a01b-dbe16debf7df` in the next window.
+The fourth successful independent call in the same group/window was admitted
+despite RetryThreshold=3, confirming the targeted live regression correction.
+
+This is not a same-idempotency-key replay test, a live failure/retry test or a
+live 20/21 window-cap boundary test. Those behaviors retain their isolated-test
+evidence; the SQL above does not independently verify budget consumption.
+Full PET alignment gaps and rollback constraints above remain open.
+
+### Separate latency investigation
+
+The five connector invocations took 7.117–11.189 seconds; MCP handlers took
+13–19 ms. Temporally associated Caddy HTTP 200 responses took about 17–23 ms
+(no shared correlation ID in those Caddy records). MCP Inspector returned the
+same public operational status in 229 ms, using a different OAuth client and
+network path. This does not identify the exact component causing the delay.
+A support report was submitted; no technical resolution or ticket number has
+been confirmed. Diagnostic Caddy access logging remains enabled at this checkpoint.
