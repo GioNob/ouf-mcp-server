@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -93,28 +94,76 @@ func TestSummaryUnavailableProducerIsPartialAndDegraded(t *testing.T) {
 	}
 }
 
-func TestIncidentsMergeProducersAndSafeMCPAggregate(t *testing.T) {
+func TestIncidentsPageAcrossPersistentOwnersWithoutSyntheticMCPHistory(t *testing.T) {
 	caller := &aggregateCallerFixture{responses: map[string][]byte{
-		"ouf.ingestion.operations.incidents": []byte(`{"items":[{"incident_id":"ing-1","module":"INGESTION","lifecycle_state":"OPEN"}],"partial":false}`),
-		"ouf.gateway.operations.incidents":   []byte(`{"items":[{"incident_id":"gw-1","module":"GATEWAY","lifecycle_state":"RESOLVED"}],"partial":false}`),
+		"ouf.ingestion.operations.incidents": []byte(`{"items":[{"incident_id":"ing-1","module":"INGESTION","lifecycle_state":"OPEN","visibility_class":"TENANT_OPERATIONAL","rawLog":"secret"}],"partial":false,"hasMore":false}`),
+		"ouf.gateway.operations.incidents":   []byte(`{"items":[{"incident_id":"gw-1","module":"GATEWAY","lifecycle_state":"RESOLVED","visibility_class":"TENANT_OPERATIONAL"}],"partial":false,"hasMore":false}`),
 	}, fail: map[string]bool{}}
-	a := Aggregator{Caller: caller, Self: aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"DEGRADED","securityIncidentCount":4,"partial":false}`)}, ManifestChecksum: "manifest"}
+	a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+	in := aggregateInput()
+	body, err := a.Incidents(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first map[string]any
+	if json.Unmarshal(body, &first) != nil {
+		t.Fatal(string(body))
+	}
+	if len(first["items"].([]any)) != 1 || first["hasMore"] != true || first["partial"] != false || containsAny(string(body), "secret", "rawLog") {
+		t.Fatalf("bad first page: %s", body)
+	}
+	var query map[string]any
+	_ = json.Unmarshal(in.Arguments, &query)
+	query["cursor"] = first["nextCursor"]
+	in.Arguments, _ = json.Marshal(query)
+	body, err = a.Incidents(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second map[string]any
+	_ = json.Unmarshal(body, &second)
+	if second["hasMore"] != false || len(second["items"].([]any)) != 1 || second["items"].([]any)[0].(map[string]any)["module"] != "GATEWAY" {
+		t.Fatalf("bad last page: %s", body)
+	}
+	if caller.callCount() != 2 {
+		t.Fatalf("calls=%d", caller.callCount())
+	}
+}
+
+func TestIncidentMissingCompletenessCannotBecomeEmptySuccess(t *testing.T) {
+	caller := &aggregateCallerFixture{responses: map[string][]byte{"ouf.ingestion.operations.incidents": []byte(`{"items":[]}`)}, fail: map[string]bool{}}
+	a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
 	body, err := a.Incidents(context.Background(), aggregateInput())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got struct {
-		Items []map[string]any `json:"items"`
+	var got map[string]any
+	_ = json.Unmarshal(body, &got)
+	if got["partial"] != true || got["hasMore"] != true || got["nextCursor"] == nil {
+		t.Fatalf("missing owner hidden: %s", body)
 	}
-	if err := json.Unmarshal(body, &got); err != nil {
+}
+
+func TestIncidentCursorRejectsChangedIdentityAndFilters(t *testing.T) {
+	in := aggregateInput()
+	limit := 2
+	source := "source-a"
+	q := incidentQuery{Limit: &limit, SourceID: &source}
+	c, err := prepareIncidentQuery(&q, in.Identity)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Items) != 3 {
-		t.Fatalf("items=%s", body)
+	cursor := encodeIncidentCursor(c)
+	q.Cursor = &cursor
+	other := in.Identity
+	other.TenantID = "other"
+	if _, err = prepareIncidentQuery(&q, other); err == nil {
+		t.Fatal("cross-tenant cursor accepted")
 	}
-	text := string(body)
-	if json.Valid(body) == false || containsAny(text, "securityIncidentCount", "incidentRef", "detailCode") {
-		t.Fatalf("protected MCP detail leaked into global incident projection: %s", body)
+	changed := "source-b"
+	q.SourceID = &changed
+	if _, err = prepareIncidentQuery(&q, in.Identity); err == nil {
+		t.Fatal("changed filter accepted")
 	}
 }
 
@@ -134,4 +183,48 @@ func stringContains(value, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestIncidentMissingOrNullItemsIsUnavailableOnEveryProducer(t *testing.T) {
+	for _, raw := range []string{`{"partial":false,"hasMore":false}`, `{"items":null,"partial":false,"hasMore":false}`, `{"items":{},"partial":false,"hasMore":false}`} {
+		for producer := range incidentProducers {
+			t.Run(fmt.Sprintf("%d/%s", producer, raw), func(t *testing.T) {
+				caller := &aggregateCallerFixture{responses: map[string][]byte{incidentProducers[producer].CapabilityID: []byte(raw)}, fail: map[string]bool{}}
+				a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+				in := aggregateInput()
+				q := incidentQuery{}
+				c, err := prepareIncidentQuery(&q, in.Identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.Producer = producer
+				in.Arguments, _ = json.Marshal(map[string]any{"limit": 50, "cursor": encodeIncidentCursor(c)})
+				body, err := a.Incidents(context.Background(), in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]any
+				if err = json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				if got["partial"] != true || got["hasMore"] != true || len(got["unavailableProducers"].([]any)) != 1 {
+					t.Fatalf("missing evidence became complete: %s", body)
+				}
+				next := got["nextCursor"].(string)
+				q.Cursor = &next
+				retry, err := prepareIncidentQuery(&q, in.Identity)
+				if err != nil || retry.Producer != producer {
+					t.Fatalf("retry skipped unavailable producer: %+v %v", retry, err)
+				}
+			})
+		}
+	}
+}
+func TestIncidentAllNormativeSeverityFilters(t *testing.T) {
+	for _, severity := range []string{"INFO", "WARNING", "ERROR", "CRITICAL"} {
+		q := incidentQuery{Severity: &severity}
+		if _, err := prepareIncidentQuery(&q, aggregateInput().Identity); err != nil {
+			t.Fatalf("%s: %v", severity, err)
+		}
+	}
 }

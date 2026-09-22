@@ -166,8 +166,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		resource.ResourceType = "capability"
 	}
 	publicStatus := in.CapabilityID == statusview.Capability
-	summary := in.CapabilityID == "ouf.operations.summary" || in.CapabilityID == "ouf.ingestion.operations.summary" || in.CapabilityID == "ouf.gateway.operations.summary"
-	if summary {
+	tenantOperational := in.CapabilityID == "ouf.operations.summary" || in.CapabilityID == "ouf.ingestion.operations.summary" || in.CapabilityID == "ouf.gateway.operations.summary" || in.CapabilityID == "ouf.operations.incidents" || in.CapabilityID == "ouf.ingestion.operations.incidents" || in.CapabilityID == "ouf.gateway.operations.incidents"
+	if tenantOperational {
 		resource.Attributes = maps.Clone(resource.Attributes)
 		if resource.Attributes == nil {
 			resource.Attributes = make(map[string]string)
@@ -199,7 +199,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
-	if summary && (decision.PermittedDetailLevel != "TENANT_OPERATIONAL" || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
+	if tenantOperational && (decision.PermittedDetailLevel != "TENANT_OPERATIONAL" || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
 	requestHash := sha256.Sum256(in.Arguments)
