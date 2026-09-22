@@ -256,17 +256,3 @@ func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
 }
-
-func mapStatusLifecycle(status string) string {
-	if status == "RECOVERING" {
-		return "RECOVERING"
-	}
-	return "OPEN"
-}
-
-func mapStatusSeverity(status string) string {
-	if status == "DEGRADED" {
-		return "ERROR"
-	}
-	return "WARNING"
-}
