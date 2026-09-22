@@ -11,6 +11,7 @@ func TestIncidentCallsRequireTenantBoundDisclosureBeforeAdmission(t *testing.T) 
 		for _, detail := range []string{"TENANT_OPERATIONAL", "", "RESTRICTED_OPERATIONAL"} {
 			a := &statusAuth{decision: AuthorizationDecision{Allowed: true, DecisionRef: "bundle:1:" + cap, PermittedDetailLevel: detail, ResourceScope: map[string]string{"tenantId": "tenant", "resourceType": "capability"}}}
 			in := invocation()
+			in.Maximum.ResultBytes = 1024
 			in.CapabilityID = cap
 			in.GatewayBindingRef = "capability://" + cap
 			admission := &fakeAdmission{}
