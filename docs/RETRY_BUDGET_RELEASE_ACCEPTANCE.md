@@ -65,6 +65,18 @@ all PostgreSQL/race/performance and cross-module gates, including channel-neutra
 operational summary and authorization fixtures. Static test binaries in the
 isolated job do not replace the race checks in the main job.
 
+### VPS without host Go or direct Docker socket access
+
+The VPS has the `golang:1.25.13` image, not a Go executable on the host PATH.
+Run the script as oufadmin with `OUF_RELEASE_GO_MODE=docker` and
+`OUF_RELEASE_DOCKER_SUDO=1`. Only Docker commands use sudo; host git and
+temporary files remain owned by oufadmin. The compiler container runs with
+oufadmin's UID/GID and mounts only the candidate source read-only and the
+run's temporary build directory. It receives no Docker socket or live secrets.
+Build networking is needed for Go module downloads; PostgreSQL remains on
+network=none. No host Go installation or persistent PATH modification is needed.
+CI exercises both native and container Go modes through the sudo Docker path.
+
 ## VPS procedure and acceptance boundary
 
 Work in the SSH session as oufadmin. First verify the live/rollback image names,
