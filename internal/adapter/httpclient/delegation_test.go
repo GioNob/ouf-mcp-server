@@ -40,8 +40,9 @@ func TestDelegationIsHeaderOnlyAndNotSerialized(t *testing.T) {
 	}
 }
 
-func TestSummaryRoutesRemainGatewayBoundAndCarryDelegation(t *testing.T) {
-	for _, capability := range []string{"ouf.operations.summary", "ouf.ingestion.operations.summary", "ouf.gateway.operations.summary"} {
+func TestOperationalRoutesRemainGatewayBoundAndCarryDelegation(t *testing.T) {
+	for _, capability := range []string{"ouf.operations.summary", "ouf.ingestion.operations.summary", "ouf.gateway.operations.summary",
+		"ouf.operations.incidents", "ouf.ingestion.operations.incidents", "ouf.gateway.operations.incidents"} {
 		t.Run(capability, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/execute/"+capability || r.Header.Get("X-OUF-Delegation") != "signed-proof" {
