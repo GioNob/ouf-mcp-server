@@ -42,6 +42,10 @@ type operationalInput struct {
 	SourceID   string `json:"sourceId,omitempty"`
 	State      string `json:"state,omitempty"`
 	Since      string `json:"since,omitempty"`
+	Until      string `json:"until,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
+	JobID      string `json:"jobId,omitempty"`
+	Severity   string `json:"severity,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
 }
 
@@ -115,7 +119,7 @@ func registerOperationalTool(server *mcp.Server, c manifest.Capability, snapshot
 		// The summary and each producer share the governed 100-item ceiling.
 		// Reserving 200 here can exhaust the shared window during its two child calls.
 		maxItems := 200
-		if c.CapabilityID == "ouf.operations.summary" {
+		if c.CapabilityID == "ouf.operations.summary" || c.CapabilityID == "ouf.operations.incidents" {
 			maxItems = 100
 		}
 		return invoke(ctx, c, checksum, args, service, maxItems, 512<<10)
