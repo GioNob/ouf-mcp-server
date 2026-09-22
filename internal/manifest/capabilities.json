@@ -284,7 +284,7 @@
       "operationalLimits": {
         "maxLimit": 100
       },
-      "resultSemantics": "Bounded cross-producer incident aggregates with lifecycle, severity and safe impact summaries",
+      "resultSemantics": "One persistent owner per page; follow nextCursor until hasMore=false. partial identifies missing or redacted evidence.",
       "securityNotes": [
         "MCP aggregates only owner-provided governed projections",
         "Unavailable producer evidence yields partial output and is never mapped to no incidents"
@@ -333,6 +333,26 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 100
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "WARNING",
+              "ERROR"
+            ]
           }
         }
       }

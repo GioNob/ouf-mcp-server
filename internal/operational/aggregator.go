@@ -204,67 +204,6 @@ func summaryModule(name string, raw []byte, limit int) (map[string]any, error) {
 	return out, nil
 }
 
-func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte, error) {
-	if a.Caller == nil || a.Self == nil || a.ManifestChecksum == "" {
-		return nil, fmt.Errorf("operational aggregator is not configured")
-	}
-	items := make([]map[string]any, 0)
-	unavailable := make([]string, 0, 2)
-	partial := false
-	for result := range a.callProducers(ctx, in, incidentProducers) {
-		if !result.OK {
-			partial = true
-			unavailable = append(unavailable, result.Producer.Name)
-			continue
-		}
-		var decoded struct {
-			Items   []map[string]any `json:"items"`
-			Partial bool             `json:"partial"`
-		}
-		if json.Unmarshal(result.Body, &decoded) != nil {
-			partial = true
-			unavailable = append(unavailable, result.Producer.Name)
-			continue
-		}
-		for _, item := range decoded.Items {
-			if _, exists := item["module"]; !exists {
-				item["module"] = result.Producer.Name
-			}
-			items = append(items, item)
-		}
-		partial = partial || decoded.Partial
-	}
-
-	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
-	if err != nil {
-		partial = true
-		unavailable = append(unavailable, "MCP")
-	} else {
-		var self map[string]any
-		if json.Unmarshal(selfBody, &self) != nil {
-			partial = true
-			unavailable = append(unavailable, "MCP")
-		} else if state := stringValue(self["status"]); state != "" && state != "HEALTHY" {
-			items = append(items, map[string]any{
-				"incident_id": "mcp-operational-state", "module": "MCP", "event_type": "MCP_OPERATIONAL_" + state,
-				"lifecycle_state": mapStatusLifecycle(state), "severity": mapStatusSeverity(state),
-				"impact_summary":  "MCP has governed recovery, debt, evidence or unresolved orchestration state requiring attention.",
-				"action_required": state == "DEGRADED", "visibility_class": "TENANT_OPERATIONAL",
-			})
-		}
-	}
-	limit := in.RequestedLimit
-	if limit < 1 || limit > 100 {
-		limit = 50
-	}
-	sort.SliceStable(items, func(i, j int) bool { return stringValue(items[i]["module"]) < stringValue(items[j]["module"]) })
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	sort.Strings(unavailable)
-	return json.Marshal(map[string]any{"items": items, "partial": partial, "unavailableProducers": unavailable})
-}
-
 func (a Aggregator) callProducers(ctx context.Context, in aggregateRequest, producers []producerSpec) <-chan producerResult {
 	results := make(chan producerResult, len(producers))
 	var wg sync.WaitGroup
