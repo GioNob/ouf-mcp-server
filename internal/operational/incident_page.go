@@ -1,6 +1,7 @@
 package operational
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -60,7 +61,7 @@ func prepareIncidentQuery(q *incidentQuery, id orchestration.Identity) (incident
 	if q.State != nil && *q.State != "OPEN" && *q.State != "RECOVERING" && *q.State != "RESOLVED" {
 		return incidentCursor{}, invalid
 	}
-	if q.Severity != nil && *q.Severity != "WARNING" && *q.Severity != "ERROR" {
+	if q.Severity != nil && *q.Severity != "INFO" && *q.Severity != "WARNING" && *q.Severity != "ERROR" && *q.Severity != "CRITICAL" {
 		return incidentCursor{}, invalid
 	}
 	if q.SourceID != nil && (len(*q.SourceID) < 1 || len(*q.SourceID) > 200) {
@@ -133,18 +134,24 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		return unavailable()
 	}
 	var page struct {
-		Items         []map[string]any `json:"items"`
-		Partial       *bool            `json:"partial"`
-		HasMore       *bool            `json:"hasMore"`
-		NextCursor    string           `json:"nextCursor"`
-		Authorization string           `json:"authorization"`
+		Items         json.RawMessage `json:"items"`
+		Partial       *bool           `json:"partial"`
+		HasMore       *bool           `json:"hasMore"`
+		NextCursor    string          `json:"nextCursor"`
+		Authorization string          `json:"authorization"`
 	}
-	if json.Unmarshal(body, &page) != nil || page.Partial == nil || page.HasMore == nil || len(page.Items) > *q.Limit || len(page.NextCursor) > 4096 || (*page.HasMore && page.NextCursor == "") {
+	if json.Unmarshal(body, &page) != nil || page.Partial == nil || page.HasMore == nil || len(page.NextCursor) > 4096 || (*page.HasMore && page.NextCursor == "") {
 		return unavailable()
 	}
-	items := make([]map[string]any, 0, len(page.Items))
+	// An absent/null array is missing evidence, not an authorized empty result.
+	var ownerItems []map[string]any
+	rawItems := bytes.TrimSpace(page.Items)
+	if len(rawItems) == 0 || rawItems[0] != '[' || json.Unmarshal(rawItems, &ownerItems) != nil || len(ownerItems) > *q.Limit {
+		return unavailable()
+	}
+	items := make([]map[string]any, 0, len(ownerItems))
 	partial := *page.Partial || page.Authorization == "REDACTED"
-	for _, item := range page.Items {
+	for _, item := range ownerItems {
 		safe, err := safeIncident(item, producer.Name)
 		if err != nil {
 			partial = true

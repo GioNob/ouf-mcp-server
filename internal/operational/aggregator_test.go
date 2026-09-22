@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -182,4 +183,48 @@ func stringContains(value, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestIncidentMissingOrNullItemsIsUnavailableOnEveryProducer(t *testing.T) {
+	for _, raw := range []string{`{"partial":false,"hasMore":false}`, `{"items":null,"partial":false,"hasMore":false}`, `{"items":{},"partial":false,"hasMore":false}`} {
+		for producer := range incidentProducers {
+			t.Run(fmt.Sprintf("%d/%s", producer, raw), func(t *testing.T) {
+				caller := &aggregateCallerFixture{responses: map[string][]byte{incidentProducers[producer].CapabilityID: []byte(raw)}, fail: map[string]bool{}}
+				a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+				in := aggregateInput()
+				q := incidentQuery{}
+				c, err := prepareIncidentQuery(&q, in.Identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.Producer = producer
+				in.Arguments, _ = json.Marshal(map[string]any{"limit": 50, "cursor": encodeIncidentCursor(c)})
+				body, err := a.Incidents(context.Background(), in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]any
+				if err = json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				if got["partial"] != true || got["hasMore"] != true || len(got["unavailableProducers"].([]any)) != 1 {
+					t.Fatalf("missing evidence became complete: %s", body)
+				}
+				next := got["nextCursor"].(string)
+				q.Cursor = &next
+				retry, err := prepareIncidentQuery(&q, in.Identity)
+				if err != nil || retry.Producer != producer {
+					t.Fatalf("retry skipped unavailable producer: %+v %v", retry, err)
+				}
+			})
+		}
+	}
+}
+func TestIncidentAllNormativeSeverityFilters(t *testing.T) {
+	for _, severity := range []string{"INFO", "WARNING", "ERROR", "CRITICAL"} {
+		q := incidentQuery{Severity: &severity}
+		if _, err := prepareIncidentQuery(&q, aggregateInput().Identity); err != nil {
+			t.Fatalf("%s: %v", severity, err)
+		}
+	}
 }
