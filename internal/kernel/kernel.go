@@ -27,6 +27,12 @@ type unavailableResult struct {
 	Retryable bool   `json:"retryable"`
 }
 
+type objectSearchInput struct {
+	Type string `json:"type"`
+	PageSize *int `json:"pageSize,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
 type relatedSearchInput struct {
 	AnchorObjectID        string   `json:"anchorObjectId"`
 	AnchorTypeCode        string   `json:"anchorTypeCode"`
@@ -93,6 +99,10 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		registerOperationalTool(server, c, snapshot, service)
 		return
 	}
+	if c.CapabilityID == "urban.object.search" {
+		registerObjectSearchTool(server, c, snapshot, service)
+		return
+	}
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
@@ -101,6 +111,18 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input relatedSearchInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
 		return invoke(ctx, c, checksum, args, service, 200, 1<<20)
+	})
+}
+
+func registerObjectSearchTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	var inputSchema jsonschema.Schema
+	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
+		panic(err)
+	}
+	checksum, _ := snapshot.Checksum()
+	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, input objectSearchInput) (*mcp.CallToolResult, any, error) {
+		args, _ := json.Marshal(input)
+		return invoke(ctx, c, checksum, args, service, 100, 262144)
 	})
 }
 
