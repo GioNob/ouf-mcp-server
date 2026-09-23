@@ -2,6 +2,37 @@
   "version": "1.5.0-permission-proposals",
   "capabilities": [
     {
+      "toolName": "urban.object.search",
+      "capabilityId": "urban.object.search",
+      "purpose": "Search urban objects by one exact indexed type within the authorized tenant",
+      "useWhen": ["an exact canonical type is known and a bounded page of urban objects is needed"],
+      "doNotUseWhen": ["arbitrary text, SQL, unbounded scans, or human configuration decisions are requested"],
+      "preferredAlternatives": ["urban.object.related_search", "trusted human browser for source configuration"],
+      "operationalLimits": {"maxPageSize": 100, "indexedTypeRequired": true},
+      "resultSemantics": "Owner-authorized minimized objects with opaque cursor and partial flag",
+      "securityNotes": ["Owner must authenticate the delegated human principal independently", "Gateway and UDP binding require a verified runtime test before publication"],
+      "mcpClass": "MCP_TOOL",
+      "owner": "udp",
+      "operationClass": "SEARCH",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "urban.object.search",
+      "gatewayBindingRef": "capability://urban.object.search",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 100, "hardMaxResultBytes": 524288, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 1, "equivalentRetryCalls": 1},
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type"],
+        "properties": {
+          "type": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^%*]+$"},
+          "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+          "cursor": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    {
       "toolName": "urban.object.related_search",
       "capabilityId": "urban.object.related_search",
       "purpose": "Find objects connected to a known anchor through governed relationship rules",
