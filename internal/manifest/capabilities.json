@@ -259,6 +259,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          },
           "limit": {
             "type": "integer",
             "minimum": 1,
