@@ -136,12 +136,7 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(raw) == 0 {
 			raw = []byte(`{}`)
 		}
-		var query struct {
-			Limit    *int       `json:"limit"`
-			State    *string    `json:"state,omitempty"`
-			Since    *time.Time `json:"since,omitempty"`
-			SourceID *string    `json:"sourceId,omitempty"`
-		}
+		var query incidentQuery
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&query) != nil || decoder.Decode(new(any)) != io.EOF || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
@@ -160,14 +155,25 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid operational request", http.StatusBadRequest)
 			return
 		}
-		now := time.Now().UTC()
-		if query.Since == nil {
-			since := now.Add(-24 * time.Hour)
-			query.Since = &since
-		}
-		if query.Since.After(now) || query.Since.Before(now.Add(-30*24*time.Hour)) {
-			http.Error(w, "invalid operational window", http.StatusBadRequest)
-			return
+		if capability == "ouf.operations.incidents" {
+			if _, queryErr := prepareIncidentQuery(&query, identity); queryErr != nil {
+				http.Error(w, "invalid incident query", http.StatusBadRequest)
+				return
+			}
+		} else {
+			if query.Until != nil || query.Cursor != nil || query.JobID != nil || query.Severity != nil {
+				http.Error(w, "invalid summary query", http.StatusBadRequest)
+				return
+			}
+			now := time.Now().UTC()
+			if query.Since == nil {
+				since := now.Add(-24 * time.Hour)
+				query.Since = &since
+			}
+			if query.Since.After(now) || query.Since.Before(now.Add(-30*24*time.Hour)) {
+				http.Error(w, "invalid operational window", http.StatusBadRequest)
+				return
+			}
 		}
 		query.Limit = &limit
 		raw, err = json.Marshal(query)

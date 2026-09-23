@@ -42,6 +42,10 @@ type operationalInput struct {
 	SourceID   string `json:"sourceId,omitempty"`
 	State      string `json:"state,omitempty"`
 	Since      string `json:"since,omitempty"`
+	Until      string `json:"until,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
+	JobID      string `json:"jobId,omitempty"`
+	Severity   string `json:"severity,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
 }
 
@@ -67,7 +71,7 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.H
 		}
 	}
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
-	return modernOnly(streamable), nil
+	return modernOnlyWithLogger(logger, streamable), nil
 }
 
 type identityKey struct{}
@@ -115,7 +119,7 @@ func registerOperationalTool(server *mcp.Server, c manifest.Capability, snapshot
 		// The summary and each producer share the governed 100-item ceiling.
 		// Reserving 200 here can exhaust the shared window during its two child calls.
 		maxItems := 200
-		if c.CapabilityID == "ouf.operations.summary" {
+		if c.CapabilityID == "ouf.operations.summary" || c.CapabilityID == "ouf.operations.incidents" {
 			maxItems = 100
 		}
 		return invoke(ctx, c, checksum, args, service, maxItems, 512<<10)
@@ -161,7 +165,21 @@ func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
 }
 
 func modernOnly(next http.Handler) http.Handler {
+	return modernOnlyWithLogger(slog.Default(), next)
+}
+
+func modernOnlyWithLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		defer func() {
+			logger.Info(
+				"mcp request completed",
+				"mcp_method", r.Header.Get("Mcp-Method"),
+				"mcp_name", r.Header.Get("Mcp-Name"),
+				"correlation_id", r.Header.Get("X-Correlation-ID"),
+				"duration_ms", time.Since(started).Milliseconds(),
+			)
+		}()
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.Method != http.MethodPost {
