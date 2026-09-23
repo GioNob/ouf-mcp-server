@@ -28,9 +28,9 @@ type unavailableResult struct {
 }
 
 type objectSearchInput struct {
-	Type string `json:"type"`
-	PageSize *int `json:"pageSize,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	Type     string `json:"type"`
+	PageSize *int   `json:"pageSize,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 
 type relatedSearchInput struct {
