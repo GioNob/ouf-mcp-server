@@ -43,18 +43,26 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 
 func TestObjectSearchRequiresRuntimeActivation(t *testing.T) {
 	s, err := Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
 	for _, capability := range s.Capabilities {
-		if capability.CapabilityID != "urban.object.search" { continue }
+		if capability.CapabilityID != "urban.object.search" {
+			continue
+		}
 		found = true
 		if capability.PublicationState != "INACTIVE" || capability.RequiredAuthorization != "urban.object.search" || capability.GatewayBindingRef != "capability://urban.object.search" {
 			t.Fatalf("unsafe search publication: %#v", capability)
 		}
 	}
-	if !found { t.Fatal("object search descriptor missing") }
+	if !found {
+		t.Fatal("object search descriptor missing")
+	}
 	for _, capability := range s.ToolEligible() {
-		if capability.CapabilityID == "urban.object.search" { t.Fatal("unverified object search must not be advertised") }
+		if capability.CapabilityID == "urban.object.search" {
+			t.Fatal("unverified object search must not be advertised")
+		}
 	}
 }
 
