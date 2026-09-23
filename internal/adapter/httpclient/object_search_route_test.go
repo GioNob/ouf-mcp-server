@@ -28,7 +28,7 @@ func TestObjectSearchUsesExactGovernedExecuteBinding(t *testing.T) {
 				if r.Header.Get("Authorization") != "Bearer test-workload" || r.Header.Get("X-OUF-Delegation") != "test-proof" {
 					t.Error("workload and delegation headers missing")
 				}
-				var body struct { CapabilityID string }
+				var body struct{ CapabilityID string }
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.CapabilityID != tc.capability {
 					t.Error("capability body differs")
 				}
@@ -37,7 +37,9 @@ func TestObjectSearchUsesExactGovernedExecuteBinding(t *testing.T) {
 			}))
 			defer server.Close()
 			client, err := NewGatewayWithTokenSource(server.URL+base, StaticTokenSource("test-workload"))
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			result, err := client.Execute(context.Background(), orchestration.GatewayRequest{
 				CapabilityID: tc.capability, Identity: orchestration.Identity{Delegation: "test-proof"}, MaxResultBytes: 1024,
 			}, 3*time.Second)
