@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +44,6 @@ func TestObjectSearchUsesExactGovernedExecuteBinding(t *testing.T) {
 			if err != nil || result.Status != http.StatusOK || seen != 1 {
 				t.Fatalf("routing failed: status=%d calls=%d err=%v", result.Status, seen, err)
 			}
-			if strings.Contains(server.URL, "ouf-lab") { t.Fatal("unexpected production endpoint in fixture") }
 		})
 	}
 }
