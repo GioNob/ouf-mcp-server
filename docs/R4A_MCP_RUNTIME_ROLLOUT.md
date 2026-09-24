@@ -66,7 +66,7 @@ Atteso nel lab: `MCP_R4A_DRY_RUN=PASS`, digest candidato coincidente, `ORIGINAL_
 
 ## 4. Staging e verifiche
 
-**Non ancora eseguito nel lab alla data di questo documento.** Usare solo dopo CI, dry run e verifica che il container originale sia ancora attivo. Lo script salva `rollout-mcp.json` nella directory privata, disabilita il restart dell'originale, lo arresta e lo conserva come `ouf-mcp-r4a-original`, crea il candidato con ambiente e due mount invariati, quindi verifica `/health/ready`. Se il candidato fallisce tenta il rollback automatico. La procedura include un breve intervallo di indisponibilità MCP.
+**Eseguito nel lab il 24 settembre 2026.** Usare solo dopo CI, dry run e verifica che il container originale sia ancora attivo. Lo script salva `rollout-mcp.json` nella directory privata, disabilita il restart dell'originale, lo arresta e lo conserva come `ouf-mcp-r4a-original`, crea il candidato con ambiente e due mount invariati, quindi verifica `/health/ready`. Se il candidato fallisce tenta il rollback automatico. La procedura include un breve intervallo di indisponibilità MCP.
 
 ```bash
 git -C /opt/ouf/mcp show 07a3ac562779009a2e11d0707a6f27cd6fa0e482:scripts/r4a_rollout_mcp_runtime.py | sudo python3 - --snapshot /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/container.inspect.json --candidate /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/candidate-mcp-xgxnpg5w --apply
@@ -90,3 +90,8 @@ Atteso `MCP_R4A_ROLLBACK_RESTORED=true`. La procedura non tocca APISIX, UDP né 
 ## Gate successivi
 
 Grant HUMAN specifico `urban.object.search` proposto e approvato via THS; decisione owner effettiva e receipt coerenti; chiamate positive e negative APISIX→UDP; test MCP del tool solo dopo attivazione governata e lock di release coordinato. Registrare timestamp, versioni, prove e rollback effettivo. Il client Inspector resta un ausilio di test, non parte del setup Keycloak di produzione.
+
+
+## Evidenza staging del 24 settembre 2026
+
+L'operatore ha eseguito il comando `--apply` dal commit script `07a3ac562779009a2e11d0707a6f27cd6fa0e482`. Esito: `MCP_R4A_STAGED=true`, candidato `ouf-mcp:r4a-fbd0e8c` Up e originale `ouf-mcp:2ea473c` fermo, conservato come `ouf-mcp-r4a-original`. La prova locale `GET /health/ready` nel nuovo container ha restituito successo (`MCP_R4A_READY`). La chiamata HUMAN tramite connettore OUF `ouf.system.status` dopo lo staging ha restituito `{"module":"MCP","status":"HEALTHY","actionRequired":false,"partial":false,"visibilityClass":"PUBLIC_OPERATIONAL","redacted":true}`. Lo snapshot e il file rollback rimangono privati sul server. Questo non prova un grant di ricerca o un token con delega valido. `urban.object.search` resta INACTIVE; conservare l'originale finché le prove residue non sono chiuse.
