@@ -183,10 +183,10 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if !decision.Allowed || decision.DecisionRef == "" {
 		if s.Audit != nil {
 			_ = s.Audit.Audit(ctx, AuditEvent{
-				EventType: "AUTHORIZATION_DENIED_PRE_ADMISSION",
-				Identity: in.Identity,
-				ManifestChecksum: in.ManifestChecksum,
-				OutcomeCode: decision.DecisionCode,
+				EventType:                "AUTHORIZATION_DENIED_PRE_ADMISSION",
+				Identity:                 in.Identity,
+				ManifestChecksum:         in.ManifestChecksum,
+				OutcomeCode:              decision.DecisionCode,
 				AuthorizationDecisionRef: decision.DecisionRef,
 			})
 		}
