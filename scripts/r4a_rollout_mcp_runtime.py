@@ -169,7 +169,7 @@ def verify_staged(original: dict) -> None:
                 raise ValueError("Candidate readiness failed")
             time.sleep(2)
     if (current["Config"]["User"] != original["Config"]["User"] or
-            current["Config"]["Env"] != original["Config"]["Env"] or
+            sorted(current["Config"]["Env"]) != sorted(original["Config"]["Env"]) or
             current["HostConfig"]["RestartPolicy"]["Name"] != "unless-stopped" or
             set(current["NetworkSettings"]["Networks"]) != {"ouf-backend"}):
         raise ValueError("Candidate launch differs from original")
