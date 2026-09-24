@@ -271,7 +271,11 @@ func (s *Store) Audit(ctx context.Context, event orchestration.AuditEvent) error
 	if err != nil {
 		return err
 	}
-	return s.AppendAudit(ctx, event.EventType, event.Identity.ActorType, event.Identity.ServicePrincipalID, &event.AttemptID, event.ManifestChecksum, detail)
+	var attemptID *uuid.UUID
+	if event.AttemptID != uuid.Nil {
+		attemptID = &event.AttemptID
+	}
+	return s.AppendAudit(ctx, event.EventType, event.Identity.ActorType, event.Identity.ServicePrincipalID, attemptID, event.ManifestChecksum, detail)
 }
 
 type MaintenanceResult struct{ OrphansMarkedUnknown, ExpiredSessionsDeleted int64 }
