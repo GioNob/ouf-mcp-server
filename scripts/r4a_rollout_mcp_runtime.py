@@ -12,7 +12,6 @@ import subprocess
 import time
 
 NAME = "ouf-mcp"
-BACKUP = "ouf-mcp-r4a-original"
 
 
 def docker(*args: str) -> str:
@@ -107,8 +106,8 @@ def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id
     return original, args
 
 
-def write_state(candidate: Path, original: dict, image_id: str) -> dict:
-    state = {"old_id": original["Id"], "backup": BACKUP, "image_id": image_id}
+def write_state(candidate: Path, original: dict, image_id: str, backup_name: str) -> dict:
+    state = {"old_id": original["Id"], "backup": backup_name, "image_id": image_id}
     fd = os.open(candidate / "rollout-mcp.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as output:
         json.dump(state, output)
@@ -119,6 +118,7 @@ def write_state(candidate: Path, original: dict, image_id: str) -> dict:
 
 
 def rollback(state: dict) -> None:
+    backup_name = state["backup"]
     try:
         current = inspect(NAME)
     except subprocess.CalledProcessError:
@@ -129,13 +129,13 @@ def rollback(state: dict) -> None:
             docker("stop", NAME)
         docker("rm", NAME)
     try:
-        previous = inspect(BACKUP)
+        previous = inspect(backup_name)
     except subprocess.CalledProcessError:
         previous = None
     if previous:
         if previous["Id"] != state["old_id"]:
             raise ValueError("Rollback container ID mismatch")
-        docker("rename", BACKUP, NAME)
+        docker("rename", backup_name, NAME)
     restored = inspect(NAME)
     if restored["Id"] != state["old_id"]:
         raise ValueError("Original container cannot be restored")
@@ -183,6 +183,7 @@ def main() -> None:
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-id", required=True)
+    parser.add_argument("--backup-name", required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--rollback", action="store_true")
@@ -195,16 +196,19 @@ def main() -> None:
             private(args.candidate, 0o700)
             private(state_path, 0o600)
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            if state.get("backup") != BACKUP or state.get("image_id") != args.image_id:
+            if state.get("backup") != args.backup_name or state.get("image_id") != args.image_id:
                 raise ValueError("Rollback state mismatch")
             rollback(state)
             print("MCP_R4A_ROLLBACK_RESTORED=true")
             return
+        if not args.backup_name.startswith("ouf-mcp-r4a-rollback-") or args.backup_name == NAME:
+            raise ValueError("Invalid rollback container name")
+        backup_name = args.backup_name
         original, create_args = original_and_args(args.snapshot, args.candidate, args.image, args.image_id)
         if state_path.exists():
             raise ValueError("Candidate already staged; use rollback if needed")
         try:
-            inspect(BACKUP)
+            inspect(backup_name)
         except subprocess.CalledProcessError:
             pass
         else:
@@ -215,12 +219,12 @@ def main() -> None:
             print("ORIGINAL_ID_MATCH=true; ROLLBACK_ORIGINAL_RETAINED=true")
             print("NO_CONTAINERS_CHANGED=true")
             return
-        state = write_state(args.candidate, original, args.image_id)
+        state = write_state(args.candidate, original, args.image_id, backup_name)
         print("MCP_R4A_APPLY_STARTED=true", flush=True)
         try:
             docker("update", "--restart", "no", NAME)
             docker("stop", NAME)
-            docker("rename", NAME, BACKUP)
+            docker("rename", NAME, backup_name)
             docker(*create_args)
             docker("start", NAME)
             verify_staged(original, args.image_id)
@@ -228,7 +232,7 @@ def main() -> None:
             rollback(state)
             raise ValueError("Candidate failed; original restored")
         print("MCP_R4A_STAGED=true")
-        print("ORIGINAL_ROLLBACK_CONTAINER=" + BACKUP)
+        print("ORIGINAL_ROLLBACK_CONTAINER=" + backup_name)
         print("POLICY_AND_CONNECTOR_PROBES_STILL_REQUIRED=true")
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, json.JSONDecodeError):
         raise SystemExit("MCP_R4A_ROLLOUT=BLOCKED; CHECK_ORIGINAL_STATE=true") from None
