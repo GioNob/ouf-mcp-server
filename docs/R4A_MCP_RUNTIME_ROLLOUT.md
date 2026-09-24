@@ -19,7 +19,7 @@ La ricetta `Dockerfile` è committata. Il commit sorgente verificato è `fbd0e8c
 
 ```bash
 git -C /opt/ouf/mcp fetch origin codex/r4a-object-search-mcp
-test "$(git -C /opt/ouf/mcp rev-parse FETCH_HEAD)" = fbd0e8c0cc22c127ded04ffc658269699fb433ae
+git -C /opt/ouf/mcp merge-base --is-ancestor fbd0e8c0cc22c127ded04ffc658269699fb433ae FETCH_HEAD
 set -o pipefail
 git -C /opt/ouf/mcp archive fbd0e8c0cc22c127ded04ffc658269699fb433ae | sudo docker build -t ouf-mcp:r4a-fbd0e8c -
 sudo docker image inspect --format '{{.Id}} user={{.Config.User}}' ouf-mcp:r4a-fbd0e8c
@@ -33,7 +33,7 @@ Gli script del branch sono invocati con `git show` su commit immutabili per evit
 
 ```bash
 git -C /opt/ouf/mcp fetch origin codex/r4a-object-search-mcp
-test "$(git -C /opt/ouf/mcp rev-parse FETCH_HEAD)" = 07a3ac562779009a2e11d0707a6f27cd6fa0e482
+git -C /opt/ouf/mcp merge-base --is-ancestor 07a3ac562779009a2e11d0707a6f27cd6fa0e482 FETCH_HEAD
 set -o pipefail
 git -C /opt/ouf/mcp show 07a3ac562779009a2e11d0707a6f27cd6fa0e482:scripts/r4a_snapshot_mcp_runtime.py | sudo python3 - --backup-root /opt/ouf/backup
 ```
