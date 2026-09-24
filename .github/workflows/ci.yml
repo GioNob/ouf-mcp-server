@@ -49,6 +49,7 @@ jobs:
       - run: go test ./internal/deployment -run TestAuthorizationLocalRuntimeContract -v
       - run: go test ./internal/deployment -run TestMCP1IObservabilityCapacityAndDRContracts -v
       - run: bash scripts/verify.sh
+      - run: docker build -t ouf-mcp:ci .
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
       - run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
