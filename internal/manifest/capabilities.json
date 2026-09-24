@@ -27,7 +27,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "udp",
       "operationClass": "SEARCH",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "urban.object.search",
       "gatewayBindingRef": "capability://urban.object.search",
       "baseCostEnvelope": {
