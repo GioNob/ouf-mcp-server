@@ -11,8 +11,6 @@ import stat
 import subprocess
 import time
 
-IMAGE = "ouf-mcp:r4a-fbd0e8c"
-IMAGE_ID = "sha256:ac64e6e7220a9fcc614b6b3dd90a30e01513bab804dbc3f462cfc68f6c6c999a"
 NAME = "ouf-mcp"
 BACKUP = "ouf-mcp-r4a-original"
 
@@ -36,7 +34,7 @@ def private(path: Path, mode: int) -> None:
         raise ValueError("Private file ownership or mode changed")
 
 
-def original_and_args(snapshot: Path, candidate: Path) -> tuple[dict, list[str]]:
+def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id: str) -> tuple[dict, list[str]]:
     private(snapshot.parent, 0o700)
     private(snapshot, 0o600)
     private(candidate, 0o700)
@@ -50,8 +48,8 @@ def original_and_args(snapshot: Path, candidate: Path) -> tuple[dict, list[str]]
     live = inspect(NAME)
     if live.get("Id") != original.get("Id") or not live.get("State", {}).get("Running"):
         raise ValueError("Original ID changed or not running")
-    image = json.loads(docker("image", "inspect", IMAGE))[0]
-    if image["Id"] != IMAGE_ID:
+    image = json.loads(docker("image", "inspect", image_name))[0]
+    if image["Id"] != image_id:
         raise ValueError("Candidate image ID changed")
     image_config = image["Config"]
     config = original["Config"]
@@ -105,12 +103,12 @@ def original_and_args(snapshot: Path, candidate: Path) -> tuple[dict, list[str]]
     for mount in sorted(mounts, key=lambda m: m["Destination"]):
         args += ["--mount", "type=bind,src=" + mount["Source"] +
                  ",dst=" + mount["Destination"] + ",readonly"]
-    args.append(IMAGE)
+    args.append(image_name)
     return original, args
 
 
-def write_state(candidate: Path, original: dict) -> dict:
-    state = {"old_id": original["Id"], "backup": BACKUP, "image_id": IMAGE_ID}
+def write_state(candidate: Path, original: dict, image_id: str) -> dict:
+    state = {"old_id": original["Id"], "backup": BACKUP, "image_id": image_id}
     fd = os.open(candidate / "rollout-mcp.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as output:
         json.dump(state, output)
@@ -155,10 +153,10 @@ def rollback(state: dict) -> None:
             time.sleep(2)
 
 
-def verify_staged(original: dict) -> None:
+def verify_staged(original: dict, image_id: str) -> None:
     for attempt in range(20):
         current = inspect(NAME)
-        if current["Image"] != IMAGE_ID or not current["State"]["Running"]:
+        if current["Image"] != image_id or not current["State"]["Running"]:
             raise ValueError("Candidate did not stay running")
         try:
             docker("exec", NAME, "wget", "-q", "-O", "/dev/null",
@@ -183,6 +181,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=Path)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--image-id", required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--rollback", action="store_true")
@@ -195,12 +195,12 @@ def main() -> None:
             private(args.candidate, 0o700)
             private(state_path, 0o600)
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            if state.get("backup") != BACKUP or state.get("image_id") != IMAGE_ID:
+            if state.get("backup") != BACKUP or state.get("image_id") != args.image_id:
                 raise ValueError("Rollback state mismatch")
             rollback(state)
             print("MCP_R4A_ROLLBACK_RESTORED=true")
             return
-        original, create_args = original_and_args(args.snapshot, args.candidate)
+        original, create_args = original_and_args(args.snapshot, args.candidate, args.image, args.image_id)
         if state_path.exists():
             raise ValueError("Candidate already staged; use rollback if needed")
         try:
@@ -211,11 +211,11 @@ def main() -> None:
             raise ValueError("Rollback container name already exists")
         if not args.apply:
             print("MCP_R4A_DRY_RUN=PASS")
-            print("CANDIDATE_IMAGE_ID=" + IMAGE_ID)
+            print("CANDIDATE_IMAGE_ID=" + args.image_id)
             print("ORIGINAL_ID_MATCH=true; ROLLBACK_ORIGINAL_RETAINED=true")
             print("NO_CONTAINERS_CHANGED=true")
             return
-        state = write_state(args.candidate, original)
+        state = write_state(args.candidate, original, args.image_id)
         print("MCP_R4A_APPLY_STARTED=true", flush=True)
         try:
             docker("update", "--restart", "no", NAME)
@@ -223,7 +223,7 @@ def main() -> None:
             docker("rename", NAME, BACKUP)
             docker(*create_args)
             docker("start", NAME)
-            verify_staged(original)
+            verify_staged(original, args.image_id)
         except (ValueError, subprocess.SubprocessError, KeyError, TypeError):
             rollback(state)
             raise ValueError("Candidate failed; original restored")
