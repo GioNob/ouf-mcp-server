@@ -64,6 +64,19 @@ class AdminMcpProposalTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"proposal is not pending"):
             m.proposal_receipt(bad)
 
+
+    def test_tools_call_sets_mcp_name_header(self):
+        headers=m.mcp_headers(
+            "token",
+            "tools/call",
+            {"name":"authorization.permissions.propose","arguments":{}},
+            "idem.1",
+        )
+        self.assertEqual(headers["Mcp-Name"],"authorization.permissions.propose")
+        self.assertEqual(headers["Idempotency-Key"],"idem.1")
+        listed=m.mcp_headers("token","tools/list",{})
+        self.assertNotIn("Mcp-Name",listed)
+
     def test_idempotency_pattern(self):
         self.assertIsNotNone(m.IDEMPOTENCY_RE.fullmatch("r4a.search.giovanni:1"))
         self.assertIsNone(m.IDEMPOTENCY_RE.fullmatch("not allowed /"))
