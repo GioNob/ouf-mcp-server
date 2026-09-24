@@ -117,9 +117,7 @@ def meta():
     }
 
 
-def rpc(token,method,params,request_id,idempotency_key=None):
-    body={"jsonrpc":"2.0","id":request_id,"method":method,"params":dict(params)}
-    body["params"]["_meta"]=meta()
+def mcp_headers(token,method,params,idempotency_key=None):
     headers={
         "Authorization":"Bearer "+token,
         "Content-Type":"application/json",
@@ -127,8 +125,20 @@ def rpc(token,method,params,request_id,idempotency_key=None):
         "Mcp-Protocol-Version":PROTOCOL,
         "Mcp-Method":method,
     }
+    if method=="tools/call":
+        name=params.get("name") if isinstance(params,dict) else None
+        if not isinstance(name,str) or not name:
+            raise ValueError("tools/call requires tool name")
+        headers["Mcp-Name"]=name
     if idempotency_key is not None:
         headers["Idempotency-Key"]=idempotency_key
+    return headers
+
+
+def rpc(token,method,params,request_id,idempotency_key=None):
+    body={"jsonrpc":"2.0","id":request_id,"method":method,"params":dict(params)}
+    body["params"]["_meta"]=meta()
+    headers=mcp_headers(token,method,params,idempotency_key)
     req=urllib.request.Request(
         MCP_URL,
         data=json.dumps(body,separators=(",",":")).encode("utf-8"),
