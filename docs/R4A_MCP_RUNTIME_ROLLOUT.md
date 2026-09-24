@@ -1,6 +1,6 @@
 # R4a MCP: build, staging e rollback sul laboratorio
 
-Stato al 24 settembre 2026: `urban.object.search` rimane **INACTIVE** nel manifest. Questa procedura prepara il binario con il binding verso la route Gateway già installata. La prova positiva con grant HUMAN, decisione owner e token workload non è ancora stata eseguita. R-INSTALL resta **OPEN**. I PET v1.7 (MCP PET v1.4, Authorization PET v1.5 e Gateway PET v1.5) governano l'ordine dei gate: mediazione Gateway, autorizzazione, fail-closed e nessuna pubblicazione della capability sulla base della sola prova 401.
+Stato al 24 settembre 2026: `urban.object.search` è **ACTIVE** nel manifest candidato dopo pubblicazione governata di Authorization `ouf-lab-authorization:16` e grant HUMAN temporaneo per il collaudo. Questa procedura porta sul runtime MCP l'immagine che pubblicizza il tool; l'acceptance end-to-end resta distinta e richiede prove positive/negative tramite Gateway e UDP. R-INSTALL resta **OPEN**. I PET v1.7 (MCP PET v1.4, Authorization PET v1.5 e Gateway PET v1.5) governano l'ordine dei gate: mediazione Gateway, autorizzazione, fail-closed e nessuna pubblicazione della capability sulla base della sola prova 401.
 
 Tutti i comandi qui sotto sono per **il terminale SSH sul server come `oufadmin`**, non per PowerShell. Docker è invocato tramite `sudo`. Non stampare, copiare in chat o committare snapshot, file `mcp.env`, mount sources o valori dei secret.
 
@@ -15,14 +15,14 @@ I due percorsi `/opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/...` qui sotto sono **a
 
 ## 1. Build immagine candidata
 
-La ricetta `Dockerfile` è committata. Il commit sorgente verificato è `fbd0e8c0cc22c127ded04ffc658269699fb433ae`; l'immagine risultante del lab è `sha256:ac64e6e7220a9fcc614b6b3dd90a30e01513bab804dbc3f462cfc68f6c6c999a`.
+La ricetta `Dockerfile` è committata. Il rollout non codifica più tag o digest nel codice. Usare il commit CI-verde scelto per il rilascio, costruire un tag locale univoco e passare esplicitamente `--image` e `--image-id` agli script. Per l'attivazione R4a corrente il commit sorgente è `11f268c1979d6868c88d11c9e1d7d5a668c7246d`, il tag locale è `ouf-mcp:r4a-11f268c` e il digest osservato nel laboratorio è `sha256:6ec9ec81cf1424626591b1124aad3262152d07cf8ed89f5fb56e683aa909f8cb`.
 
 ```bash
 git -C /opt/ouf/mcp fetch origin codex/r4a-object-search-mcp
-git -C /opt/ouf/mcp merge-base --is-ancestor fbd0e8c0cc22c127ded04ffc658269699fb433ae FETCH_HEAD
+git -C /opt/ouf/mcp merge-base --is-ancestor 11f268c1979d6868c88d11c9e1d7d5a668c7246d FETCH_HEAD
 set -o pipefail
-git -C /opt/ouf/mcp archive fbd0e8c0cc22c127ded04ffc658269699fb433ae | sudo docker build -t ouf-mcp:r4a-fbd0e8c -
-sudo docker image inspect --format '{{.Id}} user={{.Config.User}}' ouf-mcp:r4a-fbd0e8c
+git -C /opt/ouf/mcp archive 11f268c1979d6868c88d11c9e1d7d5a668c7246d | sudo docker build -t ouf-mcp:r4a-11f268c -
+sudo docker image inspect --format '{{.Id}} user={{.Config.User}}' ouf-mcp:r4a-11f268c
 ```
 
 L'ultimo comando deve mostrare il digest sopra e `user=10005:10005`. La build non avvia il container.
@@ -51,7 +51,7 @@ Atteso `MCP_PREFLIGHT=PASS`, `ORIGINAL_RUNNING_AND_ID_MATCH=true`, due mount rea
 ## 3. Preparazione privata e dry run
 
 ```bash
-git -C /opt/ouf/mcp show 07a3ac562779009a2e11d0707a6f27cd6fa0e482:scripts/r4a_prepare_mcp_candidate.py | sudo python3 - --snapshot /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/container.inspect.json
+git -C /opt/ouf/mcp show COMMIT:scripts/r4a_prepare_mcp_candidate.py | sudo python3 - --snapshot SNAPSHOT --image ouf-mcp:r4a-11f268c --image-id sha256:6ec9ec81cf1424626591b1124aad3262152d07cf8ed89f5fb56e683aa909f8cb
 ```
 
 Annotare solo `PRIVATE_MCP_CANDIDATE`. Nel laboratorio:
@@ -59,7 +59,7 @@ Annotare solo `PRIVATE_MCP_CANDIDATE`. Nel laboratorio:
 La directory è root-only 0700 e contiene `mcp.env` root-only 0600. Non mostrarne il contenuto.
 
 ```bash
-git -C /opt/ouf/mcp show 07a3ac562779009a2e11d0707a6f27cd6fa0e482:scripts/r4a_rollout_mcp_runtime.py | sudo python3 - --snapshot /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/container.inspect.json --candidate /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/candidate-mcp-xgxnpg5w
+git -C /opt/ouf/mcp show COMMIT:scripts/r4a_rollout_mcp_runtime.py | sudo python3 - --snapshot SNAPSHOT --candidate CANDIDATE --image ouf-mcp:r4a-11f268c --image-id sha256:6ec9ec81cf1424626591b1124aad3262152d07cf8ed89f5fb56e683aa909f8cb --backup-name ouf-mcp-r4a-rollback-fbd0e8c
 ```
 
 Atteso nel lab: `MCP_R4A_DRY_RUN=PASS`, digest candidato coincidente, `ORIGINAL_ID_MATCH=true`, `NO_CONTAINERS_CHANGED=true`. **Esito acquisito: PASS.** Se `BLOCKED`, ispezionare privatamente e correggere lo script prima di qualsiasi apply.
@@ -69,12 +69,12 @@ Atteso nel lab: `MCP_R4A_DRY_RUN=PASS`, digest candidato coincidente, `ORIGINAL_
 **Eseguito nel lab il 24 settembre 2026.** Usare solo dopo CI, dry run e verifica che il container originale sia ancora attivo. Lo script salva `rollout-mcp.json` nella directory privata, disabilita il restart dell'originale, lo arresta e lo conserva come `ouf-mcp-r4a-original`, crea il candidato con ambiente e due mount invariati, quindi verifica `/health/ready`. Se il candidato fallisce tenta il rollback automatico. La procedura include un breve intervallo di indisponibilità MCP.
 
 ```bash
-git -C /opt/ouf/mcp show 07a3ac562779009a2e11d0707a6f27cd6fa0e482:scripts/r4a_rollout_mcp_runtime.py | sudo python3 - --snapshot /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/container.inspect.json --candidate /opt/ouf/backup/r4a-mcp-runtime-4i2mfgwn/candidate-mcp-xgxnpg5w --apply
+git -C /opt/ouf/mcp show COMMIT:scripts/r4a_rollout_mcp_runtime.py | sudo python3 - --snapshot SNAPSHOT --candidate CANDIDATE --image ouf-mcp:r4a-11f268c --image-id sha256:6ec9ec81cf1424626591b1124aad3262152d07cf8ed89f5fb56e683aa909f8cb --backup-name ouf-mcp-r4a-rollback-fbd0e8c --apply
 sudo docker ps -a --filter name=ouf-mcp --format '{{.Names}} {{.Image}} {{.Status}}'
 sudo docker exec ouf-mcp wget -q -O /dev/null http://127.0.0.1:8080/health/ready && echo MCP_R4A_READY
 ```
 
-Atteso `MCP_R4A_STAGED=true`, `ouf-mcp` Up e `ouf-mcp-r4a-original` Exited. Verificare anche `ouf.system.status` con identità HUMAN, discovery tool con autenticazione, che `urban.object.search` resti assente dalla lista, e negative case senza bearer. Staging e salute non equivalgono ad acceptance della ricerca.
+Atteso `MCP_R4A_STAGED=true`, `ouf-mcp` Up e `ouf-mcp-r4a-original` Exited. Verificare anche `ouf.system.status` con identità HUMAN, discovery tool con autenticazione, che `urban.object.search` sia presente nella lista, e negative case senza bearer. Staging e salute non equivalgono ad acceptance della ricerca.
 
 ## 5. Rollback
 
