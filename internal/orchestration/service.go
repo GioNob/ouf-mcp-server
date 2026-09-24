@@ -181,6 +181,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, err
 	}
 	if !decision.Allowed || decision.DecisionRef == "" {
+		if s.Audit != nil {
+			_ = s.Audit.Audit(ctx, AuditEvent{
+				EventType: "AUTHORIZATION_DENIED_PRE_ADMISSION",
+				Identity: in.Identity,
+				ManifestChecksum: in.ManifestChecksum,
+				OutcomeCode: decision.DecisionCode,
+				AuthorizationDecisionRef: decision.DecisionRef,
+			})
+		}
 		return Result{}, ErrUnauthorized
 	}
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
