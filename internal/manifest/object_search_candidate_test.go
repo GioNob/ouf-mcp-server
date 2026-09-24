@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestR4aObjectSearchCandidateIsClosedAndNotAdvertised(t *testing.T) {
+func TestR4aObjectSearchIsClosedAndAdvertisedWhenActive(t *testing.T) {
 	snapshot, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -19,16 +19,20 @@ func TestR4aObjectSearchCandidateIsClosedAndNotAdvertised(t *testing.T) {
 	if candidate == nil {
 		t.Fatal("missing object search candidate")
 	}
-	if candidate.PublicationState != "INACTIVE" || !candidate.ToolEligible ||
+	if candidate.PublicationState != "ACTIVE" || !candidate.ToolEligible ||
 		candidate.Owner != "udp" || candidate.OperationClass != "SEARCH" ||
 		candidate.RequiredAuthorization != "urban.object.search" ||
 		candidate.GatewayBindingRef != "capability://urban.object.search" {
 		t.Fatal("unexpected object search governance binding")
 	}
+	foundActive := false
 	for _, active := range snapshot.ToolEligible() {
 		if active.CapabilityID == candidate.CapabilityID {
-			t.Fatal("candidate was advertised")
+			foundActive = true
 		}
+	}
+	if !foundActive {
+		t.Fatal("active object search was not advertised")
 	}
 	var schema struct {
 		AdditionalProperties bool                       `json:"additionalProperties"`
