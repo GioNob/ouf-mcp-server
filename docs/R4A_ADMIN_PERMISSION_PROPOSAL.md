@@ -11,7 +11,7 @@ It is deliberately proposal-only:
   subject, tenant, HUMAN actor, ACR and required scopes;
 - the client calls public `https://api.ouf-lab.it/mcp`;
 - it verifies `authorization.permissions.propose` is present in `tools/list`;
-- it invokes `tools/call` with a stable caller-supplied idempotency key;
+- it invokes `tools/call` with the required `Mcp-Name` header bound to the exact tool name and a stable caller-supplied idempotency key;
 - it accepts only a PENDING proposal receipt;
 - it never calls the owner internal endpoint and has no confirm/reject operation.
 
