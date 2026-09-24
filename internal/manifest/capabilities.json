@@ -1,6 +1,74 @@
 {
-  "version": "1.5.0-permission-proposals",
+  "version": "1.6.0-r4a-object-search-candidate",
   "capabilities": [
+    {
+      "toolName": "urban.object.search",
+      "capabilityId": "urban.object.search",
+      "purpose": "Search urban objects of one exact canonical type with bounded owner-authorized pagination",
+      "useWhen": [
+        "the exact object type is known and a bounded object search is needed"
+      ],
+      "doNotUseWhen": [
+        "relationship traversal, arbitrary predicates or an unbounded query is needed"
+      ],
+      "preferredAlternatives": [
+        "urban.object.related_search"
+      ],
+      "operationalLimits": {
+        "maxPageSize": 100,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Only UDP-authorized objects and properties, with an opaque cursor or a partial result when applicable",
+      "securityNotes": [
+        "Gateway workload identity and signed HUMAN delegation are mandatory",
+        "UDP checks the owner authorization bundle per object and property",
+        "No arbitrary predicates or backend selection"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "udp",
+      "operationClass": "SEARCH",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "urban.object.search",
+      "gatewayBindingRef": "capability://urban.object.search",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        }
+      }
+    },
     {
       "toolName": "urban.object.related_search",
       "capabilityId": "urban.object.related_search",

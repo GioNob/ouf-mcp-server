@@ -67,6 +67,7 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"ouf.operations.summary",
 		"ouf.system.status",
 		"urban.object.related_search",
+		"urban.object.search",
 	}
 	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
 		t.Fatalf("tools/list names=%v want=%v", gotNames, wantNames)

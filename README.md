@@ -32,3 +32,7 @@ See `docs/MCP_1C_TRACEABILITY.md` for the bounded PET coverage and explicit defe
 The maintenance worker additionally requires `MCP_GATEWAY_RECOVERY_ENDPOINT` and the same renewable workload identity configuration. It never contacts an owner directly: outcome lookup is Gateway-mediated and keyed by the persisted backend request ID.
 
 MCP 1E preserves object-budget uncertainty as durable debt. `MCP_MAX_UNKNOWN_HOLD` defaults to `24h`; expiry changes `UNKNOWN` to `UNRESOLVED` without releasing debt or retry blockers. Only verified Evidence Inbox records can drive late compensation. See `docs/MCP_1E_TRACEABILITY.md`.
+
+## R4a MCP runtime
+
+La [procedura versionata di build, snapshot, staging e rollback](docs/R4A_MCP_RUNTIME_ROLLOUT.md) registra il checkpoint del laboratorio e i gate ancora aperti. `urban.object.search` resta INACTIVE; R-INSTALL resta OPEN.
