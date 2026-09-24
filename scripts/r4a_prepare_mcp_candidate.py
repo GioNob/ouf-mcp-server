@@ -9,8 +9,6 @@ import stat
 import subprocess
 import tempfile
 
-IMAGE = "ouf-mcp:r4a-fbd0e8c"
-IMAGE_ID = "sha256:ac64e6e7220a9fcc614b6b3dd90a30e01513bab804dbc3f462cfc68f6c6c999a"
 
 
 def docker(*args: str) -> list[dict]:
@@ -25,7 +23,7 @@ def private(path: Path, mode: int) -> None:
         raise ValueError("Private ownership or mode changed")
 
 
-def prepare(snapshot: Path) -> Path:
+def prepare(snapshot: Path, image_name: str, image_id: str) -> Path:
     if os.geteuid() != 0:
         raise ValueError("Root required")
     private(snapshot.parent, 0o700)
@@ -37,8 +35,8 @@ def prepare(snapshot: Path) -> Path:
     current = docker("inspect", "ouf-mcp")[0]
     if old.get("Id") != current.get("Id") or not current.get("State", {}).get("Running"):
         raise ValueError("Original container changed")
-    image = docker("image", "inspect", IMAGE)[0]
-    if image["Id"] != IMAGE_ID:
+    image = docker("image", "inspect", image_name)[0]
+    if image["Id"] != image_id:
         raise ValueError("Candidate image ID changed")
     ic = image["Config"]
     if ic.get("User") != "10005:10005" or ic.get("Entrypoint") != ["/usr/local/bin/ouf-mcp"] or ic.get("Cmd") != ["server"]:
@@ -95,9 +93,11 @@ def prepare(snapshot: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--image-id", required=True)
     args = parser.parse_args()
     try:
-        folder = prepare(args.snapshot)
+        folder = prepare(args.snapshot, args.image, args.image_id)
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
         raise SystemExit("MCP_CANDIDATE_PREPARE=BLOCKED; CONTAINERS_UNCHANGED=true") from None
     print(f"PRIVATE_MCP_CANDIDATE={folder}")
