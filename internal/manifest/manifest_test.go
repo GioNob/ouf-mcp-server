@@ -28,14 +28,14 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"authorization.permissions.propose",
 		"authorization.permissions.read",
 		"authorization.proposal.read",
-		"source.file.preview",
-		"source.file.profile",
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
 		"ouf.operations.explain",
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
 		"ouf.system.status",
+		"source.file.preview",
+		"source.file.profile",
 		"urban.object.related_search",
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
