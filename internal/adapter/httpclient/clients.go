@@ -129,6 +129,10 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
 		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode
+	case "ouf.managed-source.file.profile":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
+	case "ouf.managed-source.preview":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
 	}
 	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if e != nil {

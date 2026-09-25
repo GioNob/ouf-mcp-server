@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0-permission-proposals",
+  "version": "1.6.0-managed-file-profile-preview",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -1177,6 +1177,144 @@
             "format": "uuid"
           }
         }
+      }
+    },
+    {
+      "toolName": "source.file.profile",
+      "capabilityId": "ouf.managed-source.file.profile",
+      "purpose": "Queue profiling of a managed file owned by the authenticated human",
+      "useWhen": [
+        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
+      ],
+      "doNotUseWhen": [
+        "the user has no asset ID or wants to read a different user’s file"
+      ],
+      "preferredAlternatives": [
+        "upload via the governed Agent Host attachment bridge"
+      ],
+      "operationalLimits": {
+        "maxArgumentsBytes": 1024,
+        "maxResultBytes": 65536
+      },
+      "resultSemantics": "An idempotent profile job receipt, not an approved source configuration",
+      "securityNotes": [
+        "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
+        "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "onboarding",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.file.profile",
+      "gatewayBindingRef": "capability://ouf.managed-source.file.profile",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 65536,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assetId"
+        ],
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "source.file.preview",
+      "capabilityId": "ouf.managed-source.preview",
+      "purpose": "Read a redacted managed-file profile or its bounded job status",
+      "useWhen": [
+        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
+      ],
+      "doNotUseWhen": [
+        "the user has no asset ID or wants to read a different user’s file"
+      ],
+      "preferredAlternatives": [
+        "upload via the governed Agent Host attachment bridge"
+      ],
+      "operationalLimits": {
+        "maxArgumentsBytes": 1024,
+        "maxResultBytes": 65536
+      },
+      "resultSemantics": "Redacted preview or bounded profile-job state; no object-store reference",
+      "securityNotes": [
+        "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
+        "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "onboarding",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.managed-source.preview",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 65536,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assetId"
+        ],
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "profileId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "profileId"
+            ],
+            "not": {
+              "required": [
+                "jobId"
+              ]
+            }
+          },
+          {
+            "required": [
+              "jobId"
+            ],
+            "not": {
+              "required": [
+                "profileId"
+              ]
+            }
+          }
+        ]
       }
     }
   ]

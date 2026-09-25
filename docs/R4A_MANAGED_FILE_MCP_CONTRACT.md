@@ -1,8 +1,8 @@
 # R4a — managed-file MCP attachment contract (candidate)
 
-Status: design gate, not a deployed tool. PET Gateway T25, MCP v1.4 §21,
+Status: candidate profile/preview tools, no live deployment or attachment bridge. PET Gateway T25, MCP v1.4 §21,
 Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
-Issue: GioNob/ouf-mcp-server#43. The current plugin exposes no file tools.
+Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
 
 ## Ingress and identity
 
