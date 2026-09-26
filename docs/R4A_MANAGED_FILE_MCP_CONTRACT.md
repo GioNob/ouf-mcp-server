@@ -36,6 +36,14 @@ byte bridge is therefore **unproven and not deployable for upload**. Do not
 repeat host-origin allowlist probes or enable direct MCP fetch to work around
 this finding. The current Gateway has no browser-to-Gateway upload ticket
 binding, so even a future successful browser read alone cannot complete R4a.
+The concrete fallback contract is in Gateway
+`docs/R4A_CHATGPT_ATTACHMENT_BOUNDARY.md`: a widget file picker obtains a
+browser `File`, requests a HUMAN-bound Gateway upload ticket through MCP, and
+streams bytes through Gateway to Onboarding. It requires the human to select
+the local file a second time if it was already attached to chat. No ticket
+tool or browser route exists yet; do not advertise `source.file.upload` for
+this fallback until the coordinated route, owner receipt and rollback are
+implemented and exercised live.
 
 Status: profile/preview/draft-create bindings are deployed; the upload bridge
 has not passed its live or PET release gate. PET Gateway T25/T28, MCP v1.4
