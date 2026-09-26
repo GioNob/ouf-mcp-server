@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0-managed-file-draft-create",
+  "version": "1.7.0-managed-file-host-attachment-candidate",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -1175,6 +1175,44 @@
           "proposalId": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "source.file.upload",
+      "capabilityId": "ouf.managed-source.file.upload",
+      "purpose": "Stage an authenticated user's CSV attachment through the governed Gateway",
+      "useWhen": ["the authenticated human supplied a CSV through the host file parameter"],
+      "doNotUseWhen": ["there is no host-provided file descriptor or the file origin is not approved"],
+      "preferredAlternatives": ["request an authorized host attachment"],
+      "operationalLimits": {"maxArgumentsBytes": 4096, "maxResultBytes": 4096},
+      "resultSemantics": "An idempotent staged asset identity; profiling and DRAFT creation are separate actions",
+      "securityNotes": ["The host URL stays in private request memory and never enters the Gateway envelope", "Gateway checks delegated HUMAN scope; Onboarding verifies streamed bytes and owner receipt"],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "onboarding",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.file.upload",
+      "gatewayBindingRef": "capability://ouf.managed-source.file.upload",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 1, "hardMaxResultBytes": 4096, "hardMaxElapsedMs": 30000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1},
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file"],
+        "properties": {
+          "file": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file_id", "download_url"],
+            "properties": {
+              "file_id": {"type": "string", "pattern": "^file_[A-Za-z0-9_-]{1,128}$"},
+              "download_url": {"type": "string", "format": "uri"},
+              "mime_type": {"type": "string", "const": "text/csv"},
+              "file_name": {"type": "string", "maxLength": 255}
+            }
           }
         }
       }

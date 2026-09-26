@@ -15,6 +15,7 @@ import (
 	"time"
 
 	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
@@ -290,7 +291,18 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
-	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
+	var handler http.Handler
+	if os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") == "true" {
+		origins := strings.Split(os.Getenv("MCP_HOST_FILE_ORIGINS"), ",")
+		fetcher, fetchErr := hostfiles.New(origins)
+		if fetchErr != nil {
+			logger.Error("host file origin configuration failed", "error", fetchErr)
+			os.Exit(1)
+		}
+		handler, err = kernel.NewGovernedHTTPHandlerWithHostFiles(logger, service, fetcher)
+	} else {
+		handler, err = kernel.NewGovernedHTTPHandler(logger, service)
+	}
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)

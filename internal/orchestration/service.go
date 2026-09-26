@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"sort"
 	"time"
@@ -97,7 +98,11 @@ type GatewayRequest struct {
 	Identity                                                                        Identity
 	AuthorizationDecisionRef, CorrelationID, IdempotencyKey, AttemptID, RequestHash string
 	MaxResultBytes                                                                  int64
+	Upload                                                                          *UploadStream `json:"-"`
 }
+// UploadStream is consumed only after authorization and admission. Its bytes
+// never enter the JSON envelope, fingerprint, database or audit event.
+type UploadStream struct { Reader io.Reader; Size int64; SHA256, FileID string }
 type Problem struct {
 	Type, Title, Code, Detail string
 	Status                    int
@@ -132,6 +137,7 @@ type Invocation struct {
 	Window, Timeout                                                          time.Duration
 	RetryThreshold                                                           int
 	Maximum                                                                  Cost
+	Upload                                                                   *UploadStream
 }
 type Result struct {
 	Body      []byte
@@ -155,6 +161,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	if s.RequireDelegation && in.Identity.Delegation == "" {
 		return Result{}, ErrUnauthorized
+	}
+	if in.Upload != nil && (in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Reader == nil || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024) {
+		return Result{}, fmt.Errorf("invalid governed upload")
 	}
 	resource := in.Resource
 	if resource.TenantID == "" {
@@ -213,6 +222,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		Arguments: in.Arguments, Identity: in.Identity, AuthorizationDecisionRef: decision.DecisionRef,
 		CorrelationID: in.CorrelationID, IdempotencyKey: in.IdempotencyKey, AttemptID: admitted.AttemptID.String(), RequestHash: hex.EncodeToString(requestHash[:]),
 		MaxResultBytes: in.Maximum.ResultBytes,
+		Upload: in.Upload,
 	}, in.Timeout)
 	outcome := AttemptOutcome{Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {

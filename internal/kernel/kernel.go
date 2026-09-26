@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/trustedclaims"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -45,21 +46,29 @@ type operationalInput struct {
 	Limit      int    `json:"limit,omitempty"`
 }
 
-func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) { return newHTTPHandler(logger, nil) }
+func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) { return newHTTPHandler(logger, nil, nil) }
 func NewGovernedHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("governed service is required")
 	}
-	return newHTTPHandler(logger, service)
+	return newHTTPHandler(logger, service, nil)
+}
+func NewGovernedHTTPHandlerWithHostFiles(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher) (http.Handler, error) {
+	if service == nil || fetcher == nil { return nil, fmt.Errorf("governed service and host attachment origin are required") }
+	return newHTTPHandler(logger, service, fetcher)
 }
 
-func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
+func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher) (http.Handler, error) {
 	snapshot, err := manifest.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
 	for _, capability := range snapshot.ToolEligible() {
+		if capability.ToolName == "source.file.upload" {
+			if service != nil && fetcher != nil { registerUploadTool(server, capability, snapshot, service, fetcher) }
+			continue
+		}
 		if service == nil {
 			registerUnavailableTool(server, capability)
 		} else {
@@ -68,6 +77,37 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.H
 	}
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
 	return modernOnly(streamable), nil
+}
+
+func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(c.InputSchema, &schema); err != nil { panic(err) }
+	checksum, _ := snapshot.Checksum()
+	mcp.AddTool(server, &mcp.Tool{Name:c.ToolName, Description:c.Description(), InputSchema:&schema,
+		Meta:mcp.Meta{"openai/fileParams":[]string{"file"}}},
+		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+			identity, ok := ctx.Value(identityKey{}).(requestIdentity)
+			if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" { return errorResult("UNAUTHENTICATED",false),nil,nil }
+			raw, _ := json.Marshal(input["file"])
+			var descriptor hostfiles.Input
+			if err := json.Unmarshal(raw,&descriptor); err != nil { return errorResult("ATTACHMENT_INVALID",false),nil,nil }
+			staged, err := fetcher.Fetch(ctx,descriptor)
+			if err != nil { return errorResult("ATTACHMENT_BRIDGE_UNAVAILABLE",false),nil,nil }
+			defer staged.CloseAndRemove()
+			args, _ := json.Marshal(map[string]any{"fileId":descriptor.FileID,"contentHash":staged.SHA256,"sizeBytes":staged.Size})
+			if identity.CorrelationID == "" { identity.CorrelationID=uuid.NewString() }
+			identity.IdempotencyKey="upload:"+descriptor.FileID
+			result, err := service.Call(ctx,orchestration.Invocation{Identity:identity.Identity,CapabilityID:c.CapabilityID,
+				Owner:c.Owner,OperationClass:c.OperationClass,GatewayBindingRef:c.GatewayBindingRef,
+				ManifestChecksum:checksum,Arguments:args,IdempotencyKey:identity.IdempotencyKey,
+				CorrelationID:identity.CorrelationID,Window:time.Minute,Timeout:30*time.Second,
+				RetryThreshold:3,Maximum:orchestration.Cost{ToolCalls:1,DistinctObjects:1,ResultBytes:4096},
+				Upload:&orchestration.UploadStream{Reader:staged.File,Size:staged.Size,SHA256:staged.SHA256,FileID:descriptor.FileID}})
+			if err != nil { return errorResult(err.Error(),false),nil,nil }
+			if result.Replay { return errorResult("UPLOAD_ATTEMPT_REPLAY_PENDING",true),nil,nil }
+			if result.Problem != nil { body,_:=json.Marshal(result.Problem);return &mcp.CallToolResult{Content:[]mcp.Content{&mcp.TextContent{Text:string(body)}},IsError:true},nil,nil }
+			return &mcp.CallToolResult{Content:[]mcp.Content{&mcp.TextContent{Text:string(result.Body)}}},nil,nil
+		})
 }
 
 type identityKey struct{}

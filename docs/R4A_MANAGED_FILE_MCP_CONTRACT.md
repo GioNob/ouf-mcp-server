@@ -1,6 +1,6 @@
 # R4a — managed-file MCP attachment contract (candidate)
 
-Status: candidate profile/preview/draft-create tools, no live deployment or attachment bridge. PET Gateway T25, MCP v1.4 §21,
+Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
 Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
 Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
 
@@ -16,23 +16,28 @@ OUF object-store URL or an Onboarding staging reference. The descriptor is
 accepted only from a host-supported file parameter; configure exact approved
 HTTPS origins, disable redirects and bound retrieval to 10 MiB. The private
 MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
-it is not connected to a published upload tool yet. An arbitrary user/tool
+`source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
+when `MCP_MANAGED_UPLOAD_ENABLED=true` and `MCP_HOST_FILE_ORIGINS` lists exact
+approved HTTPS origins. It is not enabled in the deployed plugin. An arbitrary user/tool
 URL is never a file source.
-The attachment adapter transports the original bytes via the public Gateway
-`POST /api/managed-sources/v1/files` with the user's HUMAN token, capability
-`ouf.managed-source.file.upload`, `text/csv`, bounded size and optional exact
-SHA-256. An opaque host-owned attachment handle is allowed only within that
-host's trusted adapter. It is never interpreted by OUF as an arbitrary URL.
+The adapter downloads the host-issued descriptor into a private bounded spool,
+then streams the original bytes through the internal Gateway binding
+`POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP
+workload token and a Gateway-signed HUMAN delegation. Only file ID, byte count
+and SHA-256 enter the governed admission fingerprint; the URL remains in
+request memory. Gateway signs those headers into a separate owner receipt;
+Onboarding checks that receipt and independently hashes and counts the stream.
+The public HUMAN route remains a separate channel for a direct human client.
 
-The Gateway authenticates the human, enforces route scope/size/media type and
-passes the stream to Onboarding. Onboarding revalidates the HUMAN capability,
-computes the hash, persists bytes to governed staging and returns an asset ID.
+Gateway verifies workload, delegated HUMAN scope, size and media type before
+passing the stream to Onboarding. Onboarding checks the delegated HUMAN owner
+receipt, computes the hash, persists bytes to governed staging and returns an asset ID.
 The MCP tool result may expose only that asset ID and safe status. Never put
 raw bytes, base64, bearer tokens, secret refs or MinIO URLs in tools/call
 arguments, results, logs or model-visible text. The host's file parameter
 may include a temporary `download_url` in the tool argument as specified by
 ChatGPT; it must not be copied into OUF's Gateway envelope, result or logs.
-Before publishing, prove host-controlled fileId/URL provenance and verify
+Before enabling, prove host-controlled fileId/URL provenance and verify
 whether the host exposes that argument to the model. If the connected Agent Host
 cannot provide this attachment adapter, return a bounded explicit
 `ATTACHMENT_BRIDGE_UNAVAILABLE` outcome and keep upload unpublished.
@@ -40,8 +45,8 @@ cannot provide this attachment adapter, return a bounded explicit
 MCP PET `source.file.upload` is a proposal/async-create tool identity; Gateway
 T25 `ouf.managed-source.file.upload` is the channel-neutral execution
 capability. Map these in a versioned manifest; do not equate an MCP tool name
-with a distinct authorization grant. No tool becomes eligible merely by
-flipping `toolEligible` without the bridge and negative-path proof.
+with a distinct authorization grant. The opt-in remains off until the host
+descriptor and APISIX streaming runtime are proven live.
 
 ## After upload
 
