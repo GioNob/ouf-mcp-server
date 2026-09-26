@@ -294,13 +294,11 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	var handler http.Handler
 	switch os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") {
 	case "true":
-		origins := strings.Split(os.Getenv("MCP_HOST_FILE_ORIGINS"), ",")
-		fetcher, fetchErr := hostfiles.New(origins)
-		if fetchErr != nil {
-			logger.Error("host file origin configuration failed", "error", fetchErr)
+		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
+			logger.Error("legacy host origin configuration must be unset")
 			os.Exit(1)
 		}
-		handler, err = kernel.NewGovernedHTTPHandlerWithHostFiles(logger, service, fetcher)
+		handler, err = kernel.NewGovernedHTTPHandlerWithHostFiles(logger, service, hostfiles.New())
 	case "probe":
 		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
 			logger.Error("host origins must be unset during the attachment origin probe")
