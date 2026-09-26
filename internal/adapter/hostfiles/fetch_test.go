@@ -56,17 +56,24 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("spool file persisted")
 	}
-	for _, bad := range []Input{
-		{FileID: "file_123", DownloadURL: "http://files.example.org/file"},
-		{FileID: "file_123", DownloadURL: attachmentHost + "/file#fragment"},
-		{FileID: "file_123", DownloadURL: "https://user@files.example.org/file"},
-		{FileID: "file_123", DownloadURL: attachmentHost + "/redirect"},
-		{FileID: "forged", DownloadURL: attachmentHost + "/file"},
-		{FileID: "file_123", DownloadURL: attachmentHost + "/large"},
+	for _, bad := range []struct {
+		input Input
+		code  string
+	}{
+		{Input{FileID: "file_123", DownloadURL: "http://files.example.org/file"}, "ATTACHMENT_DESCRIPTOR_INVALID"},
+		{Input{FileID: "file_123", DownloadURL: attachmentHost + "/file#fragment"}, "ATTACHMENT_DESCRIPTOR_INVALID"},
+		{Input{FileID: "file_123", DownloadURL: "https://user@files.example.org/file"}, "ATTACHMENT_DESCRIPTOR_INVALID"},
+		{Input{FileID: "file_123", DownloadURL: attachmentHost + "/redirect"}, "ATTACHMENT_REDIRECT_REJECTED"},
+		{Input{FileID: "forged", DownloadURL: attachmentHost + "/file"}, "ATTACHMENT_DESCRIPTOR_INVALID"},
+		{Input{FileID: "file_123", DownloadURL: attachmentHost + "/large"}, "ATTACHMENT_TOO_LARGE"},
 	} {
-		if result, err := f.Fetch(context.Background(), bad); err == nil {
+		result, err := f.Fetch(context.Background(), bad.input)
+		if err == nil {
 			result.CloseAndRemove()
 			t.Fatal("untrusted or oversized host file accepted")
+		}
+		if got := FailureCode(err); got != bad.code || strings.Contains(got, "files.example.org") {
+			t.Fatalf("unsafe or inaccurate classification: %s", got)
 		}
 	}
 	if calls != 3 {
@@ -84,6 +91,8 @@ func TestPublicOnlyDialRejectsInternalAndReservedDestinations(t *testing.T) {
 		if conn, err := dialPublicHTTPS(context.Background(), "tcp", address); err == nil {
 			conn.Close()
 			t.Fatalf("private or reserved destination accepted: %s", address)
+		} else if got := FailureCode(err); got != "ATTACHMENT_DESTINATION_DENIED" {
+			t.Fatalf("unexpected dial classification: %s", got)
 		}
 	}
 	for _, address := range []string{"8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"} {
