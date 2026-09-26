@@ -52,7 +52,7 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/internal/capabilities/v1/execute/managed.file/create" {
-			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 7 {
+			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
 				t.Error("unsafe onboarding draft arguments")
 			}
 			io.WriteString(w, `{"sourceId":"cinema","state":"DRAFT"}`)
@@ -95,7 +95,7 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 		t.Fatal("tool accepted arbitrary file URL")
 	}
 	draft, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: map[string]any{
-		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": []string{"core@1"},
+		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": []string{"core@1"}, "sourceObjectKeyFields": []string{}, "fields": []any{map[string]any{"fieldName": "cinema", "extractionDecision": "INCLUDE", "dataAccessLabel": "OPEN", "targetPropertyIri": "https://example.org/name"}},
 	}})
 	if err != nil || draft.IsError || calls != 2 {
 		t.Fatalf("draft failed: result=%+v err=%v calls=%d", draft, err, calls)

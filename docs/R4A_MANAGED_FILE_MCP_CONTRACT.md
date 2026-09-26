@@ -1,6 +1,6 @@
 # R4a — managed-file MCP attachment contract (candidate)
 
-Status: candidate profile/preview tools, no live deployment or attachment bridge. PET Gateway T25, MCP v1.4 §21,
+Status: candidate profile/preview/draft-create tools, no live deployment or attachment bridge. PET Gateway T25, MCP v1.4 §21,
 Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
 Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
 
@@ -36,7 +36,7 @@ flipping `toolEligible` without the bridge and negative-path proof.
 | --- | --- | --- | --- |
 | Profile | `assetId` input; opaque `jobId` result | Onboarding | HUMAN delegation, `ouf.managed-source.file.profile`, idempotency |
 | Preview | `assetId` and `profileId`; redacted bounded result | Onboarding | HUMAN delegation, `ouf.managed-source.preview`, owner redaction |
-| Create onboarding | explicit profile, field decisions and semantic refs; DRAFT result | Onboarding | `ouf.managed-source.onboarding.create`; no implicit approval |
+| Create onboarding | explicit profile, field decisions and pinned semantic refs; bounded DRAFT identity | Onboarding | `ouf.managed-source.onboarding.create`; owner-bound idempotency; no implicit approval |
 | Approve/activate | exact diff/hash challenge, direct THS HUMAN call | Onboarding/THS | no MCP commit tool |
 | Ingest | `assetId`/approved bundle reference | Ingestion | only compatible ACTIVE PublishedConfigurationBundle |
 | Discover | bounded search arguments | UDP | governed Gateway search; no SQL fixture |
