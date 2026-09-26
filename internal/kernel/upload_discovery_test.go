@@ -76,6 +76,10 @@ func TestHostOriginProbeReportsOnlyOriginWithoutFetchingOrUploading(t *testing.T
 		}
 		if tool.Name == "source.file.attachment_origin_probe" {
 			probeFound = true
+			ui, ok := tool.Meta["ui"].(map[string]any)
+			if !ok || ui["resourceUri"] != attachmentProbeURI {
+				t.Fatal("read-only attachment widget was not linked")
+			}
 			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 				t.Fatal("origin probe must be read-only")
 			}
