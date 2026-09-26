@@ -86,7 +86,11 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 		t.Fatalf("expected one existing upload tool, got %d", found)
 	}
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{}})
-	if err != nil || result.IsError || result.StructuredContent["pickerUrl"] != picker || result.StructuredContent["status"] != "AWAITING_FILE_SELECTION" {
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("invalid picker result: %+v %v", result, err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["pickerUrl"] != picker || structured["status"] != "AWAITING_FILE_SELECTION" {
 		t.Fatalf("invalid picker result: %+v %v", result, err)
 	}
 }
