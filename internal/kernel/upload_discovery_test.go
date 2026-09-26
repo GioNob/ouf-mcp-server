@@ -47,6 +47,46 @@ func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
 	t.Fatal("host-enabled upload tool not discovered")
 }
 
+func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
+	const picker = "https://api.ouf-lab.it/trusted-human/managed-files/"
+	h, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, picker)
+	if err != nil { t.Fatal(err) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		r.Header.Set("X-OUF-Delegation", "human-proof")
+		r.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		h.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "picker-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil { t.Fatal(err) }
+	defer session.Close()
+	list, err := session.ListTools(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	found := 0
+	for _, tool := range list.Tools {
+		if tool.Name == "source.file.attachment_origin_probe" { t.Fatal("legacy origin probe exposed") }
+		if tool.Name == "source.file.upload" {
+			found++
+			if tool.Meta != nil && tool.Meta["openai/fileParams"] != nil { t.Fatal("picker must not request a ChatGPT attachment") }
+		}
+	}
+	if found != 1 { t.Fatalf("expected one existing upload tool, got %d", found) }
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{}})
+	if err != nil || result.IsError || result.StructuredContent["pickerUrl"] != picker || result.StructuredContent["status"] != "AWAITING_FILE_SELECTION" {
+		t.Fatalf("invalid picker result: %+v %v", result, err)
+	}
+}
+
+func TestPickerRejectsUntrustedURL(t *testing.T) {
+	for _, raw := range []string{"http://api.ouf-lab.it/trusted-human/managed-files/", "https://example.com/other", "https://api.ouf-lab.it/trusted-human/managed-files/?target=evil"} {
+		if _, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, raw); err == nil {
+			t.Fatalf("accepted invalid picker URL %s", raw)
+		}
+	}
+}
+
 func TestHostOriginProbeReportsOnlyOriginWithoutFetchingOrUploading(t *testing.T) {
 	h, err := NewGovernedHTTPHandlerWithHostOriginProbe(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{})
 	if err != nil {
