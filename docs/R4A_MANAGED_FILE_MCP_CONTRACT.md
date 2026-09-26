@@ -24,18 +24,18 @@ If the provider origin or browser CORS policy prevents the read, the widget
 fails without changing OUF. The explicit probe rollout can replace the failed
 enabled image; `--mode enabled` stays PET-blocked before any mutation.
 
-Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
-Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
-Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
+Status: profile/preview/draft-create bindings are deployed; the upload bridge
+has not passed its live or PET release gate. PET Gateway T25/T28, MCP v1.4
+sections 21 and 38, Source Onboarding v1.6 and Cross-Module Matrix v1.7
+govern this contract. Issue: GioNob/ouf-mcp-server#43.
 
-The live VPS image `ouf-mcp:r4a-8599843` corresponds to commit
-`85998435c0fb3ea1aa5264eb0751d2b7c69b1b3c`. The attachment candidate
-branched before 41 live commits, so deploying that candidate image directly
-would remove existing MCP behavior. A local integration branch based on the
-live commit retains `urban.object.search` and adds the four managed-file
-capabilities. Its upload remains disabled by default; the integration is
-not deployed or verified on the VPS. The live preflight found upload disabled,
-host origins unset and all four internal managed-file routes absent.
+The VPS currently runs an enabled MCP candidate built from
+`a5d4026f9ae3dfa7c84a488245ccfb2d92ad7657` (image ID
+`sha256:ad4f11eabc83c2a31940386c072769ed7beebe14290b7aca2a3fc9ffa360313c`).
+The three delegated JSON bindings and streaming upload route were installed
+with private rollback snapshots. The actual ChatGPT upload failed on external
+DNS before sending file bytes or creating an asset. The read-only widget
+candidate is not yet deployed.
 
 ## Ingress and identity
 
@@ -46,10 +46,12 @@ ChatGPT's documented optional `_meta["openai/fileParams"]` may supply a
 host-resolved `{file_id, download_url, mime_type?, file_name?}` descriptor.
 `download_url` is a short-lived host attachment retrieval credential, not an
 OUF object-store URL or an Onboarding staging reference. The descriptor is
-accepted only from a host-supported file parameter. The private MCP adapter
+accepted only from a host-supported file parameter. The failed direct-fetch
+candidate's private MCP adapter
 `internal/adapter/hostfiles` resolves the temporary host, pins a public IP for
 each connection, verifies its HTTPS certificate, disables proxies and
-redirects, and bounds retrieval to 10 MiB;
+redirects, and bounds retrieval to 10 MiB. These application controls did not
+make direct MCP external fetch PET-conformant;
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
 replacement for the host file parameter.
