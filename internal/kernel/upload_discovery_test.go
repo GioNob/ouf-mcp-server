@@ -69,14 +69,37 @@ func TestHostOriginProbeReportsOnlyOriginWithoutFetchingOrUploading(t *testing.T
 		t.Fatal(err)
 	}
 	defer session.Close()
-	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{
+	list, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeFound := false
+	for _, tool := range list.Tools {
+		if tool.Name == "source.file.upload" {
+			t.Fatal("upload action must not be advertised in probe mode")
+		}
+		if tool.Name == "source.file.attachment_origin_probe" {
+			probeFound = true
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Fatal("origin probe must be read-only")
+			}
+			files, ok := tool.Meta["openai/fileParams"].([]any)
+			if !ok || len(files) != 1 || files[0] != "file" {
+				t.Fatalf("probe missing host file parameter: %#v", tool.Meta)
+			}
+		}
+	}
+	if !probeFound {
+		t.Fatal("origin probe not advertised")
+	}
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.attachment_origin_probe", Arguments: map[string]any{
 		"file": map[string]any{"file_id": "file_attached", "download_url": "https://files.example.org/private?token=sensitive", "mime_type": "text/csv"},
 	}})
-	if err != nil || !result.IsError || len(result.Content) != 1 {
+	if err != nil || result.IsError || len(result.Content) != 1 {
 		t.Fatalf("invalid probe result: %+v %v", result, err)
 	}
 	encoded, _ := json.Marshal(result.Content)
-	if !bytes.Contains(encoded, []byte("ATTACHMENT_ORIGIN_PROBE")) || !bytes.Contains(encoded, []byte("https://files.example.org")) || bytes.Contains(encoded, []byte("sensitive")) || bytes.Contains(encoded, []byte("/private")) {
+	if !bytes.Contains(encoded, []byte("file_attached")) || !bytes.Contains(encoded, []byte("https://files.example.org")) || bytes.Contains(encoded, []byte("sensitive")) || bytes.Contains(encoded, []byte("/private")) {
 		t.Fatalf("probe did not isolate origin: %s", encoded)
 	}
 }
