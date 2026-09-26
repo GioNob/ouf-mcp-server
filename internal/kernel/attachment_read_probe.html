@@ -11,9 +11,14 @@
   const fail = code => { status.textContent = 'Lettura allegato non disponibile: ' + code; };
   try {
     const host = window.openai;
-    const fileId = host?.toolInput?.file?.file_id;
-    if (!/^file_[A-Za-z0-9_-]{1,128}$/.test(fileId ?? '') ||
-        typeof host?.getFileDownloadUrl !== 'function') return fail('HOST_API');
+    const output = host?.toolOutput;
+    const result = output?.structuredContent ?? output;
+    const fileId = host?.toolInput?.file?.file_id ?? result?.fileId ?? (() => {
+      try { return JSON.parse(result?.content?.[0]?.text ?? '{}').fileId; }
+      catch (_) { return undefined; }
+    })();
+    if (!/^file_[A-Za-z0-9_-]{1,128}$/.test(fileId ?? '')) return fail('FILE_ID_UNAVAILABLE');
+    if (typeof host?.getFileDownloadUrl !== 'function') return fail('DOWNLOAD_API_UNAVAILABLE');
     const { downloadUrl } = await host.getFileDownloadUrl({ fileId });
     const url = new URL(downloadUrl);
     if (url.protocol !== 'https:' || url.port && url.port !== '443') return fail('URL');
