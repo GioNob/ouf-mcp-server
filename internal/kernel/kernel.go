@@ -152,7 +152,7 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 			}
 			staged, err := fetcher.Fetch(ctx, descriptor)
 			if err != nil {
-				return errorResult("ATTACHMENT_BRIDGE_UNAVAILABLE", false), nil, nil
+				return errorResult(hostfiles.FailureCode(err), false), nil, nil
 			}
 			defer staged.CloseAndRemove()
 			args, _ := json.Marshal(map[string]any{"fileId": descriptor.FileID, "contentHash": staged.SHA256, "sizeBytes": staged.Size})
