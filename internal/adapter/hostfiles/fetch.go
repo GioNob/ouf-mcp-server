@@ -53,7 +53,7 @@ func New(origins []string) (*Fetcher, error) {
 		allowed[u.Scheme+"://"+u.Host] = struct{}{}
 	}
 	return &Fetcher{origins: allowed, client: &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:       15 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
 }
