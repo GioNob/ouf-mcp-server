@@ -38,6 +38,16 @@ type Staged struct {
 	SHA256 string
 }
 
+// DescriptorOrigin validates only the host-provided descriptor's shape. It
+// never fetches the URL or treats its origin as approved for future requests.
+func DescriptorOrigin(input Input) (string, error) {
+	u, err := url.Parse(input.DownloadURL)
+	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
+		return "", errors.New("invalid host file descriptor")
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
 // New requires exact, installation-approved HTTPS origins. No wildcard,
 // suffix match, userinfo, private URL override, or following redirects.
 func New(origins []string) (*Fetcher, error) {
@@ -62,13 +72,14 @@ func New(origins []string) (*Fetcher, error) {
 // never returned, included in an error, or written to logs. The caller must
 // CloseAndRemove on every success path, including Gateway rejection.
 func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error) {
-	u, parseErr := url.Parse(input.DownloadURL)
-	if parseErr != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
-		return nil, errors.New("invalid host file descriptor")
+	origin, validationErr := DescriptorOrigin(input)
+	if validationErr != nil {
+		return nil, validationErr
 	}
-	if _, ok := f.origins[u.Scheme+"://"+u.Host]; !ok {
+	if _, ok := f.origins[origin]; !ok {
 		return nil, errors.New("host attachment origin denied")
 	}
+	u, _ := url.Parse(input.DownloadURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, errors.New("invalid host file descriptor")

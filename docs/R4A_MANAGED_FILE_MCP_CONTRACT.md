@@ -29,6 +29,18 @@ MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
 when `MCP_MANAGED_UPLOAD_ENABLED=true` and `MCP_HOST_FILE_ORIGINS` lists exact
 approved HTTPS origins. It is not enabled in the deployed plugin. An arbitrary user/tool
 URL is never a file source.
+To discover the exact origin without fetching an attachment, deploy the MCP
+candidate with `--upload-mode probe` using the versioned prepare/rollout
+scripts. In this mode `source.file.upload` advertises the file parameter but
+returns only `ATTACHMENT_ORIGIN_PROBE`, the origin and the file ID. It returns
+an error result, creates no asset and sends no Gateway command. Confirm the
+file ID matches the user's selected attachment before approving an exact
+origin. After updating to `--upload-mode enabled --host-origin <approved HTTPS
+origin>`, a new private candidate and rollout are required. The rollout checks
+that only the two opt-in environment variables changed; its rollback restores
+the prior MCP container. Neither mode proves that the host's file parameter
+was injected as claimed until the connected ChatGPT tool is exercised.
+
 The adapter downloads the host-issued descriptor into a private bounded spool,
 then streams the original bytes through the internal Gateway binding
 `POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP

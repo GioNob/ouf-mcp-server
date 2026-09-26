@@ -11,6 +11,8 @@ import stat
 import subprocess
 import time
 
+from scripts.r4a_managed_upload_mode import expected_environment
+
 NAME = "ouf-mcp"
 
 
@@ -33,7 +35,8 @@ def private(path: Path, mode: int) -> None:
         raise ValueError("Private file ownership or mode changed")
 
 
-def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id: str) -> tuple[dict, list[str]]:
+def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id: str,
+                      upload_mode: str = "off", host_origin: str | None = None) -> tuple[dict, list[str], list[str]]:
     private(snapshot.parent, 0o700)
     private(snapshot, 0o600)
     private(candidate, 0o700)
@@ -87,7 +90,7 @@ def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id
                 not Path(mount["Source"]).is_file() or
                 any(ch in mount["Source"] for ch in ",\n\r")):
             raise ValueError("Unexpected secret bind")
-    expected_env = config.get("Env") or []
+    expected_env = expected_environment(config.get("Env") or [], upload_mode, host_origin)
     if (candidate / "mcp.env").read_text(encoding="utf-8") != "\n".join(expected_env) + "\n":
         raise ValueError("Candidate environment differs from snapshot")
     args = ["create", "--name", NAME, "--pull", "never", "--user", "10005:10005",
@@ -103,7 +106,7 @@ def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id
         args += ["--mount", "type=bind,src=" + mount["Source"] +
                  ",dst=" + mount["Destination"] + ",readonly"]
     args.append(image_name)
-    return original, args
+    return original, args, expected_env
 
 
 def write_state(candidate: Path, original: dict, image_id: str, backup_name: str) -> dict:
@@ -153,7 +156,7 @@ def rollback(state: dict) -> None:
             time.sleep(2)
 
 
-def verify_staged(original: dict, image_id: str) -> None:
+def verify_staged(original: dict, image_id: str, expected_env: list[str]) -> None:
     for attempt in range(20):
         current = inspect(NAME)
         if current["Image"] != image_id or not current["State"]["Running"]:
@@ -167,7 +170,7 @@ def verify_staged(original: dict, image_id: str) -> None:
                 raise ValueError("Candidate readiness failed")
             time.sleep(2)
     if (current["Config"]["User"] != original["Config"]["User"] or
-            sorted(current["Config"]["Env"]) != sorted(original["Config"]["Env"]) or
+            sorted(current["Config"]["Env"]) != sorted(expected_env) or
             current["HostConfig"]["RestartPolicy"]["Name"] != "unless-stopped" or
             set(current["NetworkSettings"]["Networks"]) != {"ouf-backend"}):
         raise ValueError("Candidate launch differs from original")
@@ -184,6 +187,8 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--backup-name", required=True)
+    parser.add_argument("--upload-mode", choices=("off", "probe", "enabled"), default="off")
+    parser.add_argument("--host-origin")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--rollback", action="store_true")
@@ -204,7 +209,9 @@ def main() -> None:
         if not args.backup_name.startswith("ouf-mcp-r4a-rollback-") or args.backup_name == NAME:
             raise ValueError("Invalid rollback container name")
         backup_name = args.backup_name
-        original, create_args = original_and_args(args.snapshot, args.candidate, args.image, args.image_id)
+        original, create_args, expected_env = original_and_args(
+            args.snapshot, args.candidate, args.image, args.image_id,
+            args.upload_mode, args.host_origin)
         if state_path.exists():
             raise ValueError("Candidate already staged; use rollback if needed")
         try:
@@ -227,7 +234,7 @@ def main() -> None:
             docker("rename", NAME, backup_name)
             docker(*create_args)
             docker("start", NAME)
-            verify_staged(original, args.image_id)
+            verify_staged(original, args.image_id, expected_env)
         except (ValueError, subprocess.SubprocessError, KeyError, TypeError):
             rollback(state)
             raise ValueError("Candidate failed; original restored")

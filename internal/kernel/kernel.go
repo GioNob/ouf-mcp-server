@@ -53,22 +53,31 @@ type operationalInput struct {
 }
 
 func NewHTTPHandler(logger *slog.Logger) (http.Handler, error) {
-	return newHTTPHandler(logger, nil, nil)
+	return newHTTPHandler(logger, nil, nil, false)
 }
 func NewGovernedHTTPHandler(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("governed service is required")
 	}
-	return newHTTPHandler(logger, service, nil)
+	return newHTTPHandler(logger, service, nil, false)
 }
 func NewGovernedHTTPHandlerWithHostFiles(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher) (http.Handler, error) {
 	if service == nil || fetcher == nil {
 		return nil, fmt.Errorf("governed service and host attachment origin are required")
 	}
-	return newHTTPHandler(logger, service, fetcher)
+	return newHTTPHandler(logger, service, fetcher, false)
 }
 
-func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher) (http.Handler, error) {
+// The origin probe advertises the file parameter and reports only its host
+// origin. It never fetches the file or invokes the Gateway upload.
+func NewGovernedHTTPHandlerWithHostOriginProbe(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
+	if service == nil {
+		return nil, fmt.Errorf("governed service is required")
+	}
+	return newHTTPHandler(logger, service, nil, true)
+}
+
+func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher, originProbe bool) (http.Handler, error) {
 	snapshot, err := manifest.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
@@ -76,8 +85,8 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
 	for _, capability := range snapshot.ToolEligible() {
 		if capability.ToolName == "source.file.upload" {
-			if service != nil && fetcher != nil {
-				registerUploadTool(server, capability, snapshot, service, fetcher)
+			if service != nil && (fetcher != nil || originProbe) {
+				registerUploadTool(server, capability, snapshot, service, fetcher, originProbe)
 			}
 			continue
 		}
@@ -91,7 +100,7 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	return modernOnly(streamable), nil
 }
 
-func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
+func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher, originProbe bool) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
 		panic(err)
@@ -108,6 +117,14 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 			var descriptor hostfiles.Input
 			if err := json.Unmarshal(raw, &descriptor); err != nil {
 				return errorResult("ATTACHMENT_INVALID", false), nil, nil
+			}
+			if originProbe {
+				origin, err := hostfiles.DescriptorOrigin(descriptor)
+				if err != nil {
+					return errorResult("ATTACHMENT_INVALID", false), nil, nil
+				}
+				body, _ := json.Marshal(map[string]string{"code": "ATTACHMENT_ORIGIN_PROBE", "origin": origin, "fileId": descriptor.FileID})
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 			}
 			staged, err := fetcher.Fetch(ctx, descriptor)
 			if err != nil {

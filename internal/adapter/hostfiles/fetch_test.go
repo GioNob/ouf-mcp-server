@@ -68,3 +68,20 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsUnapprovedDestinations(t *testi
 		t.Fatal("wildcard origin accepted")
 	}
 }
+
+func TestHostOriginProbeValidatesDescriptorWithoutFetching(t *testing.T) {
+	origin, err := DescriptorOrigin(Input{FileID: "file_abc", DownloadURL: "https://files.example.org/private?token=secret", MimeType: "text/csv"})
+	if err != nil || origin != "https://files.example.org" {
+		t.Fatalf("unexpected origin: %q %v", origin, err)
+	}
+	for _, input := range []Input{
+		{FileID: "file_abc", DownloadURL: "http://files.example.org/private"},
+		{FileID: "file_abc", DownloadURL: "https://user:secret@files.example.org/private"},
+		{FileID: "file_abc", DownloadURL: "https://files.example.org/private#fragment"},
+		{FileID: "forged", DownloadURL: "https://files.example.org/private"},
+	} {
+		if _, err := DescriptorOrigin(input); err == nil {
+			t.Fatal("invalid probe descriptor accepted")
+		}
+	}
+}

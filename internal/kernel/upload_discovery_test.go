@@ -3,6 +3,7 @@ package kernel
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -48,6 +49,36 @@ func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
 		}
 	}
 	t.Fatal("host-enabled upload tool not discovered")
+}
+
+func TestHostOriginProbeReportsOnlyOriginWithoutFetchingOrUploading(t *testing.T) {
+	h, err := NewGovernedHTTPHandlerWithHostOriginProbe(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		r.Header.Set("X-OUF-Delegation", "human-proof")
+		r.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		h.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "host-origin-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{
+		"file": map[string]any{"file_id": "file_attached", "download_url": "https://files.example.org/private?token=sensitive", "mime_type": "text/csv"},
+	}})
+	if err != nil || !result.IsError || len(result.Content) != 1 {
+		t.Fatalf("invalid probe result: %+v %v", result, err)
+	}
+	encoded, _ := json.Marshal(result.Content)
+	if !bytes.Contains(encoded, []byte("ATTACHMENT_ORIGIN_PROBE")) || !bytes.Contains(encoded, []byte("https://files.example.org")) || bytes.Contains(encoded, []byte("sensitive")) || bytes.Contains(encoded, []byte("/private")) {
+		t.Fatalf("probe did not isolate origin: %s", encoded)
+	}
 }
 
 func TestUploadResultProjectsOnlySafeAssetIdentity(t *testing.T) {
