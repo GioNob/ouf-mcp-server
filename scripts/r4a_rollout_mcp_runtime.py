@@ -36,7 +36,8 @@ def private(path: Path, mode: int) -> None:
 
 
 def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id: str,
-                      upload_mode: str = "off", host_origin: str | None = None) -> tuple[dict, list[str], list[str]]:
+                      upload_mode: str = "off", host_origin: str | None = None,
+                      picker_url: str | None = None) -> tuple[dict, list[str], list[str]]:
     private(snapshot.parent, 0o700)
     private(snapshot, 0o600)
     private(candidate, 0o700)
@@ -90,7 +91,7 @@ def original_and_args(snapshot: Path, candidate: Path, image_name: str, image_id
                 not Path(mount["Source"]).is_file() or
                 any(ch in mount["Source"] for ch in ",\n\r")):
             raise ValueError("Unexpected secret bind")
-    expected_env = expected_environment(config.get("Env") or [], upload_mode, host_origin)
+    expected_env = expected_environment(config.get("Env") or [], upload_mode, host_origin, picker_url)
     if (candidate / "mcp.env").read_text(encoding="utf-8") != "\n".join(expected_env) + "\n":
         raise ValueError("Candidate environment differs from snapshot")
     args = ["create", "--name", NAME, "--pull", "never", "--user", "10005:10005",
@@ -187,8 +188,9 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--backup-name", required=True)
-    parser.add_argument("--upload-mode", choices=("off", "probe", "enabled"), default="off")
+    parser.add_argument("--upload-mode", choices=("off", "probe", "enabled", "picker"), default="off")
     parser.add_argument("--host-origin")
+    parser.add_argument("--picker-url")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--rollback", action="store_true")
@@ -211,7 +213,7 @@ def main() -> None:
         backup_name = args.backup_name
         original, create_args, expected_env = original_and_args(
             args.snapshot, args.candidate, args.image, args.image_id,
-            args.upload_mode, args.host_origin)
+            args.upload_mode, args.host_origin, args.picker_url)
         if state_path.exists():
             raise ValueError("Candidate already staged; use rollback if needed")
         try:
