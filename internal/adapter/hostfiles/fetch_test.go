@@ -3,6 +3,7 @@ package hostfiles
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestHostAttachmentSpoolsExactBytesAndRejectsUnapprovedDestinations(t *testing.T) {
+func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T) {
 	const csv = "\xef\xbb\xbfcinema,indirizzo\r\nA,Trieste\r\n"
 	calls := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,10 +27,7 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsUnapprovedDestinations(t *testi
 		io.WriteString(w, csv)
 	}))
 	defer server.Close()
-	f, err := New([]string{server.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := New()
 	f.client = server.Client()
 	f.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	input := Input{FileID: "file_123", DownloadURL: server.URL + "/file?temporary=signed", MimeType: "text/csv"}
@@ -64,8 +62,23 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsUnapprovedDestinations(t *testi
 	if calls != 3 {
 		t.Fatalf("unexpected network calls: %d", calls)
 	}
-	if _, err := New([]string{"https://*.example.org"}); err == nil {
-		t.Fatal("wildcard origin accepted")
+}
+
+func TestPublicOnlyDialRejectsInternalAndReservedDestinations(t *testing.T) {
+	transport, ok := New().client.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.DialContext == nil {
+		t.Fatal("host file client has no public-only direct transport")
+	}
+	for _, address := range []string{"127.0.0.1:443", "10.0.0.5:443", "169.254.169.254:443", "[::1]:443", "192.0.2.4:443", "198.18.0.1:443", "8.8.8.8:80"} {
+		if conn, err := dialPublicHTTPS(context.Background(), "tcp", address); err == nil {
+			conn.Close()
+			t.Fatalf("private or reserved destination accepted: %s", address)
+		}
+	}
+	for _, address := range []string{"8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"} {
+		if ip := net.ParseIP(address); !publicIP(ip) {
+			t.Fatalf("public IP rejected: %s", address)
+		}
 	}
 }
 
