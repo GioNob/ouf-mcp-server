@@ -1,9 +1,5 @@
 """Exact, reviewable environment overlay for the MCP attachment rollout."""
 
-import ipaddress
-import re
-from urllib.parse import urlsplit
-
 
 def expected_environment(original: list[str], mode: str, origin: str | None) -> list[str]:
     names = [entry.partition("=")[0] for entry in original]
@@ -21,25 +17,6 @@ def expected_environment(original: list[str], mode: str, origin: str | None) -> 
         if origin is not None:
             raise ValueError("Host origin must be unknown during the probe")
         return [*base, "MCP_MANAGED_UPLOAD_ENABLED=probe"]
-    if mode != "enabled" or not origin or not isinstance(origin, str):
-        raise ValueError("Exact approved host origin is required to enable upload")
-    try:
-        url = urlsplit(origin)
-        host = url.hostname
-        if (url.scheme != "https" or not host or url.netloc != url.netloc.lower()
-                or url.username is not None or url.password is not None
-                or url.path or url.query or url.fragment or url.geturl() != origin
-                or "*" in host or len(host) > 253 or not re.fullmatch(r"[a-z0-9.-]+", host)
-                or host == "localhost" or "." not in host):
-            raise ValueError("Host origin is not an exact HTTPS DNS origin")
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("Literal IP address is not an approved host origin")
-        if url.port is not None and url.port != 443:
-            raise ValueError("Nonstandard port is not an approved host origin")
-    except (ValueError, AttributeError) as exc:
-        raise ValueError("Host origin is not an exact HTTPS DNS origin") from exc
-    return [*base, "MCP_MANAGED_UPLOAD_ENABLED=true", "MCP_HOST_FILE_ORIGINS=" + origin]
+    if mode != "enabled" or origin is not None:
+        raise ValueError("Enabled upload accepts host-provided files without a static origin")
+    return [*base, "MCP_MANAGED_UPLOAD_ENABLED=true"]
