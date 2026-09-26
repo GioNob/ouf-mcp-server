@@ -3,6 +3,7 @@ package kernel
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,11 +16,7 @@ import (
 )
 
 func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
-	fetcher, err := hostfiles.New([]string{"https://files.example.org"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := NewGovernedHTTPHandlerWithHostFiles(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, fetcher)
+	h, err := NewGovernedHTTPHandlerWithHostFiles(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, hostfiles.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +45,119 @@ func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
 		}
 	}
 	t.Fatal("host-enabled upload tool not discovered")
+}
+
+func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
+	const picker = "https://api.ouf-lab.it/trusted-human/managed-files/"
+	h, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, picker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		r.Header.Set("X-OUF-Delegation", "human-proof")
+		r.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		h.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "picker-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	list, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, tool := range list.Tools {
+		if tool.Name == "source.file.attachment_origin_probe" {
+			t.Fatal("legacy origin probe exposed")
+		}
+		if tool.Name == "source.file.upload" {
+			found++
+			if tool.Meta != nil && tool.Meta["openai/fileParams"] != nil {
+				t.Fatal("picker must not request a ChatGPT attachment")
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("expected one existing upload tool, got %d", found)
+	}
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{}})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("invalid picker result: %+v %v", result, err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["pickerUrl"] != picker || structured["status"] != "AWAITING_FILE_SELECTION" {
+		t.Fatalf("invalid picker result: %+v %v", result, err)
+	}
+}
+
+func TestPickerRejectsUntrustedURL(t *testing.T) {
+	for _, raw := range []string{"http://api.ouf-lab.it/trusted-human/managed-files/", "https://example.com/other", "https://api.ouf-lab.it/trusted-human/managed-files/?target=evil"} {
+		if _, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, raw); err == nil {
+			t.Fatalf("accepted invalid picker URL %s", raw)
+		}
+	}
+}
+
+func TestHostOriginProbeReportsOnlyOriginWithoutFetchingOrUploading(t *testing.T) {
+	h, err := NewGovernedHTTPHandlerWithHostOriginProbe(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		r.Header.Set("X-OUF-Delegation", "human-proof")
+		r.Header.Set("X-OUF-Actor-Type", "HUMAN")
+		h.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "host-origin-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	list, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeFound := false
+	for _, tool := range list.Tools {
+		if tool.Name == "source.file.upload" {
+			t.Fatal("upload action must not be advertised in probe mode")
+		}
+		if tool.Name == "source.file.attachment_origin_probe" {
+			probeFound = true
+			ui, ok := tool.Meta["ui"].(map[string]any)
+			if !ok || ui["resourceUri"] != attachmentProbeURI {
+				t.Fatal("read-only attachment widget was not linked")
+			}
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Fatal("origin probe must be read-only")
+			}
+			files, ok := tool.Meta["openai/fileParams"].([]any)
+			if !ok || len(files) != 1 || files[0] != "file" {
+				t.Fatalf("probe missing host file parameter: %#v", tool.Meta)
+			}
+		}
+	}
+	if !probeFound {
+		t.Fatal("origin probe not advertised")
+	}
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.attachment_origin_probe", Arguments: map[string]any{
+		"file": map[string]any{"file_id": "file_attached", "download_url": "https://files.example.org/private?token=sensitive", "mime_type": "text/csv"},
+	}})
+	if err != nil || result.IsError || len(result.Content) != 1 {
+		t.Fatalf("invalid probe result: %+v %v", result, err)
+	}
+	encoded, _ := json.Marshal(result.Content)
+	if !bytes.Contains(encoded, []byte("file_attached")) || !bytes.Contains(encoded, []byte("https://files.example.org")) || bytes.Contains(encoded, []byte("sensitive")) || bytes.Contains(encoded, []byte("/private")) {
+		t.Fatalf("probe did not isolate origin: %s", encoded)
+	}
 }
 
 func TestUploadResultProjectsOnlySafeAssetIdentity(t *testing.T) {

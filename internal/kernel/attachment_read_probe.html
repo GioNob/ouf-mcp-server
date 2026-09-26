@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verifica lettura allegato OUF</title>
+<body>
+<p id="status" role="status">Verifica dell’allegato in corso…</p>
+<script>
+(async () => {
+  const status = document.getElementById('status');
+  const fail = code => { status.textContent = 'Lettura allegato non disponibile: ' + code; };
+  try {
+    const host = window.openai;
+    const output = host?.toolOutput;
+    const result = output?.structuredContent ?? output;
+    const fileId = host?.toolInput?.file?.file_id ?? result?.fileId ?? (() => {
+      try { return JSON.parse(result?.content?.[0]?.text ?? '{}').fileId; }
+      catch (_) { return undefined; }
+    })();
+    if (!/^file_[A-Za-z0-9_-]{1,128}$/.test(fileId ?? '')) return fail('FILE_ID_UNAVAILABLE');
+    if (typeof host?.getFileDownloadUrl !== 'function') return fail('DOWNLOAD_API_UNAVAILABLE');
+    let downloadUrl;
+    try { ({ downloadUrl } = await host.getFileDownloadUrl({ fileId })); }
+    catch (_) { return fail('DOWNLOAD_URL_REJECTED'); }
+    const url = new URL(downloadUrl);
+    if (url.protocol !== 'https:' || url.port && url.port !== '443') return fail('URL');
+    let response;
+    try { response = await fetch(url.href, { credentials: 'omit', redirect: 'error', cache: 'no-store' }); }
+    catch (_) { return fail('FETCH_REJECTED'); }
+    if (!response.ok || !response.body) return fail('HTTP');
+    const reader = response.body.getReader();
+    let size = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 10485760) { await reader.cancel(); return fail('SIZE'); }
+      }
+    } catch (_) { return fail('READ_REJECTED'); }
+    if (size === 0) return fail('EMPTY');
+    status.textContent = 'Lettura nel browser riuscita: ' + size + ' byte. Nessun file inviato a OUF.';
+  } catch (_) {
+    fail('BROWSER_FETCH');
+  }
+})();
+</script>
+</body>
+</html>

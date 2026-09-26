@@ -1,17 +1,62 @@
 # R4a — managed-file MCP attachment contract (candidate)
 
-Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
-Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
-Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
+> **Live boundary finding, 26 September 2026:** The enabled MCP candidate
+> returned `ATTACHMENT_DNS_UNAVAILABLE` when ChatGPT supplied a real CSV.
+> No asset was created. Its `internal/adapter/hostfiles` direct external
+> download contradicts MCP PET v1.4 section 38 / MCP-GW-03, even if the
+> Docker DNS failure is repaired. Gateway PET v1.5 T11.3 also forbids
+> forwarding the temporary, caller-supplied URL to a generic external
+> fetcher. Keep this implementation out of new rollouts until a governed
+> Agent Host byte bridge or registered Gateway provider binding replaces
+> direct MCP fetch; see Gateway
+> `docs/R4A_CHATGPT_ATTACHMENT_BOUNDARY.md`. Existing upload route
+> installation and passing unit tests do not close this release gate.
 
-The live VPS image `ouf-mcp:r4a-8599843` corresponds to commit
-`85998435c0fb3ea1aa5264eb0751d2b7c69b1b3c`. The attachment candidate
-branched before 41 live commits, so deploying that candidate image directly
-would remove existing MCP behavior. A local integration branch based on the
-live commit retains `urban.object.search` and adds the four managed-file
-capabilities. Its upload remains disabled by default; the integration is
-not deployed or verified on the VPS. The live preflight found upload disabled,
-host origins unset and all four internal managed-file routes absent.
+The follow-up `--mode probe` candidate adds a read-only ChatGPT widget to
+`source.file.attachment_origin_probe`. It uses the host's
+`getFileDownloadUrl({fileId})` API and attempts a bounded browser read. The
+widget displays only success/failure and byte count; neither bytes nor the
+temporary URL enter MCP tool results or OUF. Its CSP permits the observed
+`*.oaiusercontent.com` provider family for this feasibility check. A passing
+browser read is not an upload: it only establishes that a later browser-to-
+Gateway streaming bridge is technically possible in this ChatGPT surface.
+If the provider origin or browser CORS policy prevents the read, the widget
+fails without changing OUF. The explicit probe rollout can replace the failed
+enabled image; `--mode enabled` stays PET-blocked before any mutation.
+
+**Live widget finding, 26 September 2026:** The user deployed the probe from
+`14fccee4aea719ad071b969193d4d9df1c14540d` and saw `BROWSER_FETCH`.
+That error combines rejection by `getFileDownloadUrl`, cross-origin/CSP/redirect
+failure of `fetch`, and response-body read failure; it does not identify one
+cause. The subsequent `cad8d31c0439b6063a7b4e294858f654176ff6ae`
+revision separates those stages but has not been deployed or exercised.
+ChatGPT documents a temporary download URL and illustrates use as an image
+source; that does not promise JavaScript access to response bytes. The browser
+byte bridge is therefore **unproven and not deployable for upload**. Do not
+repeat host-origin allowlist probes or enable direct MCP fetch to work around
+this finding. The current Gateway has no browser-to-Gateway upload ticket
+binding, so even a future successful browser read alone cannot complete R4a.
+The concrete fallback contract is in Gateway
+`docs/R4A_CHATGPT_ATTACHMENT_BOUNDARY.md`: a widget file picker obtains a
+browser `File` and sends it through the existing governed upload capability
+and intake binding after a HUMAN-bound authorization adapter is implemented.
+It requires the human to select the local file a second time if it was already
+attached to chat. The picker is not a second product capability or intake
+endpoint. No browser authorization adapter exists yet; do not advertise a
+working `source.file.upload` until this route is exercised live.
+
+Status: profile/preview/draft-create bindings are deployed; the upload bridge
+has not passed its live or PET release gate. PET Gateway T25/T28, MCP v1.4
+sections 21 and 38, Source Onboarding v1.6 and Cross-Module Matrix v1.7
+govern this contract. Issue: GioNob/ouf-mcp-server#43.
+
+The VPS currently runs the read-only probe MCP image ID
+`sha256:2a96c291a2ae66f3e51ff8c2369646dc4f7f412321ca8f9c88fab3126ec065fc`
+from `14fccee4aea719ad071b969193d4d9df1c14540d`.
+The three delegated JSON bindings and streaming upload route were installed
+with private rollback snapshots. The actual ChatGPT upload failed on external
+DNS before sending file bytes or creating an asset. The read-only widget
+candidate is deployed, but did not read the file bytes.
 
 ## Ingress and identity
 
@@ -22,13 +67,63 @@ ChatGPT's documented optional `_meta["openai/fileParams"]` may supply a
 host-resolved `{file_id, download_url, mime_type?, file_name?}` descriptor.
 `download_url` is a short-lived host attachment retrieval credential, not an
 OUF object-store URL or an Onboarding staging reference. The descriptor is
-accepted only from a host-supported file parameter; configure exact approved
-HTTPS origins, disable redirects and bound retrieval to 10 MiB. The private
-MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
+accepted only from a host-supported file parameter. The failed direct-fetch
+candidate's private MCP adapter
+`internal/adapter/hostfiles` resolves the temporary host, pins a public IP for
+each connection, verifies its HTTPS certificate, disables proxies and
+redirects, and bounds retrieval to 10 MiB. These application controls did not
+make direct MCP external fetch PET-conformant.
+
+The first-party picker option sets `MCP_MANAGED_UPLOAD_ENABLED=picker` and an
+HTTPS `MCP_MANAGED_FILE_PICKER_URL` ending exactly in
+`/trusted-human/managed-files/`. It exposes the **same** `source.file.upload`
+tool, with no ChatGPT attachment parameter. A call returns the picker link and
+`AWAITING_FILE_SELECTION`. The human signs in on OUF, chooses a local CSV, and
+returns the asset ID displayed there to the chat; profile, preview and DRAFT
+creation use the existing tools. The file bytes traverse the existing Gateway
+HUMAN upload route and Onboarding; MCP never downloads the host URL. This mode
+requires the separately deployed OUF picker page, its THS login and scope, and
+the current streaming upload route. The tool reply alone is not an upload.
+
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
-when `MCP_MANAGED_UPLOAD_ENABLED=true` and `MCP_HOST_FILE_ORIGINS` lists exact
-approved HTTPS origins. It is not enabled in the deployed plugin. An arbitrary user/tool
-URL is never a file source.
+when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
+replacement for the host file parameter.
+To discover the exact origin without fetching an attachment, deploy the MCP
+candidate with `--mode probe` using the coordinated rollout script. In this
+mode only `source.file.attachment_origin_probe` advertises the host file
+parameter with a read-only annotation and an explicit no-fetch description;
+`source.file.upload` is absent. The probe returns only the origin and file ID,
+creates no asset and sends no Gateway command. The host still passes the
+private descriptor to the MCP tool, but the tool does not fetch the URL.
+Confirm the file ID matches the user's selected attachment before enabling
+transfer. The host's DNS name is not a deployment setting: it may change
+between attachments. After updating to `--mode enabled`, a new
+private candidate and rollout are required. The rollout checks
+that only the one opt-in environment variable changed; its rollback restores
+the prior MCP container. Neither mode proves that the host's file parameter
+was injected as claimed until the connected ChatGPT tool is exercised.
+
+`scripts/r4a_attachment_rollout.py` bundles the lab sequence into one
+root-run command: it pins both repository trees, makes a private snapshot of
+the current MCP container, verifies the three existing JSON route bodies,
+builds the MCP image, prepares its environment, installs the CSV route if
+absent, swaps MCP and verifies image, readiness and APISIX readback. On an
+error after either mutation it invokes the existing container and route
+restorers. It reports only status, image ID and private backup paths. Supply
+the root-owned materialization directory generated from the active installation
+projection and the exact reviewed MCP commit. Use `--mode enabled` directly
+for new installations; an optional `--mode probe` can inspect a host file
+descriptor without downloading bytes. Switching from an existing probe
+container to enabled mode makes a new snapshot automatically. A probe result
+alone is insufficient evidence of byte transfer or ingestion.
+
+An enabled image can be replaced by another pinned enabled image through the
+same rollback-backed rollout. If retrieval fails before Gateway admission,
+the MCP result classifies descriptor, DNS, blocked destination, HTTPS, host
+HTTP status, redirect, size, read or staging failures with a fixed code. It
+never returns the private URL, query token or response body. A failed
+retrieval creates no managed asset.
+
 The adapter downloads the host-issued descriptor into a private bounded spool,
 then streams the original bytes through the internal Gateway binding
 `POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP

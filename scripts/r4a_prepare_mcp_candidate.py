@@ -9,6 +9,7 @@ import stat
 import subprocess
 import tempfile
 
+from scripts.r4a_managed_upload_mode import expected_environment
 
 
 def docker(*args: str) -> list[dict]:
@@ -23,7 +24,9 @@ def private(path: Path, mode: int) -> None:
         raise ValueError("Private ownership or mode changed")
 
 
-def prepare(snapshot: Path, image_name: str, image_id: str) -> Path:
+def prepare(snapshot: Path, image_name: str, image_id: str,
+            upload_mode: str = "off", host_origin: str | None = None,
+            picker_url: str | None = None) -> Path:
     if os.geteuid() != 0:
         raise ValueError("Root required")
     private(snapshot.parent, 0o700)
@@ -79,6 +82,7 @@ def prepare(snapshot: Path, image_name: str, image_id: str) -> Path:
         if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) or name in names or "\n" in value or "\r" in value:
             raise ValueError("Environment cannot be represented safely")
         names.add(name)
+    envs = expected_environment(envs, upload_mode, host_origin, picker_url)
     folder = Path(tempfile.mkdtemp(prefix="candidate-mcp-", dir=snapshot.parent))
     os.chmod(folder, 0o700)
     path = folder / "mcp.env"
@@ -95,12 +99,17 @@ def main() -> None:
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-id", required=True)
+    parser.add_argument("--upload-mode", choices=("off", "probe", "enabled", "picker"), default="off")
+    parser.add_argument("--host-origin")
+    parser.add_argument("--picker-url")
     args = parser.parse_args()
     try:
-        folder = prepare(args.snapshot, args.image, args.image_id)
+        folder = prepare(args.snapshot, args.image, args.image_id,
+                         args.upload_mode, args.host_origin, args.picker_url)
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
         raise SystemExit("MCP_CANDIDATE_PREPARE=BLOCKED; CONTAINERS_UNCHANGED=true") from None
     print(f"PRIVATE_MCP_CANDIDATE={folder}")
+    print(f"MANAGED_UPLOAD_MODE={args.upload_mode}")
     print("MCP_CANDIDATE_PREPARED=true; CONTAINERS_UNCHANGED=true")
 
 

@@ -8,17 +8,32 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 	"time"
 )
 
 const MaxCSVBytes int64 = 10 * 1024 * 1024
 
 var fileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{1,128}$`)
+
+// Failure contains only a fixed classification. It must never include the
+// short-lived download URL, its bearer query, or an upstream response body.
+type Failure string
+
+func (f Failure) Error() string { return string(f) }
+
+func FailureCode(err error) string {
+	var failure Failure
+	if errors.As(err, &failure) {
+		return string(failure)
+	}
+	return "ATTACHMENT_BRIDGE_UNAVAILABLE"
+}
 
 type Input struct {
 	DownloadURL string `json:"download_url"`
@@ -28,8 +43,7 @@ type Input struct {
 }
 
 type Fetcher struct {
-	origins map[string]struct{}
-	client  *http.Client
+	client *http.Client
 }
 
 type Staged struct {
@@ -38,52 +52,128 @@ type Staged struct {
 	SHA256 string
 }
 
-// New requires exact, installation-approved HTTPS origins. No wildcard,
-// suffix match, userinfo, private URL override, or following redirects.
-func New(origins []string) (*Fetcher, error) {
-	if len(origins) == 0 {
-		return nil, errors.New("host attachment origin is not configured")
+// DescriptorOrigin validates only the host-provided descriptor's shape. It
+// never fetches the URL or treats its origin as approved for future requests.
+func DescriptorOrigin(input Input) (string, error) {
+	u, err := url.Parse(input.DownloadURL)
+	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
+		return "", Failure("ATTACHMENT_DESCRIPTOR_INVALID")
 	}
-	allowed := make(map[string]struct{}, len(origins))
-	for _, raw := range origins {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") || u.String() != raw {
-			return nil, errors.New("invalid host attachment origin")
-		}
-		allowed[u.Scheme+"://"+u.Host] = struct{}{}
-	}
-	return &Fetcher{origins: allowed, client: &http.Client{
-		Timeout:       15 * time.Second,
+	return u.Scheme + "://" + u.Host, nil
+}
+
+// New accepts the host-resolved file URL without pinning its temporary host.
+// The dedicated transport resolves and pins only public IP addresses before
+// connecting; HTTPS validates the original hostname and redirects are denied.
+func New() *Fetcher {
+	return &Fetcher{client: &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               nil,
+			DialContext:         dialPublicHTTPS,
+			TLSHandshakeTimeout: 5 * time.Second,
+			DisableKeepAlives:   true,
+		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	}}
+}
+
+var blockedPublicRanges = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+}
+
+func publicIP(raw net.IP) bool {
+	ip, ok := netip.AddrFromSlice(raw)
+	if !ok {
+		return false
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, prefix := range blockedPublicRanges {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func dialPublicHTTPS(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" || network != "tcp" {
+		return nil, Failure("ATTACHMENT_DESTINATION_DENIED")
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addresses) == 0 {
+		return nil, Failure("ATTACHMENT_DNS_UNAVAILABLE")
+	}
+	for _, address := range addresses {
+		if !publicIP(address.IP) {
+			return nil, Failure("ATTACHMENT_DESTINATION_DENIED")
+		}
+	}
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	for _, address := range addresses {
+		connection, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+		if dialErr == nil {
+			return connection, nil
+		}
+	}
+	return nil, Failure("ATTACHMENT_HTTPS_UNAVAILABLE")
 }
 
 // Fetch downloads the exact host file to a private bounded spool. The URL is
 // never returned, included in an error, or written to logs. The caller must
 // CloseAndRemove on every success path, including Gateway rejection.
 func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error) {
-	u, parseErr := url.Parse(input.DownloadURL)
-	if parseErr != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
-		return nil, errors.New("invalid host file descriptor")
+	_, validationErr := DescriptorOrigin(input)
+	if validationErr != nil {
+		return nil, validationErr
 	}
-	if _, ok := f.origins[u.Scheme+"://"+u.Host]; !ok {
-		return nil, errors.New("host attachment origin denied")
-	}
+	u, _ := url.Parse(input.DownloadURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, errors.New("invalid host file descriptor")
+		return nil, Failure("ATTACHMENT_DESCRIPTOR_INVALID")
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil, errors.New("host attachment unavailable")
+		if code := FailureCode(err); code != "ATTACHMENT_BRIDGE_UNAVAILABLE" {
+			return nil, Failure(code)
+		}
+		return nil, Failure("ATTACHMENT_HTTPS_UNAVAILABLE")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.ContentLength > MaxCSVBytes {
-		return nil, errors.New("host attachment rejected or exceeds limit")
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, Failure("ATTACHMENT_REDIRECT_REJECTED")
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, Failure("ATTACHMENT_HOST_FORBIDDEN")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, Failure("ATTACHMENT_HOST_NOT_FOUND")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, Failure("ATTACHMENT_HOST_HTTP_REJECTED")
+	}
+	if resp.ContentLength > MaxCSVBytes {
+		return nil, Failure("ATTACHMENT_TOO_LARGE")
 	}
 	spool, err := os.CreateTemp("", "ouf-host-attachment-*.csv")
 	if err != nil {
-		return nil, errors.New("host attachment staging unavailable")
+		return nil, Failure("ATTACHMENT_STAGING_UNAVAILABLE")
 	}
 	defer func() {
 		if err != nil {
@@ -94,11 +184,14 @@ func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error)
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(spool, hash), io.LimitReader(resp.Body, MaxCSVBytes+1))
 	if copyErr != nil || size == 0 || size > MaxCSVBytes {
-		err = errors.New("host attachment read failed or exceeds limit")
+		err = Failure("ATTACHMENT_READ_UNAVAILABLE")
+		if size > MaxCSVBytes {
+			err = Failure("ATTACHMENT_TOO_LARGE")
+		}
 		return nil, err
 	}
 	if _, err = spool.Seek(0, io.SeekStart); err != nil {
-		err = errors.New("host attachment staging unavailable")
+		err = Failure("ATTACHMENT_STAGING_UNAVAILABLE")
 		return nil, err
 	}
 	return &Staged{File: spool, Size: size, SHA256: "sha256:" + hex.EncodeToString(hash.Sum(nil))}, nil
