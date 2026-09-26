@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""One-command lab rollout for the ChatGPT managed-file attachment bridge.
-
-Enable the bounded host attachment bridge without pinning a temporary host.
-Every route/container mutation retains a private snapshot and restores the
-previous state on failure.
-"""
+"""Rollback-backed lab rollout; direct-fetch enablement is PET-blocked."""
 
 import argparse
 import contextlib
@@ -164,6 +159,12 @@ def main():
     mcp_source = None
     rollback_args = None
     try:
+        # MCP PET v1.4 section 38 forbids external fetch from MCP. The present
+        # enabled image performs exactly that fetch, and an unrestricted URL
+        # forwarded to Gateway also fails Gateway PET v1.5 T11.3. Gate before
+        # any snapshot, image build, route write or container mutation.
+        if args.mode == "enabled":
+            raise Blocked("PET_ATTACHMENT_BOUNDARY_UNRESOLVED")
         if os.geteuid() != 0 or not ADMIN_KEY.is_file():
             raise Blocked("ROOT_OR_ADMIN_KEY_REQUIRED")
         private(ROOT, 0o700)
