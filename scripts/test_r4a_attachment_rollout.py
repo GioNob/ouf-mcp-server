@@ -13,6 +13,18 @@ from scripts import r4a_attachment_rollout as rollout
 
 
 class CoordinatedRollbackTests(unittest.TestCase):
+    def test_enabled_direct_fetch_is_pet_blocked_before_any_operation(self):
+        output = io.StringIO()
+        argv = ["rollout", "--mcp-commit", "a" * 40,
+                "--materialization", "/nonexistent", "--mode", "enabled"]
+        with (mock.patch.object(sys, "argv", argv),
+              mock.patch.object(rollout, "command", side_effect=AssertionError("no commands allowed")),
+              contextlib.redirect_stdout(output)):
+            with self.assertRaises(SystemExit) as status:
+                rollout.main()
+        self.assertEqual(status.exception.code, 1)
+        self.assertIn("CODE=PET_ATTACHMENT_BOUNDARY_UNRESOLVED", output.getvalue())
+
     def test_candidate_failure_restores_gateway_and_original_mcp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
