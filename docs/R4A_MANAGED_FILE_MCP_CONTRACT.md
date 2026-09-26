@@ -72,7 +72,19 @@ candidate's private MCP adapter
 `internal/adapter/hostfiles` resolves the temporary host, pins a public IP for
 each connection, verifies its HTTPS certificate, disables proxies and
 redirects, and bounds retrieval to 10 MiB. These application controls did not
-make direct MCP external fetch PET-conformant;
+make direct MCP external fetch PET-conformant.
+
+The first-party picker option sets `MCP_MANAGED_UPLOAD_ENABLED=picker` and an
+HTTPS `MCP_MANAGED_FILE_PICKER_URL` ending exactly in
+`/trusted-human/managed-files/`. It exposes the **same** `source.file.upload`
+tool, with no ChatGPT attachment parameter. A call returns the picker link and
+`AWAITING_FILE_SELECTION`. The human signs in on OUF, chooses a local CSV, and
+returns the asset ID displayed there to the chat; profile, preview and DRAFT
+creation use the existing tools. The file bytes traverse the existing Gateway
+HUMAN upload route and Onboarding; MCP never downloads the host URL. This mode
+requires the separately deployed OUF picker page, its THS login and scope, and
+the current streaming upload route. The tool reply alone is not an upload.
+
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
 replacement for the host file parameter.
