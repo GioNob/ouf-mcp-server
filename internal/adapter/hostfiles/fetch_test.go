@@ -47,9 +47,9 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T
 		t.Fatal("spool file persisted")
 	}
 	for _, bad := range []Input{
-		{FileID: "file_123", DownloadURL: "https://other.invalid/file"},
 		{FileID: "file_123", DownloadURL: "http://" + strings.TrimPrefix(server.URL, "https://") + "/file"},
-		{FileID: "file_123", DownloadURL: server.URL + ".attacker.invalid/file"},
+		{FileID: "file_123", DownloadURL: server.URL + "/file#fragment"},
+		{FileID: "file_123", DownloadURL: "https://user@files.example.org/file"},
 		{FileID: "file_123", DownloadURL: server.URL + "/redirect"},
 		{FileID: "forged", DownloadURL: server.URL + "/file"},
 		{FileID: "file_123", DownloadURL: server.URL + "/large"},
