@@ -21,6 +21,20 @@ const MaxCSVBytes int64 = 10 * 1024 * 1024
 
 var fileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{1,128}$`)
 
+// Failure contains only a fixed classification. It must never include the
+// short-lived download URL, its bearer query, or an upstream response body.
+type Failure string
+
+func (f Failure) Error() string { return string(f) }
+
+func FailureCode(err error) string {
+	var failure Failure
+	if errors.As(err, &failure) {
+		return string(failure)
+	}
+	return "ATTACHMENT_BRIDGE_UNAVAILABLE"
+}
+
 type Input struct {
 	DownloadURL string `json:"download_url"`
 	FileID      string `json:"file_id"`
@@ -43,7 +57,7 @@ type Staged struct {
 func DescriptorOrigin(input Input) (string, error) {
 	u, err := url.Parse(input.DownloadURL)
 	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
-		return "", errors.New("invalid host file descriptor")
+		return "", Failure("ATTACHMENT_DESCRIPTOR_INVALID")
 	}
 	return u.Scheme + "://" + u.Host, nil
 }
@@ -100,15 +114,15 @@ func publicIP(raw net.IP) bool {
 func dialPublicHTTPS(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port != "443" || network != "tcp" {
-		return nil, errors.New("public HTTPS port required")
+		return nil, Failure("ATTACHMENT_DESTINATION_DENIED")
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil || len(addresses) == 0 {
-		return nil, errors.New("file host unavailable")
+		return nil, Failure("ATTACHMENT_DNS_UNAVAILABLE")
 	}
 	for _, address := range addresses {
 		if !publicIP(address.IP) {
-			return nil, errors.New("file host resolves to an unapproved network")
+			return nil, Failure("ATTACHMENT_DESTINATION_DENIED")
 		}
 	}
 	dialer := net.Dialer{Timeout: 5 * time.Second}
@@ -118,7 +132,7 @@ func dialPublicHTTPS(ctx context.Context, network, address string) (net.Conn, er
 			return connection, nil
 		}
 	}
-	return nil, errors.New("file host unavailable")
+	return nil, Failure("ATTACHMENT_HTTPS_UNAVAILABLE")
 }
 
 // Fetch downloads the exact host file to a private bounded spool. The URL is
@@ -132,19 +146,34 @@ func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error)
 	u, _ := url.Parse(input.DownloadURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, errors.New("invalid host file descriptor")
+		return nil, Failure("ATTACHMENT_DESCRIPTOR_INVALID")
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil, errors.New("host attachment unavailable")
+		if code := FailureCode(err); code != "ATTACHMENT_BRIDGE_UNAVAILABLE" {
+			return nil, Failure(code)
+		}
+		return nil, Failure("ATTACHMENT_HTTPS_UNAVAILABLE")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.ContentLength > MaxCSVBytes {
-		return nil, errors.New("host attachment rejected or exceeds limit")
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, Failure("ATTACHMENT_REDIRECT_REJECTED")
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, Failure("ATTACHMENT_HOST_FORBIDDEN")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, Failure("ATTACHMENT_HOST_NOT_FOUND")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, Failure("ATTACHMENT_HOST_HTTP_REJECTED")
+	}
+	if resp.ContentLength > MaxCSVBytes {
+		return nil, Failure("ATTACHMENT_TOO_LARGE")
 	}
 	spool, err := os.CreateTemp("", "ouf-host-attachment-*.csv")
 	if err != nil {
-		return nil, errors.New("host attachment staging unavailable")
+		return nil, Failure("ATTACHMENT_STAGING_UNAVAILABLE")
 	}
 	defer func() {
 		if err != nil {
@@ -155,11 +184,14 @@ func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error)
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(spool, hash), io.LimitReader(resp.Body, MaxCSVBytes+1))
 	if copyErr != nil || size == 0 || size > MaxCSVBytes {
-		err = errors.New("host attachment read failed or exceeds limit")
+		err = Failure("ATTACHMENT_READ_UNAVAILABLE")
+		if size > MaxCSVBytes {
+			err = Failure("ATTACHMENT_TOO_LARGE")
+		}
 		return nil, err
 	}
 	if _, err = spool.Seek(0, io.SeekStart); err != nil {
-		err = errors.New("host attachment staging unavailable")
+		err = Failure("ATTACHMENT_STAGING_UNAVAILABLE")
 		return nil, err
 	}
 	return &Staged{File: spool, Size: size, SHA256: "sha256:" + hex.EncodeToString(hash.Sum(nil))}, nil
