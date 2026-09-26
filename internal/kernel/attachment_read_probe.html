@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verifica lettura allegato OUF</title>
+<body>
+<p id="status" role="status">Verifica dell’allegato in corso…</p>
+<script>
+(async () => {
+  const status = document.getElementById('status');
+  const fail = code => { status.textContent = 'Lettura allegato non disponibile: ' + code; };
+  try {
+    const host = window.openai;
+    const fileId = host?.toolInput?.file?.file_id;
+    if (!/^file_[A-Za-z0-9_-]{1,128}$/.test(fileId ?? '') ||
+        typeof host?.getFileDownloadUrl !== 'function') return fail('HOST_API');
+    const { downloadUrl } = await host.getFileDownloadUrl({ fileId });
+    const url = new URL(downloadUrl);
+    if (url.protocol !== 'https:' || url.port && url.port !== '443') return fail('URL');
+    const response = await fetch(url.href, { credentials: 'omit', redirect: 'error', cache: 'no-store' });
+    if (!response.ok || !response.body) return fail('HTTP');
+    const reader = response.body.getReader();
+    let size = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 10485760) { await reader.cancel(); return fail('SIZE'); }
+    }
+    if (size === 0) return fail('EMPTY');
+    status.textContent = 'Lettura nel browser riuscita: ' + size + ' byte. Nessun file inviato a OUF.';
+  } catch (_) {
+    fail('BROWSER_FETCH');
+  }
+})();
+</script>
+</body>
+</html>
