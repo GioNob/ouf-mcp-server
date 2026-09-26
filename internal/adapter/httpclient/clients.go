@@ -133,6 +133,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
+	case "ouf.managed-source.onboarding.create":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/create"
 	}
 	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if e != nil {
