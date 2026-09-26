@@ -53,7 +53,7 @@ func DescriptorOrigin(input Input) (string, error) {
 // connecting; HTTPS validates the original hostname and redirects are denied.
 func New() *Fetcher {
 	return &Fetcher{client: &http.Client{
-		Timeout:       15 * time.Second,
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			Proxy:               nil,
 			DialContext:         dialPublicHTTPS,
