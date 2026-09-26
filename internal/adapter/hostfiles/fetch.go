@@ -8,11 +8,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 	"time"
 )
 
@@ -28,8 +29,7 @@ type Input struct {
 }
 
 type Fetcher struct {
-	origins map[string]struct{}
-	client  *http.Client
+	client *http.Client
 }
 
 type Staged struct {
@@ -42,42 +42,92 @@ type Staged struct {
 // never fetches the URL or treats its origin as approved for future requests.
 func DescriptorOrigin(input Input) (string, error) {
 	u, err := url.Parse(input.DownloadURL)
-	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
+	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
 		return "", errors.New("invalid host file descriptor")
 	}
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// New requires exact, installation-approved HTTPS origins. No wildcard,
-// suffix match, userinfo, private URL override, or following redirects.
-func New(origins []string) (*Fetcher, error) {
-	if len(origins) == 0 {
-		return nil, errors.New("host attachment origin is not configured")
-	}
-	allowed := make(map[string]struct{}, len(origins))
-	for _, raw := range origins {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") || u.String() != raw {
-			return nil, errors.New("invalid host attachment origin")
-		}
-		allowed[u.Scheme+"://"+u.Host] = struct{}{}
-	}
-	return &Fetcher{origins: allowed, client: &http.Client{
+// New accepts the host-resolved file URL without pinning its temporary host.
+// The dedicated transport resolves and pins only public IP addresses before
+// connecting; HTTPS validates the original hostname and redirects are denied.
+func New() *Fetcher {
+	return &Fetcher{client: &http.Client{
 		Timeout:       15 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               nil,
+			DialContext:         dialPublicHTTPS,
+			TLSHandshakeTimeout: 5 * time.Second,
+			DisableKeepAlives:   true,
+		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	}}
+}
+
+var blockedPublicRanges = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+}
+
+func publicIP(raw net.IP) bool {
+	ip, ok := netip.AddrFromSlice(raw)
+	if !ok {
+		return false
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, prefix := range blockedPublicRanges {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func dialPublicHTTPS(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" || network != "tcp" {
+		return nil, errors.New("public HTTPS port required")
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addresses) == 0 {
+		return nil, errors.New("file host unavailable")
+	}
+	for _, address := range addresses {
+		if !publicIP(address.IP) {
+			return nil, errors.New("file host resolves to an unapproved network")
+		}
+	}
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	for _, address := range addresses {
+		connection, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+		if dialErr == nil {
+			return connection, nil
+		}
+	}
+	return nil, errors.New("file host unavailable")
 }
 
 // Fetch downloads the exact host file to a private bounded spool. The URL is
 // never returned, included in an error, or written to logs. The caller must
 // CloseAndRemove on every success path, including Gateway rejection.
 func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error) {
-	origin, validationErr := DescriptorOrigin(input)
+	_, validationErr := DescriptorOrigin(input)
 	if validationErr != nil {
 		return nil, validationErr
-	}
-	if _, ok := f.origins[origin]; !ok {
-		return nil, errors.New("host attachment origin denied")
 	}
 	u, _ := url.Parse(input.DownloadURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
