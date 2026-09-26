@@ -85,8 +85,10 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
 	for _, capability := range snapshot.ToolEligible() {
 		if capability.ToolName == "source.file.upload" {
-			if service != nil && (fetcher != nil || originProbe) {
-				registerUploadTool(server, capability, snapshot, service, fetcher, originProbe)
+			if service != nil && originProbe {
+				registerHostOriginProbe(server, capability.InputSchema)
+			} else if service != nil && fetcher != nil {
+				registerUploadTool(server, capability, snapshot, service, fetcher)
 			}
 			continue
 		}
@@ -100,7 +102,37 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	return modernOnly(streamable), nil
 }
 
-func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher, originProbe bool) {
+func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(inputSchema, &schema); err != nil {
+		panic(err)
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "source.file.attachment_origin_probe",
+		Description: "Inspect the origin and file ID of a ChatGPT-hosted CSV attachment. Read-only diagnostic: never downloads the file, streams bytes, calls Gateway, or creates an OUF asset. Returns only the HTTPS origin and file ID; never returns the private download URL.",
+		InputSchema: &schema,
+		Meta: mcp.Meta{"openai/fileParams": []string{"file"}},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
+		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
+			return errorResult("UNAUTHENTICATED", false), nil, nil
+		}
+		raw, _ := json.Marshal(input["file"])
+		var descriptor hostfiles.Input
+		if err := json.Unmarshal(raw, &descriptor); err != nil {
+			return errorResult("ATTACHMENT_INVALID", false), nil, nil
+		}
+		origin, err := hostfiles.DescriptorOrigin(descriptor)
+		if err != nil {
+			return errorResult("ATTACHMENT_INVALID", false), nil, nil
+		}
+		body, _ := json.Marshal(map[string]string{"origin": origin, "fileId": descriptor.FileID})
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil, nil
+	})
+}
+
+func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
 		panic(err)
@@ -117,14 +149,6 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 			var descriptor hostfiles.Input
 			if err := json.Unmarshal(raw, &descriptor); err != nil {
 				return errorResult("ATTACHMENT_INVALID", false), nil, nil
-			}
-			if originProbe {
-				origin, err := hostfiles.DescriptorOrigin(descriptor)
-				if err != nil {
-					return errorResult("ATTACHMENT_INVALID", false), nil, nil
-				}
-				body, _ := json.Marshal(map[string]string{"code": "ATTACHMENT_ORIGIN_PROBE", "origin": origin, "fileId": descriptor.FileID})
-				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 			}
 			staged, err := fetcher.Fetch(ctx, descriptor)
 			if err != nil {
