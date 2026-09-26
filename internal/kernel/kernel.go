@@ -108,10 +108,10 @@ func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
 		panic(err)
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "source.file.attachment_origin_probe",
+		Name:        "source.file.attachment_origin_probe",
 		Description: "Inspect the origin and file ID of a ChatGPT-hosted CSV attachment. Read-only diagnostic: never downloads the file, streams bytes, calls Gateway, or creates an OUF asset. Returns only the HTTPS origin and file ID; never returns the private download URL.",
 		InputSchema: &schema,
-		Meta: mcp.Meta{"openai/fileParams": []string{"file"}},
+		Meta:        mcp.Meta{"openai/fileParams": []string{"file"}},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
