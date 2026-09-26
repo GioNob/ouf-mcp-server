@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """One-command lab rollout for the ChatGPT managed-file attachment bridge.
 
-Use a no-fetch origin probe first, then a separate enabled rollout with the
-observed exact origin. Every route/container mutation retains a private
-snapshot and restores the previous state on failure.
+Enable the bounded host attachment bridge without pinning a temporary host.
+Every route/container mutation retains a private snapshot and restores the
+previous state on failure.
 """
 
 import argparse
@@ -168,8 +168,8 @@ def main():
             raise Blocked("ROOT_OR_ADMIN_KEY_REQUIRED")
         private(ROOT, 0o700)
         private(args.materialization, 0o700)
-        if args.mode == "probe" and args.host_origin is not None:
-            raise Blocked("PROBE_MUST_NOT_HAVE_ORIGIN")
+        if args.host_origin is not None:
+            raise Blocked("STATIC_HOST_ORIGIN_UNSUPPORTED")
         if (not re.fullmatch(r"[0-9a-f]{40}", args.mcp_commit)
                 or command(git_args(args.gateway_repo, "rev-parse", GATEWAY_COMMIT + "^{commit}")).strip() != GATEWAY_COMMIT):
             raise Blocked("PINNED_SOURCE_MISSING")
