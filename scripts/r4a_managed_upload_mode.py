@@ -6,9 +6,13 @@ def expected_environment(original: list[str], mode: str, origin: str | None) -> 
     if len(names) != len(set(names)) or "MCP_HOST_FILE_ORIGINS" in names:
         raise ValueError("Original managed-upload environment is unexpected")
     prior_probe = "MCP_MANAGED_UPLOAD_ENABLED=probe" in original
-    if "MCP_MANAGED_UPLOAD_ENABLED" in names and not prior_probe:
+    prior_enabled = "MCP_MANAGED_UPLOAD_ENABLED=true" in original
+    if "MCP_MANAGED_UPLOAD_ENABLED" in names and not (prior_probe or prior_enabled):
         raise ValueError("Original managed-upload environment is unexpected")
-    base = [entry for entry in original if entry != "MCP_MANAGED_UPLOAD_ENABLED=probe"]
+    if prior_enabled and mode != "enabled":
+        raise ValueError("Enabled upload cannot be disabled by an image rollout")
+    base = [entry for entry in original if entry not in
+            ("MCP_MANAGED_UPLOAD_ENABLED=probe", "MCP_MANAGED_UPLOAD_ENABLED=true")]
     if mode == "off":
         if origin is not None or prior_probe:
             raise ValueError("Host origin probe cannot be disabled through an implicit rollout")
