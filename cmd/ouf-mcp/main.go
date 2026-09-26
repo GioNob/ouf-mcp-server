@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
+	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"

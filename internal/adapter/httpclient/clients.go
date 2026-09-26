@@ -64,6 +64,7 @@ type GatewayClient struct {
 	Client      *http.Client
 	TokenSource TokenSource
 }
+
 var uploadID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{1,128}$`)
 var uploadHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 

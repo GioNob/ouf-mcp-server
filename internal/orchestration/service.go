@@ -100,9 +100,14 @@ type GatewayRequest struct {
 	MaxResultBytes                                                                  int64
 	Upload                                                                          *UploadStream `json:"-"`
 }
+
 // UploadStream is consumed only after authorization and admission. Its bytes
 // never enter the JSON envelope, fingerprint, database or audit event.
-type UploadStream struct { Reader io.Reader; Size int64; SHA256, FileID string }
+type UploadStream struct {
+	Reader         io.Reader
+	Size           int64
+	SHA256, FileID string
+}
 type Problem struct {
 	Type, Title, Code, Detail string
 	Status                    int
@@ -222,7 +227,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		Arguments: in.Arguments, Identity: in.Identity, AuthorizationDecisionRef: decision.DecisionRef,
 		CorrelationID: in.CorrelationID, IdempotencyKey: in.IdempotencyKey, AttemptID: admitted.AttemptID.String(), RequestHash: hex.EncodeToString(requestHash[:]),
 		MaxResultBytes: in.Maximum.ResultBytes,
-		Upload: in.Upload,
+		Upload:         in.Upload,
 	}, in.Timeout)
 	outcome := AttemptOutcome{Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {
