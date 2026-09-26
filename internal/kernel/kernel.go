@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -78,7 +79,28 @@ func NewGovernedHTTPHandlerWithHostOriginProbe(logger *slog.Logger, service *orc
 	return newHTTPHandler(logger, service, nil, true)
 }
 
+// Picker mode retains the one source.file.upload tool. The browser chooses a
+// local file on the first-party OUF site; MCP never receives its bytes or URL.
+func NewGovernedHTTPHandlerWithFilePicker(logger *slog.Logger, service *orchestration.Service, pickerURL string) (http.Handler, error) {
+	if service == nil {
+		return nil, fmt.Errorf("governed service is required")
+	}
+	u, err := url.Parse(pickerURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "/trusted-human/managed-files/" {
+		return nil, fmt.Errorf("invalid first-party managed-file picker URL")
+	}
+	return newHTTPHandlerWithPicker(logger, service, pickerURL)
+}
+
+func newHTTPHandlerWithPicker(logger *slog.Logger, service *orchestration.Service, pickerURL string) (http.Handler, error) {
+	return newHTTPHandlerMode(logger, service, nil, false, pickerURL)
+}
+
 func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher, originProbe bool) (http.Handler, error) {
+	return newHTTPHandlerMode(logger, service, fetcher, originProbe, "")
+}
+
+func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fetcher *hostfiles.Fetcher, originProbe bool, pickerURL string) (http.Handler, error) {
 	snapshot, err := manifest.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
@@ -86,7 +108,9 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
 	for _, capability := range snapshot.ToolEligible() {
 		if capability.ToolName == "source.file.upload" {
-			if service != nil && originProbe {
+			if service != nil && pickerURL != "" {
+				registerPickerUploadTool(server, pickerURL)
+			} else if service != nil && originProbe {
 				registerHostOriginProbe(server, capability.InputSchema)
 			} else if service != nil && fetcher != nil {
 				registerUploadTool(server, capability, snapshot, service, fetcher)
@@ -101,6 +125,25 @@ func newHTTPHandler(logger *slog.Logger, service *orchestration.Service, fetcher
 	}
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
 	return modernOnly(streamable), nil
+}
+
+func registerPickerUploadTool(server *mcp.Server, pickerURL string) {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false}`), &schema); err != nil {
+		panic(err)
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "source.file.upload",
+		Description: "Start the governed OUF CSV upload. Open the first-party picker URL, choose a local CSV, then provide the resulting asset ID to continue profiling. No chat attachment is used.",
+		InputSchema: &schema,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
+		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
+			return errorResult("UNAUTHENTICATED", false), nil, nil
+		}
+		result := map[string]any{"status": "AWAITING_FILE_SELECTION", "pickerUrl": pickerURL}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + pickerURL + " e scegli un CSV. Al termine comunica l'Asset ID mostrato dalla pagina per avviare il profilo."}}, StructuredContent: result}, nil, nil
+	})
 }
 
 func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
