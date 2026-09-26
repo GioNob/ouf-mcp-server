@@ -293,6 +293,12 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	var handler http.Handler
 	switch os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") {
+	case "picker":
+		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
+			logger.Error("host origins must be unset for the first-party file picker")
+			os.Exit(1)
+		}
+		handler, err = kernel.NewGovernedHTTPHandlerWithFilePicker(logger, service, os.Getenv("MCP_MANAGED_FILE_PICKER_URL"))
 	case "true":
 		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
 			logger.Error("legacy host origin configuration must be unset")
