@@ -2,6 +2,7 @@ package hostfiles
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -28,9 +29,18 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T
 	}))
 	defer server.Close()
 	f := New()
-	f.client = server.Client()
+	client := server.Client()
+	transport := client.Transport.(*http.Transport).Clone()
+	// The test dialer deliberately maps an example hostname to the local TLS server.
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	client.Transport = transport
+	f.client = client
 	f.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	input := Input{FileID: "file_123", DownloadURL: server.URL + "/file?temporary=signed", MimeType: "text/csv"}
+	const attachmentHost = "https://files.example.org"
+	input := Input{FileID: "file_123", DownloadURL: attachmentHost + "/file?temporary=signed", MimeType: "text/csv"}
 	staged, err := f.Fetch(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -47,12 +57,12 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T
 		t.Fatal("spool file persisted")
 	}
 	for _, bad := range []Input{
-		{FileID: "file_123", DownloadURL: "http://" + strings.TrimPrefix(server.URL, "https://") + "/file"},
-		{FileID: "file_123", DownloadURL: server.URL + "/file#fragment"},
+		{FileID: "file_123", DownloadURL: "http://files.example.org/file"},
+		{FileID: "file_123", DownloadURL: attachmentHost + "/file#fragment"},
 		{FileID: "file_123", DownloadURL: "https://user@files.example.org/file"},
-		{FileID: "file_123", DownloadURL: server.URL + "/redirect"},
-		{FileID: "forged", DownloadURL: server.URL + "/file"},
-		{FileID: "file_123", DownloadURL: server.URL + "/large"},
+		{FileID: "file_123", DownloadURL: attachmentHost + "/redirect"},
+		{FileID: "forged", DownloadURL: attachmentHost + "/file"},
+		{FileID: "file_123", DownloadURL: attachmentHost + "/large"},
 	} {
 		if result, err := f.Fetch(context.Background(), bad); err == nil {
 			result.CloseAndRemove()
@@ -66,7 +76,8 @@ func TestHostAttachmentSpoolsExactBytesAndRejectsInvalidDescriptors(t *testing.T
 
 func TestPublicOnlyDialRejectsInternalAndReservedDestinations(t *testing.T) {
 	transport, ok := New().client.Transport.(*http.Transport)
-	if !ok || transport.Proxy != nil || transport.DialContext == nil {
+	if !ok || transport.Proxy != nil || transport.DialContext == nil ||
+		(transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify) {
 		t.Fatal("host file client has no public-only direct transport")
 	}
 	for _, address := range []string{"127.0.0.1:443", "10.0.0.5:443", "169.254.169.254:443", "[::1]:443", "192.0.2.4:443", "198.18.0.1:443", "8.8.8.8:80"} {
