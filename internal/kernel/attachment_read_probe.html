@@ -19,19 +19,25 @@
     })();
     if (!/^file_[A-Za-z0-9_-]{1,128}$/.test(fileId ?? '')) return fail('FILE_ID_UNAVAILABLE');
     if (typeof host?.getFileDownloadUrl !== 'function') return fail('DOWNLOAD_API_UNAVAILABLE');
-    const { downloadUrl } = await host.getFileDownloadUrl({ fileId });
+    let downloadUrl;
+    try { ({ downloadUrl } = await host.getFileDownloadUrl({ fileId })); }
+    catch (_) { return fail('DOWNLOAD_URL_REJECTED'); }
     const url = new URL(downloadUrl);
     if (url.protocol !== 'https:' || url.port && url.port !== '443') return fail('URL');
-    const response = await fetch(url.href, { credentials: 'omit', redirect: 'error', cache: 'no-store' });
+    let response;
+    try { response = await fetch(url.href, { credentials: 'omit', redirect: 'error', cache: 'no-store' }); }
+    catch (_) { return fail('FETCH_REJECTED'); }
     if (!response.ok || !response.body) return fail('HTTP');
     const reader = response.body.getReader();
     let size = 0;
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 10485760) { await reader.cancel(); return fail('SIZE'); }
-    }
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 10485760) { await reader.cancel(); return fail('SIZE'); }
+      }
+    } catch (_) { return fail('READ_REJECTED'); }
     if (size === 0) return fail('EMPTY');
     status.textContent = 'Lettura nel browser riuscita: ' + size + ' byte. Nessun file inviato a OUF.';
   } catch (_) {
