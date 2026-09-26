@@ -130,7 +130,10 @@ func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
 			return errorResult("ATTACHMENT_INVALID", false), nil, nil
 		}
 		body, _ := json.Marshal(map[string]string{"origin": origin, "fileId": descriptor.FileID})
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
+			StructuredContent: map[string]any{"origin": origin, "fileId": descriptor.FileID},
+		}, nil, nil
 	})
 }
 
