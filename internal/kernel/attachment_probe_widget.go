@@ -7,7 +7,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const attachmentProbeURI = "ui://ouf/attachment-read-probe.html"
+const attachmentProbeURI = "ui://ouf/attachment-read-probe-v2.html"
 
 //go:embed attachment_read_probe.html
 var attachmentProbeHTML string
