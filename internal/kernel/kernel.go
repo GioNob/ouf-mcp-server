@@ -69,7 +69,8 @@ func NewGovernedHTTPHandlerWithHostFiles(logger *slog.Logger, service *orchestra
 }
 
 // The origin probe advertises the file parameter and reports only its host
-// origin. It never fetches the file or invokes the Gateway upload.
+// origin. Its widget may read bytes inside ChatGPT; the MCP server never
+// fetches them and the probe never invokes the Gateway upload.
 func NewGovernedHTTPHandlerWithHostOriginProbe(logger *slog.Logger, service *orchestration.Service) (http.Handler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("governed service is required")
@@ -107,11 +108,12 @@ func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
 	if err := json.Unmarshal(inputSchema, &schema); err != nil {
 		panic(err)
 	}
+	registerAttachmentProbeWidget(server)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "source.file.attachment_origin_probe",
-		Description: "Inspect the origin and file ID of a ChatGPT-hosted CSV attachment. Read-only diagnostic: never downloads the file, streams bytes, calls Gateway, or creates an OUF asset. Returns only the HTTPS origin and file ID; never returns the private download URL.",
+		Description: "Inspect the origin and file ID of a ChatGPT-hosted CSV attachment. Its read-only widget checks whether the browser can read the bytes, without sending them to OUF. Never creates an asset or returns the private URL.",
 		InputSchema: &schema,
-		Meta:        mcp.Meta{"openai/fileParams": []string{"file"}},
+		Meta:        mcp.Meta{"openai/fileParams": []string{"file"}, "ui": map[string]any{"resourceUri": attachmentProbeURI}},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
