@@ -58,6 +58,13 @@ descriptor without downloading bytes. Switching from an existing probe
 container to enabled mode makes a new snapshot automatically. A probe result
 alone is insufficient evidence of byte transfer or ingestion.
 
+An enabled image can be replaced by another pinned enabled image through the
+same rollback-backed rollout. If retrieval fails before Gateway admission,
+the MCP result classifies descriptor, DNS, blocked destination, HTTPS, host
+HTTP status, redirect, size, read or staging failures with a fixed code. It
+never returns the private URL, query token or response body. A failed
+retrieval creates no managed asset.
+
 The adapter downloads the host-issued descriptor into a private bounded spool,
 then streams the original bytes through the internal Gateway binding
 `POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP
