@@ -15,6 +15,10 @@ class ManagedUploadEnvironmentTests(unittest.TestCase):
         probe = expected_environment(original, "probe", None)
         self.assertEqual(expected_environment(probe, "enabled", None),
                          [*original, "MCP_MANAGED_UPLOAD_ENABLED=true"])
+        enabled = expected_environment(probe, "enabled", None)
+        self.assertEqual(expected_environment(enabled, "enabled", None), enabled)
+        with self.assertRaises(ValueError):
+            expected_environment(enabled, "probe", None)
         with self.assertRaises(ValueError):
             expected_environment(probe, "off", None)
 
