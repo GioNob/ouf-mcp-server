@@ -1,5 +1,16 @@
 # R4a — managed-file MCP attachment contract (candidate)
 
+> **Live boundary finding, 26 September 2026:** The enabled MCP candidate
+> returned `ATTACHMENT_DNS_UNAVAILABLE` when ChatGPT supplied a real CSV.
+> No asset was created. Its `internal/adapter/hostfiles` direct external
+> download contradicts MCP PET v1.4 section 38 / MCP-GW-03, even if the
+> Docker DNS failure is repaired. Gateway PET v1.5 T11.3 also forbids
+> forwarding the temporary, caller-supplied URL to a generic external
+> fetcher. Keep this implementation out of new rollouts until a governed
+> Agent Host byte bridge or registered Gateway provider binding replaces
+> direct MCP fetch; see Gateway
+> `docs/R4A_CHATGPT_ATTACHMENT_BOUNDARY.md`. Existing upload route
+
 Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
 Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
 Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
