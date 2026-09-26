@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -63,6 +64,9 @@ type GatewayClient struct {
 	Client      *http.Client
 	TokenSource TokenSource
 }
+
+var uploadID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{1,128}$`)
+var uploadHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type RecoveryClient struct {
 	Endpoint    *url.URL
@@ -123,6 +127,9 @@ func NewGatewayWithTokenSource(endpoint string, source TokenSource) (*GatewayCli
 func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if in.CapabilityID == "ouf.managed-source.file.upload" && in.Upload == nil {
+		return orchestration.GatewayResponse{}, errors.New("managed upload requires a verified stream")
+	}
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
@@ -131,8 +138,23 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode
 	case "urban.object.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
+	case "ouf.managed-source.file.profile":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
+	case "ouf.managed-source.preview":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
+	case "ouf.managed-source.onboarding.create":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/create"
+	case "ouf.managed-source.file.upload":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/upload"
 	}
-	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	var reader io.Reader = bytes.NewReader(body)
+	if in.Upload != nil {
+		if in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024 || !uploadID.MatchString(in.Upload.FileID) || !uploadHash.MatchString(in.Upload.SHA256) || in.Identity.Delegation == "" {
+			return orchestration.GatewayResponse{}, errors.New("invalid governed upload")
+		}
+		reader = in.Upload.Reader
+	}
+	req, e := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint.String(), reader)
 	if e != nil {
 		return orchestration.GatewayResponse{}, e
 	}
@@ -141,6 +163,12 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		return orchestration.GatewayResponse{}, e
 	}
 	headers(req, token, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
+	if in.Upload != nil {
+		req.ContentLength = in.Upload.Size
+		req.Header.Set("Content-Type", "text/csv")
+		req.Header.Set("X-Content-SHA256", in.Upload.SHA256)
+		req.Header.Set("X-OUF-File-ID", in.Upload.FileID)
+	}
 	if in.Identity.Delegation != "" {
 		req.Header.Set("X-OUF-Delegation", in.Identity.Delegation)
 	}
