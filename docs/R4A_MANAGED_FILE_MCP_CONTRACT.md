@@ -22,13 +22,13 @@ ChatGPT's documented optional `_meta["openai/fileParams"]` may supply a
 host-resolved `{file_id, download_url, mime_type?, file_name?}` descriptor.
 `download_url` is a short-lived host attachment retrieval credential, not an
 OUF object-store URL or an Onboarding staging reference. The descriptor is
-accepted only from a host-supported file parameter; configure exact approved
-HTTPS origins, disable redirects and bound retrieval to 10 MiB. The private
-MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
+accepted only from a host-supported file parameter. The private MCP adapter
+`internal/adapter/hostfiles` resolves the temporary host, pins a public IP for
+each connection, verifies its HTTPS certificate, disables proxies and
+redirects, and bounds retrieval to 10 MiB;
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
-when `MCP_MANAGED_UPLOAD_ENABLED=true` and `MCP_HOST_FILE_ORIGINS` lists exact
-approved HTTPS origins. It is not enabled in the deployed plugin. An arbitrary user/tool
-URL is never a file source.
+when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
+replacement for the host file parameter.
 To discover the exact origin without fetching an attachment, deploy the MCP
 candidate with `--mode probe` using the coordinated rollout script. In this
 mode only `source.file.attachment_origin_probe` advertises the host file
@@ -36,10 +36,11 @@ parameter with a read-only annotation and an explicit no-fetch description;
 `source.file.upload` is absent. The probe returns only the origin and file ID,
 creates no asset and sends no Gateway command. The host still passes the
 private descriptor to the MCP tool, but the tool does not fetch the URL.
-Confirm the file ID matches the user's selected attachment before approving an exact
-origin. After updating to `--mode enabled --host-origin <approved HTTPS
-origin>`, a new private candidate and rollout are required. The rollout checks
-that only the two opt-in environment variables changed; its rollback restores
+Confirm the file ID matches the user's selected attachment before enabling
+transfer. The host's DNS name is not a deployment setting: it may change
+between attachments. After updating to `--mode enabled`, a new
+private candidate and rollout are required. The rollout checks
+that only the one opt-in environment variable changed; its rollback restores
 the prior MCP container. Neither mode proves that the host's file parameter
 was injected as claimed until the connected ChatGPT tool is exercised.
 
@@ -51,12 +52,11 @@ absent, swaps MCP and verifies image, readiness and APISIX readback. On an
 error after either mutation it invokes the existing container and route
 restorers. It reports only status, image ID and private backup paths. Supply
 the root-owned materialization directory generated from the active installation
-projection, the exact reviewed MCP commit and `--mode probe`. After the
-no-fetch tool returns an origin for the user's file ID, rerun with
-`--mode enabled --host-origin <exact reviewed origin>`; the script makes a
-new snapshot of the probe container automatically. The operator performs
-only those two coordinated runs and the intervening host tool call. A
-reported origin alone is insufficient evidence of byte transfer or ingestion.
+projection and the exact reviewed MCP commit. Use `--mode enabled` directly
+for new installations; an optional `--mode probe` can inspect a host file
+descriptor without downloading bytes. Switching from an existing probe
+container to enabled mode makes a new snapshot automatically. A probe result
+alone is insufficient evidence of byte transfer or ingestion.
 
 The adapter downloads the host-issued descriptor into a private bounded spool,
 then streams the original bytes through the internal Gateway binding
