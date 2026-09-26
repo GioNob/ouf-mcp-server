@@ -16,11 +16,7 @@ import (
 )
 
 func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
-	fetcher, err := hostfiles.New([]string{"https://files.example.org"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := NewGovernedHTTPHandlerWithHostFiles(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, fetcher)
+	h, err := NewGovernedHTTPHandlerWithHostFiles(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, hostfiles.New())
 	if err != nil {
 		t.Fatal(err)
 	}
