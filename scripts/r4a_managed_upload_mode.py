@@ -9,8 +9,8 @@ def expected_environment(original: list[str], mode: str, origin: str | None) -> 
     prior_enabled = "MCP_MANAGED_UPLOAD_ENABLED=true" in original
     if "MCP_MANAGED_UPLOAD_ENABLED" in names and not (prior_probe or prior_enabled):
         raise ValueError("Original managed-upload environment is unexpected")
-    if prior_enabled and mode != "enabled":
-        raise ValueError("Enabled upload cannot be disabled by an image rollout")
+    if prior_enabled and mode == "off":
+        raise ValueError("Enabled upload cannot be removed by an implicit image rollout")
     base = [entry for entry in original if entry not in
             ("MCP_MANAGED_UPLOAD_ENABLED=probe", "MCP_MANAGED_UPLOAD_ENABLED=true")]
     if mode == "off":
@@ -20,6 +20,8 @@ def expected_environment(original: list[str], mode: str, origin: str | None) -> 
     if mode == "probe":
         if origin is not None:
             raise ValueError("Host origin must be unknown during the probe")
+        # An explicit probe rollout may replace the failed enabled candidate;
+        # it publishes only the read-only host attachment diagnostic.
         return [*base, "MCP_MANAGED_UPLOAD_ENABLED=probe"]
     if mode != "enabled" or origin is not None:
         raise ValueError("Enabled upload accepts host-provided files without a static origin")
