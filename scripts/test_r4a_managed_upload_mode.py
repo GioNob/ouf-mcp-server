@@ -4,6 +4,21 @@ from scripts.r4a_managed_upload_mode import expected_environment
 
 
 class ManagedUploadEnvironmentTests(unittest.TestCase):
+    def test_first_party_picker_requires_exact_https_path_and_one_mode(self):
+        original = ["MCP_OIDC_CLIENT_ID=ouf-mcp-server", "MCP_MANAGED_UPLOAD_ENABLED=probe"]
+        link = "https://api.ouf-lab.it/trusted-human/managed-files/"
+        expected = ["MCP_OIDC_CLIENT_ID=ouf-mcp-server", "MCP_MANAGED_UPLOAD_ENABLED=picker",
+                    "MCP_MANAGED_FILE_PICKER_URL=" + link]
+        self.assertEqual(expected_environment(original, "picker", None, link), expected)
+        self.assertEqual(expected_environment(expected, "picker", None, link), expected)
+        for invalid in ("http://api.ouf-lab.it/trusted-human/managed-files/",
+                        "https://api.ouf-lab.it/trusted-human/managed-files/?redirect=bad",
+                        "https://api.ouf-lab.it/other"):
+            with self.assertRaises(ValueError):
+                expected_environment(original, "picker", None, invalid)
+        with self.assertRaises(ValueError):
+            expected_environment(expected, "off", None)
+
     def test_opt_in_and_probe_do_not_change_original_environment(self):
         original = ["MCP_OIDC_CLIENT_ID=ouf-mcp-server", "MCP_DATABASE_URL=private"]
         self.assertEqual(expected_environment(original, "off", None), original)
