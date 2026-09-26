@@ -24,18 +24,31 @@ If the provider origin or browser CORS policy prevents the read, the widget
 fails without changing OUF. The explicit probe rollout can replace the failed
 enabled image; `--mode enabled` stays PET-blocked before any mutation.
 
+**Live widget finding, 26 September 2026:** The user deployed the probe from
+`14fccee4aea719ad071b969193d4d9df1c14540d` and saw `BROWSER_FETCH`.
+That error combines rejection by `getFileDownloadUrl`, cross-origin/CSP/redirect
+failure of `fetch`, and response-body read failure; it does not identify one
+cause. The subsequent `cad8d31c0439b6063a7b4e294858f654176ff6ae`
+revision separates those stages but has not been deployed or exercised.
+ChatGPT documents a temporary download URL and illustrates use as an image
+source; that does not promise JavaScript access to response bytes. The browser
+byte bridge is therefore **unproven and not deployable for upload**. Do not
+repeat host-origin allowlist probes or enable direct MCP fetch to work around
+this finding. The current Gateway has no browser-to-Gateway upload ticket
+binding, so even a future successful browser read alone cannot complete R4a.
+
 Status: profile/preview/draft-create bindings are deployed; the upload bridge
 has not passed its live or PET release gate. PET Gateway T25/T28, MCP v1.4
 sections 21 and 38, Source Onboarding v1.6 and Cross-Module Matrix v1.7
 govern this contract. Issue: GioNob/ouf-mcp-server#43.
 
-The VPS currently runs an enabled MCP candidate built from
-`a5d4026f9ae3dfa7c84a488245ccfb2d92ad7657` (image ID
-`sha256:ad4f11eabc83c2a31940386c072769ed7beebe14290b7aca2a3fc9ffa360313c`).
+The VPS currently runs the read-only probe MCP image ID
+`sha256:2a96c291a2ae66f3e51ff8c2369646dc4f7f412321ca8f9c88fab3126ec065fc`
+from `14fccee4aea719ad071b969193d4d9df1c14540d`.
 The three delegated JSON bindings and streaming upload route were installed
 with private rollback snapshots. The actual ChatGPT upload failed on external
 DNS before sending file bytes or creating an asset. The read-only widget
-candidate is not yet deployed.
+candidate is deployed, but did not read the file bytes.
 
 ## Ingress and identity
 
