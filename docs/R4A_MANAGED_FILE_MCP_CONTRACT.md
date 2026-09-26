@@ -10,6 +10,19 @@
 > Agent Host byte bridge or registered Gateway provider binding replaces
 > direct MCP fetch; see Gateway
 > `docs/R4A_CHATGPT_ATTACHMENT_BOUNDARY.md`. Existing upload route
+> installation and passing unit tests do not close this release gate.
+
+The follow-up `--mode probe` candidate adds a read-only ChatGPT widget to
+`source.file.attachment_origin_probe`. It uses the host's
+`getFileDownloadUrl({fileId})` API and attempts a bounded browser read. The
+widget displays only success/failure and byte count; neither bytes nor the
+temporary URL enter MCP tool results or OUF. Its CSP permits the observed
+`*.oaiusercontent.com` provider family for this feasibility check. A passing
+browser read is not an upload: it only establishes that a later browser-to-
+Gateway streaming bridge is technically possible in this ChatGPT surface.
+If the provider origin or browser CORS policy prevents the read, the widget
+fails without changing OUF. The explicit probe rollout can replace the failed
+enabled image; `--mode enabled` stays PET-blocked before any mutation.
 
 Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
 Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
