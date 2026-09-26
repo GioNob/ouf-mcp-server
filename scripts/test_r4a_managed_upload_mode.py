@@ -13,6 +13,12 @@ class ManagedUploadEnvironmentTests(unittest.TestCase):
                          [*original, "MCP_MANAGED_UPLOAD_ENABLED=true",
                           "MCP_HOST_FILE_ORIGINS=https://files.example.org"])
         self.assertEqual(len(original), 2)
+        probe = expected_environment(original, "probe", None)
+        self.assertEqual(expected_environment(probe, "enabled", "https://files.example.org"),
+                         [*original, "MCP_MANAGED_UPLOAD_ENABLED=true",
+                          "MCP_HOST_FILE_ORIGINS=https://files.example.org"])
+        with self.assertRaises(ValueError):
+            expected_environment(probe, "off", None)
 
     def test_origin_gate_rejects_unreviewed_or_network_local_targets(self):
         original = ["MCP_OIDC_CLIENT_ID=ouf-mcp-server"]

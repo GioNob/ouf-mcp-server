@@ -41,6 +41,21 @@ that only the two opt-in environment variables changed; its rollback restores
 the prior MCP container. Neither mode proves that the host's file parameter
 was injected as claimed until the connected ChatGPT tool is exercised.
 
+`scripts/r4a_attachment_rollout.py` bundles the lab sequence into one
+root-run command: it pins both repository trees, makes a private snapshot of
+the current MCP container, verifies the three existing JSON route bodies,
+builds the MCP image, prepares its environment, installs the CSV route if
+absent, swaps MCP and verifies image, readiness and APISIX readback. On an
+error after either mutation it invokes the existing container and route
+restorers. It reports only status, image ID and private backup paths. Supply
+the root-owned materialization directory generated from the active installation
+projection, the exact reviewed MCP commit and `--mode probe`. After the
+no-fetch tool returns an origin for the user's file ID, rerun with
+`--mode enabled --host-origin <exact reviewed origin>`; the script makes a
+new snapshot of the probe container automatically. The operator performs
+only those two coordinated runs and the intervening host tool call. A
+reported origin alone is insufficient evidence of byte transfer or ingestion.
+
 The adapter downloads the host-issued descriptor into a private bounded spool,
 then streams the original bytes through the internal Gateway binding
 `POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP
