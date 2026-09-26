@@ -133,7 +133,7 @@ func registerPickerUploadTool(server *mcp.Server, pickerURL string) {
 		panic(err)
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "source.file.upload",
+		Name:        "source.file.upload",
 		Description: "Start the governed OUF CSV upload. Open the first-party picker URL, choose a local CSV, then provide the resulting asset ID to continue profiling. No chat attachment is used.",
 		InputSchema: &schema,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
