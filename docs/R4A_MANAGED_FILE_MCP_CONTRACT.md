@@ -9,6 +9,15 @@ Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file t
 The human chooses a chat attachment. The Agent Host must prove that it can
 access the attachment bytes for this exact authenticated user and conversation;
 the model cannot synthesize a filesystem path, download URL, or storage ref.
+ChatGPT's documented optional `_meta["openai/fileParams"]` may supply a
+host-resolved `{file_id, download_url, mime_type?, file_name?}` descriptor.
+`download_url` is a short-lived host attachment retrieval credential, not an
+OUF object-store URL or an Onboarding staging reference. The descriptor is
+accepted only from a host-supported file parameter; configure exact approved
+HTTPS origins, disable redirects and bound retrieval to 10 MiB. The private
+MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
+it is not connected to a published upload tool yet. An arbitrary user/tool
+URL is never a file source.
 The attachment adapter transports the original bytes via the public Gateway
 `POST /api/managed-sources/v1/files` with the user's HUMAN token, capability
 `ouf.managed-source.file.upload`, `text/csv`, bounded size and optional exact
@@ -20,7 +29,11 @@ passes the stream to Onboarding. Onboarding revalidates the HUMAN capability,
 computes the hash, persists bytes to governed staging and returns an asset ID.
 The MCP tool result may expose only that asset ID and safe status. Never put
 raw bytes, base64, bearer tokens, secret refs or MinIO URLs in tools/call
-arguments, results, logs or model-visible text. If the connected Agent Host
+arguments, results, logs or model-visible text. The host's file parameter
+may include a temporary `download_url` in the tool argument as specified by
+ChatGPT; it must not be copied into OUF's Gateway envelope, result or logs.
+Before publishing, prove host-controlled fileId/URL provenance and verify
+whether the host exposes that argument to the model. If the connected Agent Host
 cannot provide this attachment adapter, return a bounded explicit
 `ATTACHMENT_BRIDGE_UNAVAILABLE` outcome and keep upload unpublished.
 
