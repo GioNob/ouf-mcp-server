@@ -129,8 +129,30 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 				body, _ := json.Marshal(result.Problem)
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 			}
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}, nil, nil
+			safe, ok := safeUploadAsset(result.Body)
+			if !ok {
+				return errorResult("UPLOAD_OWNER_RESPONSE_INVALID", false), nil, nil
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(safe)}}}, nil, nil
 		})
+}
+
+func safeUploadAsset(body []byte) ([]byte, bool) {
+	var response struct {
+		AssetID string `json:"assetId"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, false
+	}
+	if _, err := uuid.Parse(response.AssetID); err != nil {
+		return nil, false
+	}
+	if response.Status != "STAGED" && response.Status != "PROFILED" && response.Status != "QUARANTINED" {
+		return nil, false
+	}
+	filtered, _ := json.Marshal(map[string]string{"assetId": response.AssetID, "status": response.Status})
+	return filtered, true
 }
 
 type identityKey struct{}

@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,4 +48,17 @@ func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
 		}
 	}
 	t.Fatal("host-enabled upload tool not discovered")
+}
+
+func TestUploadResultProjectsOnlySafeAssetIdentity(t *testing.T) {
+	const asset = `00000000-0000-4000-8000-000000000001`
+	filtered, ok := safeUploadAsset([]byte(`{"assetId":"` + asset + `","status":"STAGED","staging_ref":"object://private","download_url":"https://secret"}`))
+	if !ok || bytes.Contains(filtered, []byte("staging_ref")) || bytes.Contains(filtered, []byte("download_url")) {
+		t.Fatal("upload result leaked owner fields")
+	}
+	for _, bad := range []string{`{"assetId":"other","status":"STAGED"}`, `{"assetId":"` + asset + `","status":"ACTIVE"}`} {
+		if _, ok := safeUploadAsset([]byte(bad)); ok {
+			t.Fatal("invalid upload result accepted")
+		}
+	}
 }
