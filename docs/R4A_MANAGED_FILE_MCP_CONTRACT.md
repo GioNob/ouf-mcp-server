@@ -119,6 +119,10 @@ the result read was denied. The repair separates the app-only status tool,
 marks widget access explicitly and waits for the host's asynchronous
 `toolOutput` before rendering the picker. The local widget simulation passes;
 the actual connected ChatGPT result remains unverified until a new upload.
+The live host continued to render the old `v1` widget after the MCP container
+upgrade (its retired error copy was visible), so the repair publishes a `v2`
+resource URI. Reconnect the OUF app before the next test to refresh both
+widget resource metadata and the app-only status tool descriptor.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
