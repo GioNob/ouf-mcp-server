@@ -155,6 +155,12 @@
       try { reply = await host.call(id); }
       catch (_) { continue; }
       const result = extract(reply);
+      if (result?.status === 'REJECTED') {
+        status.textContent = result.code === 'FORMAT_UNSUPPORTED' ? 'Formato non ancora gestito per il caricamento. Al momento è supportato CSV.' :
+          'Il file deve essere non vuoto e non superare 10 MiB.';
+        height();
+        return;
+      }
       if (reply?.isError || result?.code) {
         status.textContent = 'Impossibile leggere l’esito. L’Asset ID resta visibile nella pagina OUF.';
         return;
