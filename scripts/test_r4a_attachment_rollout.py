@@ -43,6 +43,28 @@ class CoordinatedRollbackTests(unittest.TestCase):
             self.assertTrue(calls[1][0].endswith('deploy_managed_file_ths'))
             self.assertIn('--restore', calls[1][1])
 
+    def test_prepared_state_without_mcp_swap_restores_only_picker_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / 'rollout'
+            folder.mkdir(mode=0o700)
+            state_file = folder / 'picker-rollout-state.json'
+            state_file.write_text(json.dumps({
+                'mode': 'picker', 'phase': 'prepared', 'gateway_commit': rollout.GATEWAY_COMMIT,
+                'mcp_commit': 'a' * 40, 'candidate': str(root / 'candidate'),
+                'picker_backup': str(root / 'picker-backup.json'),
+            }))
+            state_file.chmod(0o600)
+            calls = []
+            with (mock.patch.object(rollout, 'ROOT', root),
+                  mock.patch.object(rollout, 'verify_state_file', return_value=True),
+                  mock.patch.object(rollout, 'archive'),
+                  mock.patch.object(rollout, 'call_module', side_effect=lambda _src, name, *args: calls.append(name)),
+                  contextlib.redirect_stdout(io.StringIO())):
+                rollout.rollback_saved(state_file, root, root)
+            self.assertEqual(calls, ['ops.apisix.deploy_managed_file_ths'])
+            self.assertEqual(json.loads(state_file.read_text())['phase'], 'rolled_back')
+
     def test_picker_candidate_failure_restores_only_new_ui_route_and_original_mcp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
