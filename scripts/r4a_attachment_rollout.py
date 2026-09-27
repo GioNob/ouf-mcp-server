@@ -13,10 +13,11 @@ import subprocess
 import sys
 import tempfile
 
-GATEWAY_COMMIT = "50eaffae9ce16064ca0c1d69aa13ea50169b772f"
+GATEWAY_COMMIT = "a226090e7cf1b5e411e9fa422664fa9b4b05746f"
 PREVIOUS_GATEWAY_COMMIT = "f5d7b0d5580ad1c602d436035c3b9dd7cfec14dd"
+PICKER_GATEWAY_COMMIT = "50eaffae9ce16064ca0c1d69aa13ea50169b772f"
 ROOT = Path("/etc/ouf/deploy-snapshots")
-ROUTE_IDS = {"mcp-managed-file-profile", "mcp-managed-file-preview", "mcp-managed-file-create"}
+ROUTE_IDS = {"mcp-managed-file-profile", "mcp-managed-file-preview", "mcp-managed-file-create", "mcp-managed-file-handoff"}
 ADMIN_KEY = Path("/opt/ouf/secrets/apisix-admin-key")
 
 
@@ -168,8 +169,15 @@ def picker_state(gateway_source, materialization, picker_url, onboarding_revisio
         login_code, current = admin.route("GET", login["id"])
         if login_code not in (200, 404):
             raise Blocked("PICKER_LOGIN_ROUTE_QUERY_FAILED")
-        if login_code == 200 and any(route_value(current).get(k) != v for k, v in login.items()):
-            raise Blocked("PICKER_LOGIN_ROUTE_DRIFT")
+        if login_code == 200:
+            present = route_value(current)
+            if (present.get("uris") != login["uris"] or present.get("methods") != ["GET"] or
+                    present.get("upstream", {}).get("nodes") != {"ouf-onboarding:8080": 1} or
+                    present.get("hosts") or present.get("status") == 0):
+                raise Blocked("PICKER_LOGIN_ROUTE_DRIFT")
+            login_http, _ = admin.curl(login["uris"][0], "GET")
+            if login_http != 302:
+                raise Blocked("PICKER_LOGIN_REDIRECT_FAILED")
         code, current = admin.route("GET", "trusted-human-managed-file-upload")
         route = route_value(current) if code == 200 else {}
         if (route.get("plugins", {}).get("proxy-control") != {"request_buffering": False} or
@@ -218,7 +226,7 @@ def rollback_saved(path, gateway_repo, mcp_repo):
     state = json.loads(path.read_text())
     if (state.get("mode") != "picker" or state.get("phase") not in ("prepared", "active", "mcp_rolled_back") or
             not re.fullmatch(r"[0-9a-f]{40}", state.get("mcp_commit", "")) or
-            state.get("gateway_commit") not in (GATEWAY_COMMIT, PREVIOUS_GATEWAY_COMMIT)):
+            state.get("gateway_commit") not in (GATEWAY_COMMIT, PICKER_GATEWAY_COMMIT, PREVIOUS_GATEWAY_COMMIT)):
         raise Blocked("ROLLOUT_STATE_MISMATCH")
     folder = Path(tempfile.mkdtemp(prefix="r4a-picker-rollback-", dir=ROOT))
     gateway_source, mcp_source = folder / "gateway", folder / "mcp"
