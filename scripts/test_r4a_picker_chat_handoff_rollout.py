@@ -20,13 +20,13 @@ class HandoffRolloutTest(unittest.TestCase):
             calls = []
 
             def gateway(_source, module, *args):
-                calls.append(module)
+                calls.append((module, args))
                 if module == 'tools.materialize_managed_file_mcp':
                     Path(args[-1]).write_bytes(b'new-routes')
                     return ''
                 if '--restore' in args:
                     return 'MANAGED_FILE_MCP_RESTORED\n'
-                return 'BACKUP=' + str(root / 'backup') + '\nMANAGED_FILE_MCP_ACTIVE\n'
+                return 'BACKUP=' + str(root / 'backup' / 'previous.json') + '\nMANAGED_FILE_MCP_ACTIVE\n'
 
             def script(_repo, _commit, path, *args):
                 calls.append(path + ':' + str(args[0]))
@@ -48,7 +48,9 @@ class HandoffRolloutTest(unittest.TestCase):
                 with self.assertRaises(rollout.StepFailed):
                     rollout.main()
             self.assertEqual((materialization / 'mcp-routes.json').read_bytes(), b'previous-routes')
-            self.assertIn('ops.apisix.deploy_managed_file_mcp', calls)
+            self.assertIn(('ops.apisix.deploy_managed_file_mcp',
+                           ('--restore', root / 'backup' / 'previous.json',
+                            '--admin-key', admin_key, '--backup-dir', root)), calls)
             self.assertEqual(calls[-1], 'scripts/r4a_picker_onboarding_rollout.py:rollback')
 
 
