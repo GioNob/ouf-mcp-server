@@ -67,6 +67,7 @@ type GatewayClient struct {
 
 var uploadID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{1,128}$`)
 var uploadHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var uploadHandoff = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type RecoveryClient struct {
 	Endpoint    *url.URL
@@ -128,7 +129,10 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if in.CapabilityID == "ouf.managed-source.file.upload" && in.Upload == nil {
-		return orchestration.GatewayResponse{}, errors.New("managed upload requires a verified stream")
+		var args map[string]string
+		if json.Unmarshal(in.Arguments, &args) != nil || len(args) != 1 || !uploadHandoff.MatchString(args["handoffId"]) {
+			return orchestration.GatewayResponse{}, errors.New("managed upload requires a verified stream or exact handoff")
+		}
 	}
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
@@ -145,7 +149,9 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	case "ouf.managed-source.onboarding.create":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/create"
 	case "ouf.managed-source.file.upload":
-		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/upload"
+		if in.Upload == nil { endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/handoff" } else {
+			endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/upload"
+		}
 	}
 	var reader io.Reader = bytes.NewReader(body)
 	if in.Upload != nil {
