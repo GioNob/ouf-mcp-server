@@ -33,6 +33,10 @@
     try {
       const reply = await host.callTool('source.file.upload', {handoffId: id});
       const raw = reply?.structuredContent ?? JSON.parse(reply?.content?.[0]?.text ?? '{}');
+      if (reply?.isError || raw?.code === 'authorization denied') {
+        status.textContent = 'La chat non è autorizzata a leggere l’esito. L’Asset ID resta visibile nella pagina OUF.';
+        return;
+      }
       if (raw?.status !== 'STAGED' || !/^[0-9a-f-]{36}$/.test(raw.assetId ?? '')) continue;
       status.textContent = 'CSV registrato in OUF. La chat riceve l’esito.';
       if (typeof host.sendFollowUpMessage === 'function') {
