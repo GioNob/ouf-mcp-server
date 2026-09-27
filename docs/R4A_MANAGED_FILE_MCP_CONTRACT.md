@@ -1,4 +1,22 @@
-# R4a — managed-file MCP attachment contract (candidate)
+# R4a — managed-file attachment experiments and picker transition
+
+> **Supersession, 27 September 2026.** The attachment-origin/DNS/browser
+> experiments below are historical and do not describe the live file path.
+> The OUF-controlled HUMAN picker now accepts a locally selected file through
+> Gateway and Onboarding. An operator reported rollout PASS and a real asset
+> `8ec8ae90-808a-4d9e-907c-d56de119e376`; Semantic was published later.
+> This branch still contains the old host-file fetch experiment and remains
+> draft and unmerged; do not enable that adapter. The picker is a projection
+> of the channel-neutral `ouf.managed-source.file.upload` capability.
+> Automatic chat handoff is host-dependent and has not passed a live
+> second-host test. No Ingestion/UDP/search result for the asset is attested.
+> The current cross-module state is in the
+> [PET 1.7 handoff](https://github.com/GioNob/ouf-semantic-registry/blob/codex/r4a-smoke-semantic-inventory/docs/handoffs/OUF_HANDOFF_2026-09-27_R4A.md).
+>
+> The new picker widget uses the installation-bound picker URL and no longer
+> embeds the lab hostname. The historical findings below remain as evidence
+> why direct attachment retrieval is unsuitable, not as next-step commands.
+
 
 > **Live boundary finding, 26 September 2026:** The enabled MCP candidate
 > returned `ATTACHMENT_DNS_UNAVAILABLE` when ChatGPT supplied a real CSV.
