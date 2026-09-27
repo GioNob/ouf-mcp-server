@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const html = fs.readFileSync(new URL('../internal/kernel/picker_handoff.html', import.meta.url), 'utf8');
-const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-assert.ok(script);
+const template = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+assert.ok(template);
+assert.ok(template.includes('__OUF_PICKER_PREFIX__'));
+assert.equal(html.includes('api.ouf-lab.it'), false);
 const id = '11111111-1111-4111-8111-111111111111';
 const assetId = '22222222-2222-4222-8222-222222222222';
-const pickerUrl = 'https://api.ouf-lab.it/trusted-human/managed-files/?handoff=' + id;
-
-async function scenario(mode) {
+async function scenario(mode, origin) {
+  const pickerUrl = origin + '/trusted-human/managed-files/?handoff=' + id;
+  const script = template.replace('__OUF_PICKER_PREFIX__', JSON.stringify(origin + '/trusted-human/managed-files/?handoff='));
   const elements = Object.fromEntries(['status', 'asset', 'open'].map(name => [name, {
     textContent: '', hidden: name !== 'status', scrollHeight: 164
   }]));
@@ -55,6 +57,7 @@ async function scenario(mode) {
     assert.equal(calls.filter(c => c.method === 'ui/message').length, 1);
   }
 }
-await scenario('apps');
-await scenario('chatgpt');
+await scenario('apps', 'https://api.ouf-lab.it');
+await scenario('apps', 'https://gateway.altro-ente.example');
+await scenario('chatgpt', 'https://gateway.altro-ente.example');
 console.log('PICKER_MCP_APPS_AND_CHATGPT_COMPATIBILITY=PASS');
