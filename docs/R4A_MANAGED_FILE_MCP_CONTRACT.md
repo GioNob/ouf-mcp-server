@@ -1,3 +1,5 @@
+> **Live chronology (27 September 2026):** this contract's opening candidate/no-live-deployment description refers to the earlier snapshot. Subsequent picker/MCP/Gateway rollouts reported PASS and a HUMAN upload produced asset `8ec8ae90-808a-4d9e-907c-d56de119e376`; Semantic published the corresponding revision. Verify the current branch and live image before asserting which tool implementation is deployed. The picker is a generic file UX and the OUF capability is channel-neutral; ChatGPT widget handoff is an adapter, not a separate capability. No proof of this asset in Ingestion/UDP/search exists. [Full PET 1.7 handoff](https://github.com/GioNob/ouf-semantic-registry/blob/codex/r4a-smoke-semantic-inventory/docs/handoffs/OUF_HANDOFF_2026-09-27_R4A.md).
+
 # R4a — managed-file MCP attachment contract (candidate)
 
 Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
