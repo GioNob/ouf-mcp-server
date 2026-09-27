@@ -78,13 +78,15 @@ def gateway_module(source, module, *args):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mcp-commit', required=True)
+    p.add_argument('--onboarding-commit', default=ONBOARDING)
     p.add_argument('--onboarding-repo', type=Path, default=Path('/opt/ouf/onboarding'))
     p.add_argument('--gateway-repo', type=Path, default=Path('/opt/ouf/gateway'))
     p.add_argument('--mcp-repo', type=Path, default=Path('/opt/ouf/mcp'))
     args = p.parse_args()
-    if os.geteuid() != 0 or not re.fullmatch(r'[0-9a-f]{40}', args.mcp_commit):
-        p.error('root and an exact MCP commit required')
-    for repo, commit in ((args.onboarding_repo, ONBOARDING),
+    if os.geteuid() != 0 or not all(re.fullmatch(r'[0-9a-f]{40}', value)
+                                      for value in (args.mcp_commit, args.onboarding_commit)):
+        p.error('root and exact MCP/Onboarding commits required')
+    for repo, commit in ((args.onboarding_repo, args.onboarding_commit),
                          (args.gateway_repo, GATEWAY), (args.mcp_repo, args.mcp_commit)):
         pinned(repo, commit)
     if not MATERIALIZATION.is_dir() or not ADMIN_KEY.is_file():
@@ -106,9 +108,9 @@ def main():
         mcp_state = None
         mcp_rollback_uncertain = False
         try:
-            result = run_script(args.onboarding_repo, ONBOARDING,
+            result = run_script(args.onboarding_repo, args.onboarding_commit,
                                 'scripts/r4a_picker_onboarding_rollout.py', 'upgrade',
-                                '--revision', ONBOARDING, '--repo', args.onboarding_repo)
+                                '--revision', args.onboarding_commit, '--repo', args.onboarding_repo)
             onboarding_state = marker(result, 'ROLLBACK_STATE')
             if 'PICKER_CHAT_HANDOFF_UPGRADE=PASS' not in result:
                 raise RuntimeError('ONBOARDING_UPGRADE_UNVERIFIED')
@@ -123,7 +125,7 @@ def main():
                 result = run_script(args.mcp_repo, args.mcp_commit,
                                     'scripts/r4a_attachment_rollout.py', '--mcp-commit',
                                     args.mcp_commit, '--mode', 'picker', '--picker-url', PICKER,
-                                    '--onboarding-revision', ONBOARDING,
+                                    '--onboarding-revision', args.onboarding_commit,
                                     '--materialization', MATERIALIZATION)
             except StepFailed as exc:
                 mcp_rollback_uncertain = 'ROLLBACK=COMPLETE_OR_NOT_NEEDED' not in exc.output
@@ -148,7 +150,7 @@ def main():
                                '--restore', route_backup, '--admin-key', ADMIN_KEY,
                                '--backup-dir', ROOT)
             if onboarding_state:
-                run_script(args.onboarding_repo, ONBOARDING,
+                run_script(args.onboarding_repo, args.onboarding_commit,
                            'scripts/r4a_picker_onboarding_rollout.py', 'rollback',
                            '--state', onboarding_state)
             raise
