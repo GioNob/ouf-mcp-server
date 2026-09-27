@@ -159,10 +159,10 @@ func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Cap
 		panic(err)
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "source.file.upload.status",
+		Name:        "source.file.upload.status",
 		Description: "Read the result of a first-party OUF file selection in the active widget.",
 		InputSchema: &schema,
-		Meta: mcp.Meta{"ui": map[string]any{"visibility": []string{"app"}}, "openai/widgetAccessible": true},
+		Meta:        mcp.Meta{"ui": map[string]any{"visibility": []string{"app"}}, "openai/widgetAccessible": true},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
