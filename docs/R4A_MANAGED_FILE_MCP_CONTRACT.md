@@ -123,6 +123,9 @@ The live host continued to render the old `v1` widget after the MCP container
 upgrade (its retired error copy was visible), so the repair publishes a `v2`
 resource URI. Reconnect the OUF app before the next test to refresh both
 widget resource metadata and the app-only status tool descriptor.
+The widget now requests its intrinsic height after mount and on content
+changes, with a minimum 136-pixel layout so its instruction, button and
+status are visible together in the inline card.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
