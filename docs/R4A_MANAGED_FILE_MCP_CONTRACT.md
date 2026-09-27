@@ -42,21 +42,24 @@ browser `File` and sends it through the existing governed upload capability
 and intake binding after a HUMAN-bound authorization adapter is implemented.
 It requires the human to select the local file a second time if it was already
 attached to chat. The picker is not a second product capability or intake
-endpoint. No browser authorization adapter exists yet; do not advertise a
-working `source.file.upload` until this route is exercised live.
+endpoint. The first-party OUF browser adapter was later deployed and passed
+one live CSV upload on 27 September 2026; the earlier probe finding still
+applies to the ChatGPT-hosted attachment byte bridge.
 
-Status: profile/preview/draft-create bindings are deployed; the upload bridge
-has not passed its live or PET release gate. PET Gateway T25/T28, MCP v1.4
+Status: the first-party picker and existing governed HUMAN upload route created
+asset `55ce7fd2-1893-4d3c-b95d-9c8106c1200a` in the lab. The automatic
+chat handoff remains a candidate pending live widget proof. The separate
+host attachment bridge remains PET-blocked. Profile is currently denied in
+MCP before Gateway dispatch despite a valid configured HUMAN grant, so the
+full profiling and ingestion smoke is still open. PET Gateway T25/T28, MCP v1.4
 sections 21 and 38, Source Onboarding v1.6 and Cross-Module Matrix v1.7
 govern this contract. Issue: GioNob/ouf-mcp-server#43.
 
-The VPS currently runs the read-only probe MCP image ID
-`sha256:2a96c291a2ae66f3e51ff8c2369646dc4f7f412321ca8f9c88fab3126ec065fc`
-from `14fccee4aea719ad071b969193d4d9df1c14540d`.
-The three delegated JSON bindings and streaming upload route were installed
-with private rollback snapshots. The actual ChatGPT upload failed on external
-DNS before sending file bytes or creating an asset. The read-only widget
-candidate is deployed, but did not read the file bytes.
+The former direct-fetch image and read-only probe are historical findings;
+the lab now runs the first-party picker MCP image
+`sha256:d7ea99709684ebaa91619082be0208c05ac7445b429c3af79d25cd5922d66151`
+from `208e5dd0259eb54c0d0ee8c516cc87c14a7ed6ca` until the chat-handoff
+candidate is installed. Route and container rollback snapshots remain private.
 
 ## Ingress and identity
 
@@ -77,9 +80,9 @@ make direct MCP external fetch PET-conformant.
 The first-party picker option sets `MCP_MANAGED_UPLOAD_ENABLED=picker` and an
 HTTPS `MCP_MANAGED_FILE_PICKER_URL` ending exactly in
 `/trusted-human/managed-files/`. It exposes the **same** `source.file.upload`
-tool, with no ChatGPT attachment parameter. A call returns the picker link and
-`AWAITING_FILE_SELECTION`. The human signs in on OUF, chooses a local CSV, and
-returns the asset ID displayed there to the chat; profile, preview and DRAFT
+tool, with no ChatGPT attachment parameter. The deployed version returns the
+picker link and `AWAITING_FILE_SELECTION`; the human currently copies the
+Asset ID displayed after upload into chat. Profile, preview and DRAFT
 creation use the existing tools. The file bytes traverse the existing Gateway
 HUMAN upload route and Onboarding; MCP never downloads the host URL. This mode
 requires the separately deployed OUF picker page, its THS login and scope, and
@@ -93,6 +96,18 @@ Onboarding's pinned image,
 scope and database-backup cutover runs first; the two-stage procedure is in
 Onboarding `docs/R4A_FIRST_PARTY_PICKER_ROLLOUT.md`. A live HUMAN login and CSV
 transfer remain the release proof.
+
+The chat-handoff candidate keeps that same tool and path. It gives the picker
+a random handoff ID. Onboarding keeps the staged Asset ID and its HUMAN owner
+for at most 30 minutes in a bounded ephemeral map. The ChatGPT widget calls
+the same tool with `handoffId`; MCP authorizes the existing upload capability,
+and the Gateway signs an owner-bound receipt for the exact internal result
+route. The widget posts a follow-up message containing only the Asset ID.
+The browser session token and CSV never enter MCP. If the widget is closed or
+Onboarding restarts, the picker still displays the ID for manual recovery.
+`scripts/r4a_picker_chat_handoff_rollout.py` coordinates the lab upgrade and
+rollback without a DB migration or new product capability. A real ChatGPT
+widget upload is required to validate the return path.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
