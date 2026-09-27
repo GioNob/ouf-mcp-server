@@ -136,7 +136,7 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "source.file.upload",
-		Description: "Start the governed OUF CSV upload. Open the first-party picker URL and choose a local CSV. The upload result returns to this chat automatically while the widget remains open. No chat attachment is used.",
+		Description: "Start the governed OUF CSV upload. Open the first-party picker URL and choose a local CSV. MCP Apps hosts can request a chat follow-up; on other MCP clients call source.file.upload.status with the returned handoffId after the user says the upload is complete. No chat attachment is used.",
 		InputSchema: &schema,
 		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI, "visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
@@ -151,8 +151,8 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 	})
 }
 
-// This UI-only read uses the upload capability's existing governed execution.
-// It has no widget template, so polling cannot launch a second picker.
+// This result read uses the upload capability's existing governed execution.
+// It has no widget template, so calling it cannot launch a second picker.
 func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`), &schema); err != nil {
@@ -160,9 +160,9 @@ func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Cap
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "source.file.upload.status",
-		Description: "Read the result of a first-party OUF file selection in the active widget.",
+		Description: "Read the result of a first-party OUF file selection using the handoffId returned by source.file.upload. Call after the user completes the picker; PENDING means the file has not arrived yet. The owner is checked by OUF.",
 		InputSchema: &schema,
-		Meta:        mcp.Meta{"ui": map[string]any{"visibility": []string{"app"}}, "openai/widgetAccessible": true},
+		Meta:        mcp.Meta{"ui": map[string]any{"visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
