@@ -127,6 +127,25 @@ The widget now requests its intrinsic height after mount and on content
 changes, with a minimum 136-pixel layout so its instruction, button and
 status are visible together in the inline card.
 
+## Host portability gate
+
+The current `v2` picker widget is a ChatGPT compatibility prototype: its
+JavaScript uses `window.openai.toolOutput`, `callTool`, `openExternal`,
+`notifyIntrinsicHeight` and `sendFollowUpMessage`. The resource URI and
+`_meta.ui.resourceUri` are MCP Apps standard, but these JavaScript calls are
+not a portable MCP Apps implementation. Do not describe the automatic chat
+handoff or widget height as verified across MCP hosts based on ChatGPT alone.
+
+The portable widget must use the MCP Apps `ui/initialize` handshake,
+`ui/notifications/tool-result`, `tools/call`, `ui/open-link`,
+`ui/notifications/size-changed` and `ui/message`, preferably through the
+official view SDK. Keep `source.file.upload` as the sole product upload
+capability and the status read app-only. Test with at least two independent
+MCP Apps hosts before closing the portable UI gate. An MCP client without
+MCP Apps can still use the tool's first-party picker URL and the Asset ID
+shown on OUF; MCP alone does not specify an embedded widget or automatic
+message injection into a conversation.
+
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
 replacement for the host file parameter.
