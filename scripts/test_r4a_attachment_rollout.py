@@ -13,6 +13,26 @@ from scripts import r4a_attachment_rollout as rollout
 
 
 class CoordinatedRollbackTests(unittest.TestCase):
+    def test_previous_picker_rollout_still_uses_its_original_gateway_revision_on_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_file = root / 'rollout' / 'picker-rollout-state.json'
+            state_file.parent.mkdir(mode=0o700)
+            state_file.write_text(json.dumps({
+                'mode': 'picker', 'phase': 'mcp_rolled_back',
+                'gateway_commit': rollout.PREVIOUS_GATEWAY_COMMIT,
+                'mcp_commit': 'a' * 40, 'picker_backup': str(root / 'old-picker.json'),
+            }))
+            state_file.chmod(0o600)
+            archives = []
+            with (mock.patch.object(rollout, 'ROOT', root),
+                  mock.patch.object(rollout, 'verify_state_file', return_value=True),
+                  mock.patch.object(rollout, 'archive', side_effect=lambda repo, revision, dest: archives.append(revision)),
+                  mock.patch.object(rollout, 'call_module'),
+                  contextlib.redirect_stdout(io.StringIO())):
+                rollout.rollback_saved(state_file, root, root)
+            self.assertEqual(archives, [rollout.PREVIOUS_GATEWAY_COMMIT, 'a' * 40])
+
     def test_saved_picker_state_restores_mcp_then_gateway_once(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
