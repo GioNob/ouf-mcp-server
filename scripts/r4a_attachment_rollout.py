@@ -198,9 +198,14 @@ def save_state(path, state):
         os.fsync(stream.fileno())
 
 
+def verify_state_file(path):
+    return (path.parent.parent == ROOT and path.name == "picker-rollout-state.json" and
+            not path.is_symlink() and path.stat().st_uid == 0 and
+            path.stat().st_mode & 0o777 == 0o600)
+
+
 def rollback_saved(path, gateway_repo, mcp_repo):
-    if (path.parent.parent != ROOT or path.name != "picker-rollout-state.json" or
-            path.is_symlink() or path.stat().st_uid != 0 or path.stat().st_mode & 0o777 != 0o600):
+    if not verify_state_file(path):
         raise Blocked("ROLLOUT_STATE_UNSAFE")
     state = json.loads(path.read_text())
     if (state.get("mode") != "picker" or state.get("phase") not in ("active", "mcp_rolled_back") or
