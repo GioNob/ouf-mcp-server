@@ -170,6 +170,12 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.Upload != nil && (in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Reader == nil || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024) {
 		return Result{}, fmt.Errorf("invalid governed upload")
 	}
+	if in.CapabilityID == "ouf.managed-source.file.upload" && in.Upload == nil {
+		var args map[string]string
+		if json.Unmarshal(in.Arguments, &args) != nil || len(args) != 1 || uuid.Validate(args["handoffId"]) != nil {
+			return Result{}, fmt.Errorf("invalid managed upload handoff")
+		}
+	}
 	resource := in.Resource
 	if resource.TenantID == "" {
 		resource.TenantID = in.Identity.TenantID
