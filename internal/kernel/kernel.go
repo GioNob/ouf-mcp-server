@@ -137,7 +137,7 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 		Name:        "source.file.upload",
 		Description: "Start the governed OUF CSV upload. Open the first-party picker URL and choose a local CSV. The upload result returns to this chat automatically while the widget remains open. No chat attachment is used.",
 		InputSchema: &schema,
-		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI}},
+		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI}},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
