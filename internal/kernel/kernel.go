@@ -111,6 +111,7 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			if service != nil && pickerURL != "" {
 				registerPickerUploadWidget(server, pickerURL)
 				registerPickerUploadTool(server, capability, snapshot, service, pickerURL)
+				registerPickerHandoffStatusTool(server, capability, snapshot, service)
 			} else if service != nil && originProbe {
 				registerHostOriginProbe(server, capability.InputSchema)
 			} else if service != nil && fetcher != nil {
@@ -130,32 +131,51 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 
 func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, pickerURL string) {
 	var schema jsonschema.Schema
-	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"properties":{"handoffId":{"type":"string","format":"uuid"}}}`), &schema); err != nil {
+	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"properties":{}}`), &schema); err != nil {
 		panic(err)
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "source.file.upload",
 		Description: "Start the governed OUF CSV upload. Open the first-party picker URL and choose a local CSV. The upload result returns to this chat automatically while the widget remains open. No chat attachment is used.",
 		InputSchema: &schema,
-		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI}},
+		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI, "visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
 			return errorResult("UNAUTHENTICATED", false), nil, nil
 		}
-		if id, present := input["handoffId"]; present {
-			value, ok := id.(string)
-			if !ok || uuid.Validate(value) != nil {
-				return errorResult("HANDOFF_ID_INVALID", false), nil, nil
-			}
-			args, _ := json.Marshal(map[string]string{"handoffId": value})
-			checksum, _ := snapshot.Checksum()
-			return invoke(ctx, capability, checksum, args, service, 1, 4096)
-		}
 		id := uuid.NewString()
 		url := pickerURL + "?handoff=" + id
 		result := map[string]any{"status": "AWAITING_FILE_SELECTION", "pickerUrl": url, "handoffId": id}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un CSV. Torna alla chat dopo il caricamento; l'esito apparirà qui automaticamente."}}, StructuredContent: result}, nil, nil
+	})
+}
+
+// This UI-only read uses the upload capability's existing governed execution.
+// It has no widget template, so polling cannot launch a second picker.
+func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`), &schema); err != nil {
+		panic(err)
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "source.file.upload.status",
+		Description: "Read the result of a first-party OUF file selection in the active widget.",
+		InputSchema: &schema,
+		Meta: mcp.Meta{"ui": map[string]any{"visibility": []string{"app"}}, "openai/widgetAccessible": true},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
+		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
+			return errorResult("UNAUTHENTICATED", false), nil, nil
+		}
+		value, ok := input["handoffId"].(string)
+		if !ok || uuid.Validate(value) != nil {
+			return errorResult("HANDOFF_ID_INVALID", false), nil, nil
+		}
+		args, _ := json.Marshal(map[string]string{"handoffId": value})
+		checksum, _ := snapshot.Checksum()
+		return invoke(ctx, capability, checksum, args, service, 1, 4096)
 	})
 }
 
