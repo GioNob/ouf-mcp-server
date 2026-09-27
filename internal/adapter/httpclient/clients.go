@@ -149,7 +149,9 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	case "ouf.managed-source.onboarding.create":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/create"
 	case "ouf.managed-source.file.upload":
-		if in.Upload == nil { endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/handoff" } else {
+		if in.Upload == nil {
+			endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/handoff"
+		} else {
 			endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/upload"
 		}
 	}
