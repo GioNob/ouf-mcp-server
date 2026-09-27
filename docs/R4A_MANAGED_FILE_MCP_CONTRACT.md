@@ -142,10 +142,12 @@ HTTP 500 because Gateway's generated managed-file Lua omitted
 `OWNER_KEY_ENV`; the four-route repair from Gateway
 `e649d3e3b85ecfcee5aeaa89c57863c5ecd92d28` was applied with a rollback
 snapshot. A fresh upload then returned Asset ID
-`2b630dbb-5397-485c-95d2-0c4ecc431303` to the chat through
-`sendFollowUpMessage`. ChatGPT presented an **Invia** confirmation to the
-user before sending the widget-authored prompt; the action is visible and
-requires a user click on this host. `source.file.profile` queued job
+`2b630dbb-5397-485c-95d2-0c4ecc431303` in an app-authored follow-up
+turn through `sendFollowUpMessage`. ChatGPT showed an **Invia** confirmation;
+after clicking it, the user reported that the prompt did **not** visibly
+appear in the chat, even though the model received the app turn and continued.
+The host callback is not proof of visible delivery. The widget must keep the
+Asset ID visible and never claim that a message appeared in chat. `source.file.profile` queued job
 `9bb7f30e-5e96-4888-85ea-90a6af0dfc71`, which succeeded with profile
 `675c5984-b3ed-4c62-a5e8-733b93b3a542`; redacted preview showed eight
 rows, two columns (`cinema`, `indirizzo`). A fourth MCP call in the same
@@ -155,22 +157,28 @@ not of DRAFT approval, Semantic/Registry, Ingestion, UDP or host portability.
 
 ## Host portability gate
 
-The current `v2` picker widget is a ChatGPT compatibility prototype: its
-JavaScript uses `window.openai.toolOutput`, `callTool`, `openExternal`,
-`notifyIntrinsicHeight` and `sendFollowUpMessage`. The resource URI and
-`_meta.ui.resourceUri` are MCP Apps standard, but these JavaScript calls are
-not a portable MCP Apps implementation. Do not describe the automatic chat
-handoff or widget height as verified across MCP hosts based on ChatGPT alone.
+The `v3` picker widget uses MCP Apps JSON-RPC over `postMessage` as its
+primary host interface: `ui/initialize`, `ui/notifications/tool-result`,
+`tools/call`, `ui/open-link`, `ui/notifications/size-changed`, and
+`ui/message`. A small `window.openai` compatibility adapter supports
+ChatGPT hosts that have not negotiated MCP Apps; the picker state machine and
+the governed upload path do not depend on that adapter. The URI changed to
+`ui://ouf/managed-file-upload-handoff-v3.html` to avoid stale host cache.
+`scripts/test_picker_portability.mjs` simulates both transports and runs in
+CI. Actual UI behavior remains unverified on two independent MCP Apps hosts;
+do not close the portability gate from this simulation.
 
-The portable widget must use the MCP Apps `ui/initialize` handshake,
-`ui/notifications/tool-result`, `tools/call`, `ui/open-link`,
-`ui/notifications/size-changed` and `ui/message`, preferably through the
-official view SDK. Keep `source.file.upload` as the sole product upload
-capability and the status read app-only. Test with at least two independent
-MCP Apps hosts before closing the portable UI gate. An MCP client without
-MCP Apps can still use the tool's first-party picker URL and the Asset ID
-shown on OUF; MCP alone does not specify an embedded widget or automatic
-message injection into a conversation.
+The widget displays the Asset ID itself before asking the host to add a
+message. A successful `ui/message` response says only that the host accepted
+the request; the host may ask for consent or defer how it presents the
+message. The widget therefore never says the message is visible in chat.
+The status read `source.file.upload.status` remains an owner-checked read
+of the existing upload capability and is now visible to both models and
+MCP Apps. Plain MCP clients can return the OUF picker URL and handoff ID;
+after the human says the upload is complete, the model can fetch the Asset ID
+through that status tool. No manual Asset ID copy is needed on such clients.
+Base MCP does not require embedded widgets or unsolicited chat messages.
+Keep `source.file.upload` as the sole product upload capability.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
