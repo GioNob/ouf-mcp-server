@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,7 +23,11 @@ class HandoffRolloutTest(unittest.TestCase):
             def gateway(_source, module, *args):
                 calls.append((module, args))
                 if module == 'tools.materialize_managed_file_mcp':
-                    Path(args[-1]).write_bytes(b'new-routes')
+                    marker = 'local OWNER_KEY_ENV = "OUF_AUTHORIZATION_OWNER_KEY"\n'
+                    Path(args[-1]).write_text(json.dumps({'routes': [
+                        {'id': 'mcp-managed-file-' + name,
+                         'plugins': {'serverless-post-function': {'functions': [marker]}}}
+                        for name in ('profile', 'preview', 'create', 'handoff')]}))
                     return ''
                 if '--restore' in args:
                     return 'MANAGED_FILE_MCP_RESTORED\n'
