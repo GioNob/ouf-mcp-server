@@ -1,95 +1,73 @@
-> **Live chronology (27 September 2026):** this contract's opening candidate/no-live-deployment description refers to the earlier snapshot. Subsequent picker/MCP/Gateway rollouts reported PASS and a HUMAN upload produced asset `8ec8ae90-808a-4d9e-907c-d56de119e376`; Semantic published the corresponding revision. Verify the current branch and live image before asserting which tool implementation is deployed. The picker is a generic file UX and the OUF capability is channel-neutral; ChatGPT widget handoff is an adapter, not a separate capability. No proof of this asset in Ingestion/UDP/search exists. [Full PET 1.7 handoff](https://github.com/GioNob/ouf-semantic-registry/blob/codex/r4a-smoke-semantic-inventory/docs/handoffs/OUF_HANDOFF_2026-09-27_R4A.md).
+# R4a — managed file via MCP e picker OUF
 
-# R4a — managed-file MCP attachment contract (candidate)
+Stato attestato al 27 settembre 2026: l'operatore ha riportato rollout
+Onboarding/MCP/Gateway in modalità PICKER, upload HUMAN riuscito e Asset ID
+`8ec8ae90-808a-4d9e-907c-d56de119e376`. Semantic ha poi pubblicato
+la revisione `51706bed-81e4-4306-aca1-70119821727d`. Non è attestato
+che questo asset sia arrivato a Ingestion, UDP o search: **R-SMOKE OPEN**.
+Questo documento descrive il contratto di prodotto e l'evidenza disponibile;
+non certifica che il codice di questa branch coincida con l'immagine VPS.
+Verificare immagine/revisione live prima di un nuovo rollout.
 
-Status: candidate profile/preview/draft-create and opt-in upload tool, no live deployment. PET Gateway T25, MCP v1.4 §21,
-Source Onboarding v1.6 and Cross-Module Matrix v1.7 govern this contract.
-Issue: GioNob/ouf-mcp-server#43. The current *deployed* plugin exposes no file tools.
+[Handoff completo PET 1.7](https://github.com/GioNob/ouf-semantic-registry/blob/codex/r4a-smoke-semantic-inventory/docs/handoffs/OUF_HANDOFF_2026-09-27_R4A.md).
+Autorità: MCP PET v1.4 §21, Gateway PET v1.5 T25,
+Source Onboarding PET v1.6 e Cross-Module Alignment Matrix v1.7.
 
-The live VPS image `ouf-mcp:r4a-8599843` corresponds to commit
-`85998435c0fb3ea1aa5264eb0751d2b7c69b1b3c`. The attachment candidate
-branched before 41 live commits, so deploying that candidate image directly
-would remove existing MCP behavior. A local integration branch based on the
-live commit retains `urban.object.search` and adds the four managed-file
-capabilities. Its upload remains disabled by default; the integration is
-not deployed or verified on the VPS. The live preflight found upload disabled,
-host origins unset and all four internal managed-file routes absent.
+## Contratto neutrale rispetto al chatbot
 
-## Ingress and identity
+`source.file.upload` è la capability/tool di proposta e creazione asincrona
+per un file gestito. Il client MCP apre il picker OUF per la selezione del
+**file**, senza richiedere che l'utente dichiari CSV. Onboarding rileva e
+profila il formato; CSV, XLSX e file GIS seguono le rispettive regole PET;
+un formato non supportato produce un errore governato. Il flusso non esige
+che l'utente copi l'Asset ID in chat. L'adattatore di handoff può variare
+secondo l'host MCP, ma non cambia capability, permessi o owner.
 
-The human chooses a chat attachment. The Agent Host must prove that it can
-access the attachment bytes for this exact authenticated user and conversation;
-the model cannot synthesize a filesystem path, download URL, or storage ref.
-ChatGPT's documented optional `_meta["openai/fileParams"]` may supply a
-host-resolved `{file_id, download_url, mime_type?, file_name?}` descriptor.
-`download_url` is a short-lived host attachment retrieval credential, not an
-OUF object-store URL or an Onboarding staging reference. The descriptor is
-accepted only from a host-supported file parameter; configure exact approved
-HTTPS origins, disable redirects and bound retrieval to 10 MiB. The private
-MCP adapter `internal/adapter/hostfiles` implements that constrained spool;
-`source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
-when `MCP_MANAGED_UPLOAD_ENABLED=true` and `MCP_HOST_FILE_ORIGINS` lists exact
-approved HTTPS origins. It is not enabled in the deployed plugin. An arbitrary user/tool
-URL is never a file source.
-The adapter downloads the host-issued descriptor into a private bounded spool,
-then streams the original bytes through the internal Gateway binding
-`POST /internal/capabilities/v1/execute/managed.file/upload`, using the MCP
-workload token and a Gateway-signed HUMAN delegation. Only file ID, byte count
-and SHA-256 enter the governed admission fingerprint; the URL remains in
-request memory. Gateway signs those headers into a separate owner receipt;
-Onboarding checks that receipt and independently hashes and counts the stream.
-The public HUMAN route remains a separate channel for a direct human client.
+Il browser HUMAN raggiunge la route pubblica OUF tramite Gateway e THS;
+MCP invoca le route interne autorizzate tramite Gateway con workload token
+e contesto HUMAN delegato firmato. Il Gateway verifica l'identità e lo
+scope della capability; Onboarding verifica ricevuta, tenant, owner e
+risorsa. Il frontend, MCP e gli altri client usano la stessa capability
+governata. Nessuna credenziale MinIO, URL storage o byte/base64 del file
+entra negli argomenti o nei risultati visibili al modello. Il picker non
+autorizza un'approvazione HUMAN attraverso `tools/call`.
 
-Gateway verifies workload, delegated HUMAN scope, size and media type before
-passing the stream to Onboarding. Onboarding checks the delegated HUMAN owner
-receipt, computes the hash, persists bytes to governed staging and returns an asset ID.
-The MCP tool result may expose only that asset ID and safe status. Never put
-raw bytes, base64, bearer tokens, secret refs or MinIO URLs in tools/call
-arguments, results, logs or model-visible text. The host's file parameter
-may include a temporary `download_url` in the tool argument as specified by
-ChatGPT; it must not be copied into OUF's Gateway envelope, result or logs.
-Before enabling, prove host-controlled fileId/URL provenance and verify
-whether the host exposes that argument to the model. If the connected Agent Host
-cannot provide this attachment adapter, return a bounded explicit
-`ATTACHMENT_BRIDGE_UNAVAILABLE` outcome and keep upload unpublished.
+L'URL di una pagina picker e la route di handoff non sono scorciatoie per
+pubblicare o attivare una fonte. Non recuperare automaticamente allegati
+ChatGPT da host `oaiusercontent.com` o da URL proposti dall'agente.
+Il vecchio esperimento con `_meta["openai/fileParams"]`, origini esatte
+e spool dell'allegato è conservato nella cronologia Git di questo file;
+non è il contratto UX corrente. Un host che non supporta il widget può
+richiedere un adattatore equivalente, senza modificare l'owner contract.
 
-MCP PET `source.file.upload` is a proposal/async-create tool identity; Gateway
-T25 `ouf.managed-source.file.upload` is the channel-neutral execution
-capability. Map these in a versioned manifest; do not equate an MCP tool name
-with a distinct authorization grant. The opt-in remains off until the host
-descriptor and APISIX streaming runtime are proven live.
+## Dall'asset all'ingestione
 
-## After upload
+| Operazione | Owner | Condizione |
+| --- | --- | --- |
+| Upload `source.file.upload` | Onboarding | HUMAN autorizzato; Gateway streaming bounded; asset e digest governati |
+| Profile | Onboarding | Asset owner, scope `ouf.managed-source.file.profile`, job idempotente |
+| Preview | Onboarding | Profilo redatto, scope `ouf.managed-source.preview` |
+| Create DRAFT | Onboarding | Mapping proposto, riferimenti Semantic fissati, `ouf.managed-source.onboarding.create`; nessuna activation implicita |
+| Review/approve/publish | THS e owner del dominio | Challenge esatta, verifica HUMAN e backend owner |
+| Ingest | Ingestion | Solo PublishedConfigurationBundle compatibile e ACTIVE |
+| Resolve/serve | UDP | Identità canonica, review durevole quando ambigua, search autorizzata |
 
-| Action | Tool result/input | Authoritative owner | Gate |
-| --- | --- | --- | --- |
-| Profile | `assetId` input; opaque `jobId` result | Onboarding | HUMAN delegation, `ouf.managed-source.file.profile`, idempotency |
-| Preview | `assetId` and `profileId`; redacted bounded result | Onboarding | HUMAN delegation, `ouf.managed-source.preview`, owner redaction |
-| Create onboarding | explicit profile, field decisions and pinned semantic refs; bounded DRAFT identity | Onboarding | `ouf.managed-source.onboarding.create`; owner-bound idempotency; no implicit approval |
-| Approve/activate | exact diff/hash challenge, direct THS HUMAN call | Onboarding/THS | no MCP commit tool |
-| Ingest | `assetId`/approved bundle reference | Ingestion | only compatible ACTIVE PublishedConfigurationBundle |
-| Discover | bounded search arguments | UDP | governed Gateway search; no SQL fixture |
+Per la specifica identità del file, il DRAFT
+`managed-cinema-8ec8ae90` è inattivo: la semantica UDP generale è ancora
+un gate. La PR UDP #34 gestisce la review per record e rifiuta
+`resolution.weighted` non eseguito; issue #35 richiede il motore class-neutral.
 
-Each tool uses the established MCP workload token plus Gateway-minted short
-HUMAN delegation proof. Gateway checks workload and proof, exact capability,
-tenant, subject, correlation, attempt and idempotency. The owner validates a
-signed receipt and makes the fine-grained resource decision; service identity
-alone never becomes HUMAN authority. File profile/preview bindings require
-new exact internal routes and owner handlers; public HUMAN routes do not by
-themselves implement an MCP binding. A separate ingestion command remains
-conditional on the ACTIVE bundle and Authorization policy.
+## Evidenza di release ancora necessaria
 
-## Release evidence
-
-1. Tests show the same capability works via attachment adapter and a second
-   authorized channel, with identical scope/owner decisions.
-2. Rejected cases: forged handle, arbitrary URL, altered hash, missing human
-   token, wrong tenant, expired delegation, wrong asset owner, oversized or
-   unsupported file, duplicate command, inactive semantic bundle.
-3. Live plugin discovery contains only the reviewed tools; exact CSV bytes
-   arrive at Onboarding via Gateway, then eight rows/two columns appear in
-   a redacted profile. The Semantic/THS, Ingestion, UDP and search steps are
-   separately recorded. A server-side HTTP smoke is not this acceptance.
-4. Gateway T25 streaming and cross-network verified transport gates remain
-   independent (GioNob/ouf-api-gateway#52). Do not deploy this flow until
-   all three gate families pass.
+1. Test del picker/handoff con due client compatibili, stesso owner contract,
+   scope e decisione. Il comportamento concreto della finestra ChatGPT
+   non è assunto come comportamento standard di tutti gli host.
+2. Route prodotto: early bytes prima della fine del client; 413 senza
+   asset parziale, limiti di risorse, media/checksum/auth negativi,
+   idempotenza, owner receipt e rollback snapshot.
+3. Dall'asset reale: profilo, mapping semantico approvato, DRAFT approvato
+   e ACTIVE, run Ingestion, durable ACK, oggetti UDP e search tramite
+   Gateway. Un upload riuscito e una pubblicazione Semantic separata
+   non chiudono questo ciclo.
+4. Recupero, rete/TLS tra host distinti, retention e audit PET restano
+   gate propri. Non presentare un PASS di installer o CI come prova E2E.
