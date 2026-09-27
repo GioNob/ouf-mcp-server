@@ -100,14 +100,25 @@ transfer remain the release proof.
 The chat-handoff candidate keeps that same tool and path. It gives the picker
 a random handoff ID. Onboarding keeps the staged Asset ID and its HUMAN owner
 for at most 30 minutes in a bounded ephemeral map. The ChatGPT widget calls
-the same tool with `handoffId`; MCP authorizes the existing upload capability,
+the app-only, read-only data tool `source.file.upload.status` with `handoffId`;
+this tool is an internal result read of the same governed upload capability,
+not another product capability. MCP authorizes the existing upload capability,
 and the Gateway signs an owner-bound receipt for the exact internal result
 route. The widget posts a follow-up message containing only the Asset ID.
 The browser session token and CSV never enter MCP. If the widget is closed or
 Onboarding restarts, the picker still displays the ID for manual recovery.
 `scripts/r4a_picker_chat_handoff_rollout.py` coordinates the lab upgrade and
 rollback without a DB migration or new product capability. A real ChatGPT
-widget upload is required to validate the return path.
+widget upload is required to validate the return path. ChatGPT cannot keep the
+initial model turn open while the human uses an external picker; the widget
+remains waiting and posts the result into chat when it arrives.
+
+The first live widget test showed that polling the widget-producing upload
+tool remounted a second widget without the original picker context and that
+the result read was denied. The repair separates the app-only status tool,
+marks widget access explicitly and waits for the host's asynchronous
+`toolOutput` before rendering the picker. The local widget simulation passes;
+the actual connected ChatGPT result remains unverified until a new upload.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
