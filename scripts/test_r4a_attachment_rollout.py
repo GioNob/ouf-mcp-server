@@ -32,6 +32,7 @@ class CoordinatedRollbackTests(unittest.TestCase):
             def fake_module(source, module, *args):
                 calls.append((module, args))
             with (mock.patch.object(rollout, 'ROOT', root),
+                  mock.patch.object(rollout, 'verify_state_file', return_value=True),
                   mock.patch.object(rollout, 'archive'),
                   mock.patch.object(rollout, 'call_module', side_effect=fake_module),
                   contextlib.redirect_stdout(io.StringIO())):
