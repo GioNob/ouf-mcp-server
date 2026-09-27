@@ -13,6 +13,35 @@ from scripts import r4a_attachment_rollout as rollout
 
 
 class CoordinatedRollbackTests(unittest.TestCase):
+    def test_saved_picker_state_restores_mcp_then_gateway_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / 'rollout'
+            folder.mkdir(mode=0o700)
+            state_file = folder / 'picker-rollout-state.json'
+            state_file.write_text(json.dumps({
+                'mode': 'picker', 'phase': 'active', 'gateway_commit': rollout.GATEWAY_COMMIT,
+                'mcp_commit': 'a' * 40, 'snapshot': str(root / 'snapshot.json'),
+                'candidate': str(root / 'candidate'), 'tag': 'ouf-mcp:r4a-aaaaaaa',
+                'image_id': 'sha256:synthetic', 'backup_name': 'ouf-mcp-r4a-rollback-test',
+                'picker_url': 'https://api.ouf-lab.it/trusted-human/managed-files/',
+                'picker_backup': str(root / 'picker-backup.json'),
+            }))
+            state_file.chmod(0o600)
+            calls = []
+            def fake_module(source, module, *args):
+                calls.append((module, args))
+            with (mock.patch.object(rollout, 'ROOT', root),
+                  mock.patch.object(rollout, 'archive'),
+                  mock.patch.object(rollout, 'call_module', side_effect=fake_module),
+                  contextlib.redirect_stdout(io.StringIO())):
+                rollout.rollback_saved(state_file, root, root)
+            self.assertEqual(json.loads(state_file.read_text())['phase'], 'rolled_back')
+            self.assertTrue(calls[0][0].endswith('rollout_mcp_runtime'))
+            self.assertIn('--rollback', calls[0][1])
+            self.assertTrue(calls[1][0].endswith('deploy_managed_file_ths'))
+            self.assertIn('--restore', calls[1][1])
+
     def test_picker_candidate_failure_restores_only_new_ui_route_and_original_mcp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
