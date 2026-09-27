@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rollback-backed lab rollout; direct-fetch enablement is PET-blocked."""
+"""Rollback-backed lab rollout; direct MCP fetch remains PET-blocked."""
 
 import argparse
 import contextlib
@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-GATEWAY_COMMIT = "17aee8cad85b00b8551e4a3e0f68ada5e307deff"
+GATEWAY_COMMIT = "f5d7b0d5580ad1c602d436035c3b9dd7cfec14dd"
 ROOT = Path("/etc/ouf/deploy-snapshots")
 ROUTE_IDS = {"mcp-managed-file-profile", "mcp-managed-file-preview", "mcp-managed-file-create"}
 ADMIN_KEY = Path("/opt/ouf/secrets/apisix-admin-key")
@@ -132,12 +132,55 @@ def route_state(gateway_source, materialization):
         admin.close()
 
 
-def mcp_args(snapshot, candidate, tag, image_id, backup_name, mode, origin):
+def picker_state(gateway_source, materialization, picker_url, onboarding_revision):
+    runtime = json.loads((materialization / "runtime.json").read_text())
+    public = runtime["x-ouf-installation"]["publicApiBaseUrl"]
+    if picker_url != public.rstrip("/") + "/trusted-human/managed-files/":
+        raise Blocked("PICKER_PUBLIC_ORIGIN_MISMATCH")
+    live = json.loads(command(["docker", "inspect", "ouf-onboarding"]))[0]
+    env = dict(entry.partition("=")[::2] for entry in live["Config"]["Env"])
+    overlay = json.loads(env.get("SPRING_APPLICATION_JSON", "{}"))
+    scopes = overlay.get("spring", {}).get("security", {}).get("oauth2", {}).get("client", {}).get("registration", {}).get("ouf-ths", {}).get("scope", [])
+    url = overlay.get("ouf", {}).get("managed-file-picker", {}).get("gateway-upload-url")
+    if (not live["State"]["Running"] or
+            live["Config"].get("Labels", {}).get("org.opencontainers.image.revision") != onboarding_revision or
+            url != "http://ouf-apisix:9080/api/managed-sources/v1/files" or
+            "ouf.managed-source.file.upload" not in scopes or "openid" not in scopes):
+        raise Blocked("ONBOARDING_PICKER_RUNTIME_NOT_READY")
+    output = materialization / "picker-route.json"
+    call_module(gateway_source, "tools.materialize_managed_file_ths",
+                "--runtime", materialization / "runtime.json", "--output", output)
+    if str(gateway_source) not in sys.path:
+        sys.path.insert(0, str(gateway_source))
+    from ops.apisix.deploy_internal_m2m_routes import route_value
+    from ops.apisix.deploy_managed_file_ths import select
+    expected = select(json.loads(output.read_text()))
+    admin = route_admin(gateway_source)
+    try:
+        picker_code, current = admin.route("GET", expected["id"])
+        if picker_code not in (200, 404):
+            raise Blocked("PICKER_ROUTE_QUERY_FAILED")
+        if picker_code == 200 and any(route_value(current).get(k) != v for k, v in expected.items()):
+            raise Blocked("PICKER_ROUTE_DRIFT")
+        code, current = admin.route("GET", "trusted-human-managed-file-upload")
+        route = route_value(current) if code == 200 else {}
+        if (route.get("plugins", {}).get("proxy-control") != {"request_buffering": False} or
+                route.get("plugins", {}).get("openid-connect", {}).get("required_scopes") != ["ouf.managed-source.file.upload"] or
+                route.get("upstream", {}).get("nodes") != {"ouf-onboarding:8080": 1}):
+            raise Blocked("HUMAN_UPLOAD_ROUTE_NOT_STREAMING")
+        return picker_code == 200
+    finally:
+        admin.close()
+
+
+def mcp_args(snapshot, candidate, tag, image_id, backup_name, mode, origin, picker_url=None):
     arguments = ["--snapshot", snapshot, "--candidate", candidate,
                  "--image", tag, "--image-id", image_id, "--backup-name", backup_name,
                  "--upload-mode", mode]
     if origin:
         arguments += ["--host-origin", origin]
+    if picker_url:
+        arguments += ["--picker-url", picker_url]
     return arguments
 
 
@@ -147,13 +190,16 @@ def main():
     parser.add_argument("--snapshot", type=Path,
                         help="Optional existing private snapshot; default creates one automatically")
     parser.add_argument("--materialization", required=True, type=Path)
-    parser.add_argument("--mode", required=True, choices=("probe", "enabled"))
+    parser.add_argument("--mode", required=True, choices=("probe", "enabled", "picker"))
     parser.add_argument("--host-origin")
+    parser.add_argument("--picker-url")
+    parser.add_argument("--onboarding-revision")
     parser.add_argument("--gateway-repo", type=Path, default=Path("/opt/ouf/gateway"))
     parser.add_argument("--mcp-repo", type=Path, default=Path("/opt/ouf/mcp"))
     args = parser.parse_args()
     candidate = None
     upload_backup = None
+    picker_backup = None
     rollout_started = False
     gateway_source = None
     mcp_source = None
@@ -171,6 +217,11 @@ def main():
         private(args.materialization, 0o700)
         if args.host_origin is not None:
             raise Blocked("STATIC_HOST_ORIGIN_UNSUPPORTED")
+        if args.mode == "picker":
+            if not args.picker_url or not args.onboarding_revision or not re.fullmatch(r"[0-9a-f]{40}", args.onboarding_revision):
+                raise Blocked("PICKER_PARAMETERS_REQUIRED")
+        elif args.picker_url or args.onboarding_revision:
+            raise Blocked("PICKER_PARAMETERS_UNEXPECTED")
         if (not re.fullmatch(r"[0-9a-f]{40}", args.mcp_commit)
                 or command(git_args(args.gateway_repo, "rev-parse", GATEWAY_COMMIT + "^{commit}")).strip() != GATEWAY_COMMIT):
             raise Blocked("PINNED_SOURCE_MISSING")
@@ -180,6 +231,9 @@ def main():
         mcp_source.mkdir(mode=0o700)
         archive(args.gateway_repo, GATEWAY_COMMIT, gateway_source)
         archive(args.mcp_repo, args.mcp_commit, mcp_source)
+        picker_installed = (picker_state(gateway_source, args.materialization,
+                                          args.picker_url, args.onboarding_revision)
+                            if args.mode == "picker" else False)
         if args.snapshot is None:
             output = call_module(mcp_source, "scripts.r4a_snapshot_mcp_runtime", "--backup-root", ROOT)
             args.snapshot = marked_path(output, "PRIVATE_MCP_DOCKER_SNAPSHOT")
@@ -196,28 +250,40 @@ def main():
                      "--upload-mode", args.mode]
         if args.host_origin:
             prep_args += ["--host-origin", args.host_origin]
+        if args.picker_url:
+            prep_args += ["--picker-url", args.picker_url]
         output = call_module(mcp_source, "scripts.r4a_prepare_mcp_candidate", *prep_args)
         candidate = marked_path(output, "PRIVATE_MCP_CANDIDATE")
         backup_name = "ouf-mcp-r4a-rollback-" + args.mcp_commit[:7] + "-" + args.mode
-        rollback_args = mcp_args(args.snapshot, candidate, tag, image_id, backup_name, args.mode, args.host_origin)
+        rollback_args = mcp_args(args.snapshot, candidate, tag, image_id, backup_name, args.mode,
+                                 args.host_origin, args.picker_url)
         call_module(mcp_source, "scripts.r4a_rollout_mcp_runtime", *rollback_args)
-        if not already_installed:
+        if not already_installed and args.mode == "probe":
             output = call_module(gateway_source, "ops.apisix.deploy_managed_file_upload",
                                  "--materialization", args.materialization / "upload-route.json",
                                  "--admin-key", ADMIN_KEY, "--backup-dir", ROOT)
             upload_backup = marked_path(output, "BACKUP")
+        if args.mode == "picker" and not picker_installed:
+            output = call_module(gateway_source, "ops.apisix.deploy_managed_file_ths",
+                                 "--materialization", args.materialization / "picker-route.json",
+                                 "--admin-key", ADMIN_KEY, "--backup-dir", ROOT)
+            picker_backup = marked_path(output, "BACKUP")
         rollout_started = True
         call_module(mcp_source, "scripts.r4a_rollout_mcp_runtime", *rollback_args, "--apply")
         current = json.loads(command(["docker", "inspect", "ouf-mcp"]))[0]
         if (current["Image"] != image_id or not current["State"]["Running"]
-                or "MCP_MANAGED_UPLOAD_ENABLED=" + ("probe" if args.mode == "probe" else "true")
-                not in current["Config"]["Env"] or not route_state(gateway_source, args.materialization)):
+                or "MCP_MANAGED_UPLOAD_ENABLED=" + ({"probe": "probe", "picker": "picker"}.get(args.mode, "true"))
+                not in current["Config"]["Env"] or
+                route_state(gateway_source, args.materialization) != (True if args.mode == "probe" else already_installed) or
+                (args.mode == "picker" and not picker_state(gateway_source, args.materialization,
+                                                             args.picker_url, args.onboarding_revision))):
             raise Blocked("POST_ROLLOUT_READBACK_FAILED")
         print("MANAGED_ATTACHMENT_ROLLOUT=PASS")
         print("MODE=" + args.mode.upper() + " MCP_IMAGE_ID=" + image_id)
         print("BACKUP_MCP=" + backup_name)
         print("PRIVATE_MCP_DOCKER_SNAPSHOT=" + str(args.snapshot))
         print("BACKUP_GATEWAY_UPLOAD=" + (str(upload_backup) if upload_backup else "UNCHANGED"))
+        print("BACKUP_GATEWAY_PICKER=" + (str(picker_backup) if picker_backup else "UNCHANGED"))
         print("UPLOAD_BYTES_TRANSFERRED=false" if args.mode == "probe" else "UPLOAD_LIVE_TEST_PENDING=true")
     except Exception as exc:
         failure = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
@@ -234,6 +300,13 @@ def main():
                             "--backup-dir", ROOT)
             except Exception as rollback_error:
                 failures.append("GATEWAY:" + type(rollback_error).__name__)
+        if picker_backup:
+            try:
+                call_module(gateway_source, "ops.apisix.deploy_managed_file_ths",
+                            "--restore", picker_backup, "--admin-key", ADMIN_KEY,
+                            "--backup-dir", ROOT)
+            except Exception as rollback_error:
+                failures.append("PICKER:" + type(rollback_error).__name__)
         print("MANAGED_ATTACHMENT_ROLLOUT=BLOCKED CODE=" + failure)
         print("ROLLBACK=" + ("FAILED:" + ",".join(failures) if failures else "COMPLETE_OR_NOT_NEEDED"))
         raise SystemExit(1) from None
