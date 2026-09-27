@@ -4,81 +4,180 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Caricamento CSV OUF</title>
 <style>
-  html, body { margin: 0; min-height: 136px; }
+  html, body { margin: 0; min-height: 164px; }
   body { box-sizing: border-box; padding: 14px 18px 18px; font: 15px/1.45 system-ui, sans-serif; }
-  #status { margin: 0 0 14px; max-width: 55ch; }
+  #status, #asset { margin: 0 0 12px; max-width: 58ch; overflow-wrap: anywhere; }
   #open { padding: 9px 14px; border-radius: 7px; cursor: pointer; font: inherit; }
 </style>
 <body>
 <p id="status" role="status">Preparazione del selettore OUF…</p>
+<p id="asset" hidden></p>
 <button id="open" type="button" hidden>Scegli file in OUF</button>
 <script>
-(async () => {
-  const host = window.openai;
+(() => {
   const status = document.getElementById('status');
+  const asset = document.getElementById('asset');
   const button = document.getElementById('open');
-  const reportHeight = () => {
-    if (typeof host?.notifyIntrinsicHeight === 'function' && document.body)
-      host.notifyIntrinsicHeight(Math.max(136, Math.ceil(document.body.scrollHeight)));
-  };
-  if (typeof ResizeObserver !== 'undefined' && document.body)
-    new ResizeObserver(reportHeight).observe(document.body);
-  setTimeout(reportHeight, 0);
-  // The host may populate toolOutput after the iframe starts executing.
-  let output = host?.toolOutput;
-  if (!output?.handoffId || !output?.pickerUrl) {
-    output = await new Promise(resolve => {
-      const timeout = setTimeout(() => { window.removeEventListener('openai:set_globals', changed); resolve(host?.toolOutput); }, 10000);
-      function changed() {
-        const next = host?.toolOutput;
-        if (next?.handoffId && next?.pickerUrl) {
-          clearTimeout(timeout);
-          window.removeEventListener('openai:set_globals', changed);
-          resolve(next);
-        }
+  const pickerPrefix = 'https://api.ouf-lab.it/trusted-human/managed-files/?handoff=';
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let host;
+
+  // Standard MCP Apps JSON-RPC over postMessage; no host-specific global.
+  async function mcpAppsHost() {
+    const pending = new Map();
+    const listeners = new Map();
+    let nextId = 1;
+    function receive(event) {
+      if (event.source !== window.parent || event.data?.jsonrpc !== '2.0') return;
+      const message = event.data;
+      if (message.id != null && pending.has(message.id)) {
+        const {resolve, reject, timer} = pending.get(message.id);
+        clearTimeout(timer);
+        pending.delete(message.id);
+        if (message.error) reject(new Error('Host rejected request'));
+        else resolve(message.result);
+      } else if (message.method && listeners.has(message.method)) {
+        listeners.get(message.method)(message.params);
       }
-      window.addEventListener('openai:set_globals', changed);
-      changed();
+    }
+    window.addEventListener('message', receive);
+    function request(method, params, timeout = 12000) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error('Host request timed out'));
+        }, timeout);
+        pending.set(id, {resolve, reject, timer});
+        window.parent.postMessage({jsonrpc: '2.0', id, method, params}, '*');
+      });
+    }
+    function notification(method, params = {}) {
+      window.parent.postMessage({jsonrpc: '2.0', method, params}, '*');
+    }
+    let output;
+    let outputReady;
+    const resultReady = new Promise(resolve => { outputReady = resolve; });
+    listeners.set('ui/notifications/tool-result', params => {
+      output = params;
+      outputReady(params);
     });
-  }
-  const id = output?.handoffId;
-  const url = output?.pickerUrl;
-  if (!/^[0-9a-f-]{36}$/.test(id ?? '') ||
-      url !== 'https://api.ouf-lab.it/trusted-human/managed-files/?handoff=' + id) {
-    status.textContent = 'Collegamento al picker non disponibile. Avvia un nuovo caricamento dalla chat.';
-    return;
-  }
-  button.hidden = false;
-  button.onclick = () => host?.openExternal ? host.openExternal({href: url, redirectUrl: false}) : window.open(url, '_blank', 'noopener');
-  if (host?.widgetState?.reportedHandoffId === id) {
-    status.textContent = 'CSV registrato e comunicato alla chat.';
-    return;
-  }
-  if (typeof host?.callTool !== 'function') {
-  status.textContent = 'Apri OUF; dopo il caricamento l’Asset ID resta visibile nella pagina.';
-    return;
-  }
-  status.textContent = 'Scegli il CSV in OUF. Questo riquadro attende l’esito e lo invia alla chat.';
-  for (let n = 0; n < 90; n++) {
-    await new Promise(resolve => setTimeout(resolve, 10000));
     try {
-      const reply = await host.callTool('source.file.upload.status', {handoffId: id});
-      const raw = reply?.structuredContent ?? JSON.parse(reply?.content?.[0]?.text ?? '{}');
-      if (reply?.isError || raw?.code) {
-        status.textContent = 'Impossibile leggere l’esito in chat. L’Asset ID resta visibile nella pagina OUF.';
+      const initialized = await request('ui/initialize', {
+        appInfo: {name: 'ouf-managed-file-picker', version: '1.0.0'},
+        appCapabilities: {}, protocolVersion: '2026-01-26'
+      }, 2500);
+      if (!initialized?.protocolVersion || !initialized?.hostCapabilities) throw new Error('Invalid MCP Apps host');
+      notification('ui/notifications/initialized');
+      return {
+        result: async () => output || await resultReady,
+        open: url => request('ui/open-link', {url}),
+        call: id => request('tools/call', {name: 'source.file.upload.status', arguments: {handoffId: id}}),
+        message: id => request('ui/message', {
+          role: 'user', content: [{type: 'text', text: 'OUF ha registrato il CSV con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}]
+        }),
+        resize: height => notification('ui/notifications/size-changed', {height})
+      };
+    } catch (_) {
+      for (const {reject, timer} of pending.values()) {
+        clearTimeout(timer);
+        reject(new Error('MCP Apps host unavailable'));
+      }
+      pending.clear();
+      window.removeEventListener('message', receive);
+      return null;
+    }
+  }
+
+  // Compatibility adapter for the earlier ChatGPT widget API.
+  function chatgptHost() {
+    const api = window.openai;
+    if (!api) return null;
+    return {
+      result: async () => {
+        if (api.toolOutput?.handoffId) return api.toolOutput;
+        return await new Promise(resolve => {
+          const timer = setTimeout(() => {
+            window.removeEventListener('openai:set_globals', changed);
+            resolve(api.toolOutput);
+          }, 10000);
+          function changed() {
+            if (!api.toolOutput?.handoffId) return;
+            clearTimeout(timer);
+            window.removeEventListener('openai:set_globals', changed);
+            resolve(api.toolOutput);
+          }
+          window.addEventListener('openai:set_globals', changed);
+          changed();
+        });
+      },
+      open: url => api.openExternal ? api.openExternal({href: url, redirectUrl: false}) : window.open(url, '_blank', 'noopener'),
+      call: id => api.callTool('source.file.upload.status', {handoffId: id}),
+      message: id => api.sendFollowUpMessage({prompt: 'OUF ha registrato il CSV con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}),
+      resize: height => api.notifyIntrinsicHeight?.(height)
+    };
+  }
+
+  function extract(reply) {
+    if (reply?.structuredContent) return reply.structuredContent;
+    if (reply?.handoffId || reply?.status) return reply;
+    try { return JSON.parse(reply?.content?.find(c => c.type === 'text')?.text ?? '{}'); }
+    catch (_) { return {}; }
+  }
+  function height() { host?.resize(Math.max(164, Math.ceil(document.body.scrollHeight))); }
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(height).observe(document.body);
+
+  (async () => {
+    host = await mcpAppsHost() || chatgptHost();
+    if (!host) {
+      status.textContent = 'Questo client non supporta il selettore interattivo. Usa il link OUF presente nella risposta del tool.';
+      return;
+    }
+    height();
+    const initial = extract(await host.result());
+    const id = initial?.handoffId;
+    const url = initial?.pickerUrl;
+    if (!uuid.test(id ?? '') || url !== pickerPrefix + id) {
+      status.textContent = 'Collegamento al picker non disponibile. Avvia un nuovo caricamento dalla chat.';
+      return;
+    }
+    button.hidden = false;
+    button.onclick = async () => {
+      try { await host.open(url); }
+      catch (_) { status.textContent = 'Apri il collegamento OUF mostrato nella risposta del tool.'; }
+    };
+    status.textContent = 'Scegli il CSV in OUF. Questo riquadro attende l’esito.';
+    height();
+    for (let n = 0; n < 90; n++) {
+      await wait(10000);
+      let reply;
+      try { reply = await host.call(id); }
+      catch (_) { continue; }
+      const result = extract(reply);
+      if (reply?.isError || result?.code) {
+        status.textContent = 'Impossibile leggere l’esito. L’Asset ID resta visibile nella pagina OUF.';
         return;
       }
-      if (raw?.status !== 'STAGED' || !/^[0-9a-f-]{36}$/.test(raw.assetId ?? '')) continue;
-      status.textContent = 'CSV registrato in OUF. Invio l’esito alla chat…';
-      if (typeof host.sendFollowUpMessage === 'function') {
-        await host.sendFollowUpMessage({prompt: 'Il CSV è stato registrato in OUF con Asset ID ' + raw.assetId + '. Avvia il profilo usando source.file.profile con questo ID.'});
-        host.setWidgetState?.({reportedHandoffId: id});
-        status.textContent = 'CSV registrato e comunicato alla chat.';
-      } else status.textContent = 'CSV registrato. Asset ID: ' + raw.assetId;
+      if (result?.status !== 'STAGED' || !uuid.test(result.assetId ?? '')) continue;
+      asset.hidden = false;
+      asset.textContent = 'Asset ID: ' + result.assetId;
+      status.textContent = 'CSV registrato. L’host potrebbe chiederti di confermare il messaggio per proseguire in chat.';
+      height();
+      try {
+        const acknowledged = await host.message(result.assetId);
+        if (acknowledged?.isError) throw new Error('Host refused message');
+        status.textContent = 'Richiesta accettata dall’host. Se non appare in chat, usa l’Asset ID qui sopra.';
+      } catch (_) {
+        status.textContent = 'Il messaggio alla chat non è confermato. Usa l’Asset ID qui sopra per proseguire.';
+      }
+      height();
       return;
-    } catch (_) { /* A transient poll must not imply that the upload failed. */ }
-  }
-  status.textContent = 'L’attesa è terminata. Se il file è stato caricato, l’Asset ID resta visibile in OUF.';
+    }
+    status.textContent = 'L’attesa è terminata. Se il file è stato caricato, l’Asset ID resta visibile in OUF.';
+  })().catch(() => {
+    status.textContent = 'Selettore non disponibile. Usa il link OUF presente nella risposta del tool.';
+  });
 })();
 </script>
 </body>
