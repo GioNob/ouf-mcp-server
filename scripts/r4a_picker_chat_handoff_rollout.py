@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = Path('/etc/ouf/deploy-snapshots')
 ONBOARDING = '4b552ffb1a685a38f1387a20e655da9e4d0500a4'
-GATEWAY = 'a226090e7cf1b5e411e9fa422664fa9b4b05746f'
+GATEWAY = 'e649d3e3b85ecfcee5aeaa89c57863c5ecd92d28'
 PICKER = 'https://api.ouf-lab.it/trusted-human/managed-files/'
 MATERIALIZATION = ROOT / 'r4a-mcp-routes-vqa3yS'
 ADMIN_KEY = Path('/opt/ouf/secrets/apisix-admin-key')
@@ -102,6 +102,15 @@ def main():
                        '$ENV://OUF_GATEWAY_OIDC_CLIENT_SECRET', '--delegation-key-env',
                        'OUF_GATEWAY_DELEGATION_KEY', '--owner-key-env',
                        'OUF_AUTHORIZATION_OWNER_KEY', '--output', new_routes)
+        managed = {route.get('id'): route for route in json.loads(new_routes.read_text()).get('routes', [])
+                   if route.get('id', '').startswith('mcp-managed-file-')}
+        expected = {'mcp-managed-file-' + name for name in ('profile', 'preview', 'create', 'handoff')}
+        owner_marker = 'local OWNER_KEY_ENV = "OUF_AUTHORIZATION_OWNER_KEY"\n'
+        if set(managed) != expected or any(
+            owner_marker not in route['plugins']['serverless-post-function']['functions'][0]
+            for route in managed.values()
+        ):
+            raise RuntimeError('MANAGED_FILE_OWNER_KEY_DECLARATION_MISSING')
         old_routes = (MATERIALIZATION / 'mcp-routes.json').read_bytes()
         onboarding_state = None
         route_backup = None
