@@ -184,19 +184,75 @@ def mcp_args(snapshot, candidate, tag, image_id, backup_name, mode, origin, pick
     return arguments
 
 
+def save_state(path, state):
+    if path.exists():
+        if path.is_symlink() or path.stat().st_mode & 0o777 != 0o600:
+            raise Blocked("ROLLOUT_STATE_UNSAFE")
+        fd = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump(state, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def rollback_saved(path, gateway_repo, mcp_repo):
+    if (path.parent.parent != ROOT or path.name != "picker-rollout-state.json" or
+            path.is_symlink() or path.stat().st_uid != 0 or path.stat().st_mode & 0o777 != 0o600):
+        raise Blocked("ROLLOUT_STATE_UNSAFE")
+    state = json.loads(path.read_text())
+    if (state.get("mode") != "picker" or state.get("phase") not in ("active", "mcp_rolled_back") or
+            not re.fullmatch(r"[0-9a-f]{40}", state.get("mcp_commit", "")) or
+            state.get("gateway_commit") != GATEWAY_COMMIT):
+        raise Blocked("ROLLOUT_STATE_MISMATCH")
+    folder = Path(tempfile.mkdtemp(prefix="r4a-picker-rollback-", dir=ROOT))
+    gateway_source, mcp_source = folder / "gateway", folder / "mcp"
+    gateway_source.mkdir(mode=0o700)
+    mcp_source.mkdir(mode=0o700)
+    archive(gateway_repo, GATEWAY_COMMIT, gateway_source)
+    archive(mcp_repo, state["mcp_commit"], mcp_source)
+    if state["phase"] == "active":
+        args = mcp_args(Path(state["snapshot"]), Path(state["candidate"]), state["tag"],
+                        state["image_id"], state["backup_name"], "picker", None, state["picker_url"])
+        call_module(mcp_source, "scripts.r4a_rollout_mcp_runtime", *args, "--rollback")
+        state["phase"] = "mcp_rolled_back"
+        save_state(path, state)
+    if state.get("picker_backup"):
+        call_module(gateway_source, "ops.apisix.deploy_managed_file_ths",
+                    "--restore", Path(state["picker_backup"]), "--admin-key", ADMIN_KEY,
+                    "--backup-dir", ROOT)
+    state["phase"] = "rolled_back"
+    save_state(path, state)
+    print("PICKER_MCP_GATEWAY_ROLLBACK=PASS")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mcp-commit", required=True)
+    parser.add_argument("--mcp-commit")
     parser.add_argument("--snapshot", type=Path,
                         help="Optional existing private snapshot; default creates one automatically")
-    parser.add_argument("--materialization", required=True, type=Path)
-    parser.add_argument("--mode", required=True, choices=("probe", "enabled", "picker"))
+    parser.add_argument("--materialization", type=Path)
+    parser.add_argument("--mode", choices=("probe", "enabled", "picker"))
+    parser.add_argument("--rollback-state", type=Path)
     parser.add_argument("--host-origin")
     parser.add_argument("--picker-url")
     parser.add_argument("--onboarding-revision")
     parser.add_argument("--gateway-repo", type=Path, default=Path("/opt/ouf/gateway"))
     parser.add_argument("--mcp-repo", type=Path, default=Path("/opt/ouf/mcp"))
     args = parser.parse_args()
+    if args.rollback_state:
+        if args.mode or args.mcp_commit or args.materialization or args.host_origin or args.picker_url or args.onboarding_revision:
+            parser.error("rollback accepts only the saved state and repository paths")
+        try:
+            rollback_saved(args.rollback_state, args.gateway_repo, args.mcp_repo)
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            print("PICKER_ROLLBACK_BLOCKED=" + (str(exc) if isinstance(exc, Blocked) else type(exc).__name__))
+            raise SystemExit(1) from None
+        return
+    if not args.mode or not args.mcp_commit or not args.materialization:
+        parser.error("mode, pinned MCP commit and materialization are required")
     candidate = None
     upload_backup = None
     picker_backup = None
@@ -204,6 +260,7 @@ def main():
     gateway_source = None
     mcp_source = None
     rollback_args = None
+    state_path = None
     try:
         # MCP PET v1.4 section 38 forbids external fetch from MCP. The present
         # enabled image performs exactly that fetch, and an unrestricted URL
@@ -268,6 +325,15 @@ def main():
                                  "--materialization", args.materialization / "picker-route.json",
                                  "--admin-key", ADMIN_KEY, "--backup-dir", ROOT)
             picker_backup = marked_path(output, "BACKUP")
+        if args.mode == "picker":
+            state_path = folder / "picker-rollout-state.json"
+            save_state(state_path, {
+                "phase": "prepared", "mode": "picker", "gateway_commit": GATEWAY_COMMIT,
+                "mcp_commit": args.mcp_commit, "picker_url": args.picker_url,
+                "snapshot": str(args.snapshot), "candidate": str(candidate),
+                "tag": tag, "image_id": image_id, "backup_name": backup_name,
+                "picker_backup": str(picker_backup) if picker_backup else None,
+            })
         rollout_started = True
         call_module(mcp_source, "scripts.r4a_rollout_mcp_runtime", *rollback_args, "--apply")
         current = json.loads(command(["docker", "inspect", "ouf-mcp"]))[0]
@@ -278,12 +344,18 @@ def main():
                 (args.mode == "picker" and not picker_state(gateway_source, args.materialization,
                                                              args.picker_url, args.onboarding_revision))):
             raise Blocked("POST_ROLLOUT_READBACK_FAILED")
+        if state_path:
+            state = json.loads(state_path.read_text())
+            state["phase"] = "active"
+            save_state(state_path, state)
         print("MANAGED_ATTACHMENT_ROLLOUT=PASS")
         print("MODE=" + args.mode.upper() + " MCP_IMAGE_ID=" + image_id)
         print("BACKUP_MCP=" + backup_name)
         print("PRIVATE_MCP_DOCKER_SNAPSHOT=" + str(args.snapshot))
         print("BACKUP_GATEWAY_UPLOAD=" + (str(upload_backup) if upload_backup else "UNCHANGED"))
         print("BACKUP_GATEWAY_PICKER=" + (str(picker_backup) if picker_backup else "UNCHANGED"))
+        if state_path:
+            print("PICKER_ROLLBACK_STATE=" + str(state_path))
         print("UPLOAD_BYTES_TRANSFERRED=false" if args.mode == "probe" else "UPLOAD_LIVE_TEST_PENDING=true")
     except Exception as exc:
         failure = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
