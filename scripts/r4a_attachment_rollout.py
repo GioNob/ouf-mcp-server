@@ -13,7 +13,8 @@ import subprocess
 import sys
 import tempfile
 
-GATEWAY_COMMIT = "f5d7b0d5580ad1c602d436035c3b9dd7cfec14dd"
+GATEWAY_COMMIT = "50eaffae9ce16064ca0c1d69aa13ea50169b772f"
+PREVIOUS_GATEWAY_COMMIT = "f5d7b0d5580ad1c602d436035c3b9dd7cfec14dd"
 ROOT = Path("/etc/ouf/deploy-snapshots")
 ROUTE_IDS = {"mcp-managed-file-profile", "mcp-managed-file-preview", "mcp-managed-file-create"}
 ADMIN_KEY = Path("/opt/ouf/secrets/apisix-admin-key")
@@ -153,8 +154,10 @@ def picker_state(gateway_source, materialization, picker_url, onboarding_revisio
     if str(gateway_source) not in sys.path:
         sys.path.insert(0, str(gateway_source))
     from ops.apisix.deploy_internal_m2m_routes import route_value
-    from ops.apisix.deploy_managed_file_ths import select
-    expected = select(json.loads(output.read_text()))
+    from ops.apisix.deploy_managed_file_ths import select, select_login
+    doc = json.loads(output.read_text())
+    expected = select(doc)
+    login = select_login(doc)
     admin = route_admin(gateway_source)
     try:
         picker_code, current = admin.route("GET", expected["id"])
@@ -162,13 +165,18 @@ def picker_state(gateway_source, materialization, picker_url, onboarding_revisio
             raise Blocked("PICKER_ROUTE_QUERY_FAILED")
         if picker_code == 200 and any(route_value(current).get(k) != v for k, v in expected.items()):
             raise Blocked("PICKER_ROUTE_DRIFT")
+        login_code, current = admin.route("GET", login["id"])
+        if login_code not in (200, 404):
+            raise Blocked("PICKER_LOGIN_ROUTE_QUERY_FAILED")
+        if login_code == 200 and any(route_value(current).get(k) != v for k, v in login.items()):
+            raise Blocked("PICKER_LOGIN_ROUTE_DRIFT")
         code, current = admin.route("GET", "trusted-human-managed-file-upload")
         route = route_value(current) if code == 200 else {}
         if (route.get("plugins", {}).get("proxy-control") != {"request_buffering": False} or
                 route.get("plugins", {}).get("openid-connect", {}).get("required_scopes") != ["ouf.managed-source.file.upload"] or
                 route.get("upstream", {}).get("nodes") != {"ouf-onboarding:8080": 1}):
             raise Blocked("HUMAN_UPLOAD_ROUTE_NOT_STREAMING")
-        return picker_code == 200
+        return picker_code == 200 and login_code == 200
     finally:
         admin.close()
 
@@ -210,13 +218,13 @@ def rollback_saved(path, gateway_repo, mcp_repo):
     state = json.loads(path.read_text())
     if (state.get("mode") != "picker" or state.get("phase") not in ("prepared", "active", "mcp_rolled_back") or
             not re.fullmatch(r"[0-9a-f]{40}", state.get("mcp_commit", "")) or
-            state.get("gateway_commit") != GATEWAY_COMMIT):
+            state.get("gateway_commit") not in (GATEWAY_COMMIT, PREVIOUS_GATEWAY_COMMIT)):
         raise Blocked("ROLLOUT_STATE_MISMATCH")
     folder = Path(tempfile.mkdtemp(prefix="r4a-picker-rollback-", dir=ROOT))
     gateway_source, mcp_source = folder / "gateway", folder / "mcp"
     gateway_source.mkdir(mode=0o700)
     mcp_source.mkdir(mode=0o700)
-    archive(gateway_repo, GATEWAY_COMMIT, gateway_source)
+    archive(gateway_repo, state["gateway_commit"], gateway_source)
     archive(mcp_repo, state["mcp_commit"], mcp_source)
     if state["phase"] in ("prepared", "active") and (
             state["phase"] == "active" or (Path(state["candidate"]) / "rollout-mcp.json").exists()):
