@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const pickerHandoffURI = "ui://ouf/managed-file-upload-handoff-v1.html"
+const pickerHandoffURI = "ui://ouf/managed-file-upload-handoff-v2.html"
 
 //go:embed picker_handoff.html
 var pickerHandoffHTML string
