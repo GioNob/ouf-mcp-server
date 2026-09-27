@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
@@ -77,6 +78,10 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 		}
 		if tool.Name == "source.file.upload" {
 			found++
+			ui, ok := tool.Meta["ui"].(map[string]any)
+			if !ok || ui["resourceUri"] != pickerHandoffURI {
+				t.Fatal("picker handoff widget missing")
+			}
 			if tool.Meta != nil && tool.Meta["openai/fileParams"] != nil {
 				t.Fatal("picker must not request a ChatGPT attachment")
 			}
@@ -90,8 +95,11 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 		t.Fatalf("invalid picker result: %+v %v", result, err)
 	}
 	structured, ok := result.StructuredContent.(map[string]any)
-	if !ok || structured["pickerUrl"] != picker || structured["status"] != "AWAITING_FILE_SELECTION" {
+	if !ok || !strings.HasPrefix(structured["pickerUrl"].(string), picker+"?handoff=") || structured["status"] != "AWAITING_FILE_SELECTION" {
 		t.Fatalf("invalid picker result: %+v %v", result, err)
+	}
+	if !strings.HasSuffix(structured["pickerUrl"].(string), structured["handoffId"].(string)) {
+		t.Fatal("picker URL not bound to status handoff")
 	}
 }
 
