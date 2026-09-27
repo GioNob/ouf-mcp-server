@@ -115,7 +115,7 @@ def main():
             result = gateway_module(source, 'ops.apisix.deploy_managed_file_mcp',
                                     '--materialization', new_routes, '--admin-key', ADMIN_KEY,
                                     '--backup-dir', ROOT)
-            route_backup = marker(result, 'BACKUP') / 'previous.json'
+            route_backup = marker(result, 'BACKUP')
             if 'MANAGED_FILE_MCP_ACTIVE' not in result:
                 raise RuntimeError('HANDOFF_ROUTE_UNVERIFIED')
             (MATERIALIZATION / 'mcp-routes.json').write_bytes(new_routes.read_bytes())
