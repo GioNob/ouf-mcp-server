@@ -3,6 +3,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Caricamento CSV OUF</title>
+<style>
+  html, body { margin: 0; min-height: 136px; }
+  body { box-sizing: border-box; padding: 14px 18px 18px; font: 15px/1.45 system-ui, sans-serif; }
+  #status { margin: 0 0 14px; max-width: 55ch; }
+  #open { padding: 9px 14px; border-radius: 7px; cursor: pointer; font: inherit; }
+</style>
 <body>
 <p id="status" role="status">Preparazione del selettore OUF…</p>
 <button id="open" type="button" hidden>Scegli file in OUF</button>
@@ -11,6 +17,13 @@
   const host = window.openai;
   const status = document.getElementById('status');
   const button = document.getElementById('open');
+  const reportHeight = () => {
+    if (typeof host?.notifyIntrinsicHeight === 'function' && document.body)
+      host.notifyIntrinsicHeight(Math.max(136, Math.ceil(document.body.scrollHeight)));
+  };
+  if (typeof ResizeObserver !== 'undefined' && document.body)
+    new ResizeObserver(reportHeight).observe(document.body);
+  setTimeout(reportHeight, 0);
   // The host may populate toolOutput after the iframe starts executing.
   let output = host?.toolOutput;
   if (!output?.handoffId || !output?.pickerUrl) {
