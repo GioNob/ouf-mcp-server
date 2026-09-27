@@ -6,7 +6,9 @@ Onboarding/MCP/Gateway in modalità PICKER, upload HUMAN riuscito e Asset ID
 la revisione `51706bed-81e4-4306-aca1-70119821727d`. Non è attestato
 che questo asset sia arrivato a Ingestion, UDP o search: **R-SMOKE OPEN**.
 Questo documento descrive il contratto di prodotto e l'evidenza disponibile;
-non certifica che il codice di questa branch coincida con l'immagine VPS.
+**questa branch PR #45 conserva ancora l'adapter di fetch diretto `hostfiles`**
+e non va mergiata/distribuita come percorso picker. Non certifica che il
+codice della branch coincida con l'immagine VPS.
 Verificare immagine/revisione live prima di un nuovo rollout.
 
 [Handoff completo PET 1.7](https://github.com/GioNob/ouf-semantic-registry/blob/codex/r4a-smoke-semantic-inventory/docs/handoffs/OUF_HANDOFF_2026-09-27_R4A.md).
