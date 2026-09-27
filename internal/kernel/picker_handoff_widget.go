@@ -21,7 +21,7 @@ func registerPickerUploadWidget(server *mcp.Server, pickerURL string) {
 			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
 				URI: pickerHandoffURI, MIMEType: "text/html;profile=mcp-app", Text: pickerHandoffHTML,
 				Meta: mcp.Meta{"openai/widgetCSP": map[string]any{"redirect_domains": []string{origin}},
-					"ui": map[string]any{"prefersBorder": true},
+					"ui":                       map[string]any{"prefersBorder": true},
 					"openai/widgetDescription": "Scegli un CSV in OUF; il riquadro attende e comunica l'esito alla chat."},
 			}}}, nil
 		})
