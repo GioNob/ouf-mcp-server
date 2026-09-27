@@ -123,6 +123,15 @@ The live host continued to render the old `v1` widget after the MCP container
 upgrade (its retired error copy was visible), so the repair publishes a `v2`
 resource URI. Reconnect the OUF app before the next test to refresh both
 widget resource metadata and the app-only status tool descriptor.
+The first live upload through the `v2` widget staged the CSV but the result
+read produced `SCOPE_MISSING` in the MCP denial audit. The ChatGPT OAuth
+client is `ouf-chatgpt`; prior optional managed-file bindings on
+`ouf-human-admin` do not populate that token. Onboarding's
+`scripts/r4a_chatgpt_managed_file_scopes.py` reconciles the four HUMAN
+managed-file scopes as default bindings on the exact ChatGPT client. A fresh
+OAuth connection and a fresh upload are required to test chat handoff after
+the expired 30-minute result lease. Policy grants and asset ownership still
+govern calls even when the client includes those scope names in new tokens.
 The widget now requests its intrinsic height after mount and on content
 changes, with a minimum 136-pixel layout so its instruction, button and
 status are visible together in the inline card.
