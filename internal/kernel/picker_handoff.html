@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Caricamento CSV OUF</title>
+<body>
+<p id="status" role="status">Apri OUF e scegli il CSV.</p>
+<button id="open" type="button">Scegli file in OUF</button>
+<script>
+(async () => {
+  const host = window.openai;
+  const status = document.getElementById('status');
+  const button = document.getElementById('open');
+  const output = host?.toolOutput?.structuredContent ?? host?.toolOutput;
+  const id = output?.handoffId;
+  const url = output?.pickerUrl;
+  if (!/^[0-9a-f-]{36}$/.test(id ?? '') || !url || !url.startsWith('https://')) {
+    status.textContent = 'Collegamento al picker non disponibile.';
+    button.hidden = true;
+    return;
+  }
+  button.onclick = () => host?.openExternal ? host.openExternal({href: url, redirectUrl: false}) : window.open(url, '_blank', 'noopener');
+  if (host?.widgetState?.reportedHandoffId === id) {
+    status.textContent = 'CSV registrato e comunicato alla chat.';
+    return;
+  }
+  if (typeof host?.callTool !== 'function') {
+    status.textContent = 'Apri OUF; poi comunica l’Asset ID mostrato dalla pagina.';
+    return;
+  }
+  for (let n = 0; n < 90; n++) {
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    try {
+      const reply = await host.callTool('source.file.upload', {handoffId: id});
+      const raw = reply?.structuredContent ?? JSON.parse(reply?.content?.[0]?.text ?? '{}');
+      if (raw?.status !== 'STAGED' || !/^[0-9a-f-]{36}$/.test(raw.assetId ?? '')) continue;
+      status.textContent = 'CSV registrato in OUF. La chat riceve l’esito.';
+      if (typeof host.sendFollowUpMessage === 'function') {
+        host.setWidgetState?.({reportedHandoffId: id});
+        await host.sendFollowUpMessage({prompt: 'Il CSV è stato registrato in OUF con Asset ID ' + raw.assetId + '. Avvia il profilo usando source.file.profile con questo ID.'});
+      } else status.textContent = 'CSV registrato. Asset ID: ' + raw.assetId;
+      return;
+    } catch (_) { /* A transient poll must not imply that the upload failed. */ }
+  }
+  status.textContent = 'L’attesa è terminata. Se il file è stato caricato, comunica l’Asset ID mostrato da OUF.';
+})();
+</script>
+</body>
+</html>
