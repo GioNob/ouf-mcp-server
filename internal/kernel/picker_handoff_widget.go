@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const pickerHandoffURI = "ui://ouf/managed-file-upload-handoff-v2.html"
+const pickerHandoffURI = "ui://ouf/managed-file-upload-handoff-v3.html"
 
 //go:embed picker_handoff.html
 var pickerHandoffHTML string
@@ -22,7 +22,7 @@ func registerPickerUploadWidget(server *mcp.Server, pickerURL string) {
 				URI: pickerHandoffURI, MIMEType: "text/html;profile=mcp-app", Text: pickerHandoffHTML,
 				Meta: mcp.Meta{"openai/widgetCSP": map[string]any{"redirect_domains": []string{origin}},
 					"ui":                       map[string]any{"prefersBorder": true},
-					"openai/widgetDescription": "Scegli un CSV in OUF; il riquadro attende e comunica l'esito alla chat."},
+					"openai/widgetDescription": "Scegli un CSV in OUF; l'Asset ID resta visibile nel riquadro e l'host può proporre un messaggio alla chat."},
 			}}}, nil
 		})
 }
