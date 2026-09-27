@@ -208,7 +208,7 @@ def rollback_saved(path, gateway_repo, mcp_repo):
     if not verify_state_file(path):
         raise Blocked("ROLLOUT_STATE_UNSAFE")
     state = json.loads(path.read_text())
-    if (state.get("mode") != "picker" or state.get("phase") not in ("active", "mcp_rolled_back") or
+    if (state.get("mode") != "picker" or state.get("phase") not in ("prepared", "active", "mcp_rolled_back") or
             not re.fullmatch(r"[0-9a-f]{40}", state.get("mcp_commit", "")) or
             state.get("gateway_commit") != GATEWAY_COMMIT):
         raise Blocked("ROLLOUT_STATE_MISMATCH")
@@ -218,7 +218,8 @@ def rollback_saved(path, gateway_repo, mcp_repo):
     mcp_source.mkdir(mode=0o700)
     archive(gateway_repo, GATEWAY_COMMIT, gateway_source)
     archive(mcp_repo, state["mcp_commit"], mcp_source)
-    if state["phase"] == "active":
+    if state["phase"] in ("prepared", "active") and (
+            state["phase"] == "active" or (Path(state["candidate"]) / "rollout-mcp.json").exists()):
         args = mcp_args(Path(state["snapshot"]), Path(state["candidate"]), state["tag"],
                         state["image_id"], state["backup_name"], "picker", None, state["picker_url"])
         call_module(mcp_source, "scripts.r4a_rollout_mcp_runtime", *args, "--rollback")
@@ -362,7 +363,7 @@ def main():
         if state_path:
             print("PICKER_ROLLBACK_STATE=" + str(state_path))
         print("UPLOAD_BYTES_TRANSFERRED=false" if args.mode == "probe" else "UPLOAD_LIVE_TEST_PENDING=true")
-    except Exception as exc:
+    except BaseException as exc:
         failure = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
         failures = []
         if rollout_started and candidate and (candidate / "rollout-mcp.json").exists():
