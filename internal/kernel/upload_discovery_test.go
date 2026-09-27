@@ -97,8 +97,8 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 				t.Fatal("status must be a widget-accessible data tool without a template")
 			}
 			visibility, ok := ui["visibility"].([]any)
-			if !ok || len(visibility) != 1 || visibility[0] != "app" {
-				t.Fatalf("status must be app-only: %#v", ui)
+			if !ok || len(visibility) != 2 || visibility[0] != "model" || visibility[1] != "app" {
+				t.Fatalf("status must be available to MCP models and apps: %#v", ui)
 			}
 		}
 	}
