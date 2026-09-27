@@ -87,7 +87,9 @@ the current streaming upload route. The tool reply alone is not an upload.
 The lab rollout is coordinated by `scripts/r4a_attachment_rollout.py --mode picker`:
 it verifies the pinned Onboarding image and session-scope overlay, the existing
 streaming HUMAN upload route, and snapshots the picker UI route and MCP
-container. It restores both if activation fails. Onboarding's pinned image,
+container. It restores both if activation fails and prints a private
+`PICKER_ROLLBACK_STATE` for a later one-command `--rollback-state` recovery.
+Onboarding's pinned image,
 scope and database-backup cutover runs first; the two-stage procedure is in
 Onboarding `docs/R4A_FIRST_PARTY_PICKER_ROLLOUT.md`. A live HUMAN login and CSV
 transfer remain the release proof.
