@@ -13,6 +13,7 @@ assert.ok(script);
   const listeners = new Map();
   const calls = [];
   const messages = [];
+  const heights = [];
   const host = {
     toolOutput: null,
     widgetState: null,
@@ -23,6 +24,7 @@ assert.ok(script);
     },
     sendFollowUpMessage: async message => messages.push(message),
     setWidgetState: state => { host.widgetState = state; },
+    notifyIntrinsicHeight: height => heights.push(height),
     openExternal: () => {},
   };
   const window = {
@@ -34,7 +36,7 @@ assert.ok(script);
   let timerId = 0;
   const context = {
     window,
-    document: {getElementById: name => elements[name]},
+    document: {getElementById: name => elements[name], body: {scrollHeight: 154}},
     setTimeout: (fn, delay) => {
       const key = ++timerId;
       timers.set(key, setTimeout(() => {timers.delete(key); fn();}, delay === 10000 ? 10 : delay));
@@ -53,6 +55,7 @@ assert.ok(script);
   assert.equal(messages.length, 1);
   assert.ok(messages[0].prompt.includes(assetId));
   assert.equal(host.widgetState.reportedHandoffId, id);
+  assert.ok(heights.includes(154));
   assert.equal(elements.status.textContent, 'CSV registrato e comunicato alla chat.');
   console.log('PICKER_WIDGET_HANDOFF_TEST=PASS');
 })().catch(error => {console.error(error); process.exitCode = 1;});
