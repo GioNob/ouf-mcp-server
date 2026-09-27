@@ -84,6 +84,13 @@ creation use the existing tools. The file bytes traverse the existing Gateway
 HUMAN upload route and Onboarding; MCP never downloads the host URL. This mode
 requires the separately deployed OUF picker page, its THS login and scope, and
 the current streaming upload route. The tool reply alone is not an upload.
+The lab rollout is coordinated by `scripts/r4a_attachment_rollout.py --mode picker`:
+it verifies the pinned Onboarding image and session-scope overlay, the existing
+streaming HUMAN upload route, and snapshots the picker UI route and MCP
+container. It restores both if activation fails. Onboarding's pinned image,
+scope and database-backup cutover runs first; the two-stage procedure is in
+Onboarding `docs/R4A_FIRST_PARTY_PICKER_ROLLOUT.md`. A live HUMAN login and CSV
+transfer remain the release proof.
 
 `source.file.upload` advertises `_meta["openai/fileParams"] = ["file"]` only
 when `MCP_MANAGED_UPLOAD_ENABLED=true`. The model must not supply a URL as a
