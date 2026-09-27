@@ -15,8 +15,12 @@ const pickerHandoffURI = "ui://ouf/managed-file-upload-handoff-v3.html"
 //go:embed picker_handoff.html
 var pickerHandoffHTML string
 
+func renderPickerHandoffHTML(pickerURL string) string {
+	return strings.Replace(pickerHandoffHTML, "__OUF_PICKER_PREFIX__", strconv.Quote(pickerURL+"?handoff="), 1)
+}
+
 func registerPickerUploadWidget(server *mcp.Server, pickerURL string) {
-	widgetHTML := strings.Replace(pickerHandoffHTML, "__OUF_PICKER_PREFIX__", strconv.Quote(pickerURL+"?handoff="), 1)
+	widgetHTML := renderPickerHandoffHTML(pickerURL)
 	u, _ := url.Parse(pickerURL) // Validated before registration.
 	origin := u.Scheme + "://" + u.Host
 	server.AddResource(&mcp.Resource{URI: pickerHandoffURI, Name: "OUF file upload", MIMEType: "text/html;profile=mcp-app"},
