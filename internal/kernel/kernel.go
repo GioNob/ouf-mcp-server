@@ -136,7 +136,7 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "source.file.upload",
-		Description: "Start the governed OUF CSV upload. Open the first-party picker URL and choose a local CSV. MCP Apps hosts can request a chat follow-up; on other MCP clients call source.file.upload.status with the returned handoffId after the user says the upload is complete. No chat attachment is used.",
+		Description: "Open the governed OUF file picker for an authenticated human. The user chooses a local file; OUF checks its format and reports unsupported formats. MCP Apps hosts can request a chat follow-up; on other MCP clients call source.file.upload.status with the returned handoffId after the user completes the picker. No chat attachment is used.",
 		InputSchema: &schema,
 		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI, "visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
@@ -147,7 +147,7 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 		id := uuid.NewString()
 		url := pickerURL + "?handoff=" + id
 		result := map[string]any{"status": "AWAITING_FILE_SELECTION", "pickerUrl": url, "handoffId": id}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un CSV. Torna alla chat dopo il caricamento; l'esito apparirà qui automaticamente."}}, StructuredContent: result}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un file. OUF verificherà il formato; al momento il caricamento gestisce CSV. Torna alla chat dopo il caricamento; l'esito apparirà qui automaticamente."}}, StructuredContent: result}, nil, nil
 	})
 }
 
