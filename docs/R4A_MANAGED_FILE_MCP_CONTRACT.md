@@ -136,6 +136,23 @@ The widget now requests its intrinsic height after mount and on content
 changes, with a minimum 136-pixel layout so its instruction, button and
 status are visible together in the inline card.
 
+**Live handoff, 27 September 2026:** After the ChatGPT OAuth scopes were
+reconciled, the status tool was admitted. The first execution failed at APISIX
+HTTP 500 because Gateway's generated managed-file Lua omitted
+`OWNER_KEY_ENV`; the four-route repair from Gateway
+`e649d3e3b85ecfcee5aeaa89c57863c5ecd92d28` was applied with a rollback
+snapshot. A fresh upload then returned Asset ID
+`2b630dbb-5397-485c-95d2-0c4ecc431303` to the chat through
+`sendFollowUpMessage`. ChatGPT presented an **Invia** confirmation to the
+user before sending the widget-authored prompt; the action is visible and
+requires a user click on this host. `source.file.profile` queued job
+`9bb7f30e-5e96-4888-85ea-90a6af0dfc71`, which succeeded with profile
+`675c5984-b3ed-4c62-a5e8-733b93b3a542`; redacted preview showed eight
+rows, two columns (`cinema`, `indirizzo`). A fourth MCP call in the same
+minute hit the shared orchestration budget and succeeded after the minute
+rolled over. This is a lab proof of the ChatGPT handoff and file profile,
+not of DRAFT approval, Semantic/Registry, Ingestion, UDP or host portability.
+
 ## Host portability gate
 
 The current `v2` picker widget is a ChatGPT compatibility prototype: its
