@@ -72,6 +72,7 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := 0
+	statusFound := 0
 	for _, tool := range list.Tools {
 		if tool.Name == "source.file.attachment_origin_probe" {
 			t.Fatal("legacy origin probe exposed")
@@ -85,10 +86,24 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 			if tool.Meta != nil && tool.Meta["openai/fileParams"] != nil {
 				t.Fatal("picker must not request a ChatGPT attachment")
 			}
+			if tool.Meta["openai/widgetAccessible"] != true {
+				t.Fatal("picker widget must be allowed to call tools")
+			}
+		}
+		if tool.Name == "source.file.upload.status" {
+			statusFound++
+			ui, ok := tool.Meta["ui"].(map[string]any)
+			if !ok || ui["resourceUri"] != nil || tool.Meta["openai/widgetAccessible"] != true {
+				t.Fatal("status must be a widget-accessible data tool without a template")
+			}
+			visibility, ok := ui["visibility"].([]any)
+			if !ok || len(visibility) != 1 || visibility[0] != "app" {
+				t.Fatalf("status must be app-only: %#v", ui)
+			}
 		}
 	}
-	if found != 1 {
-		t.Fatalf("expected one existing upload tool, got %d", found)
+	if found != 1 || statusFound != 1 {
+		t.Fatalf("expected one upload tool and one app-only status tool, got %d and %d", found, statusFound)
 	}
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.upload", Arguments: map[string]any{}})
 	if err != nil || result == nil || result.IsError {
