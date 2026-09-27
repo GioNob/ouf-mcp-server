@@ -2,7 +2,7 @@
 <html lang="it">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Caricamento CSV OUF</title>
+<title>Caricamento file OUF</title>
 <style>
   html, body { margin: 0; min-height: 164px; }
   body { box-sizing: border-box; padding: 14px 18px 18px; font: 15px/1.45 system-ui, sans-serif; }
@@ -75,7 +75,7 @@
         open: url => request('ui/open-link', {url}),
         call: id => request('tools/call', {name: 'source.file.upload.status', arguments: {handoffId: id}}),
         message: id => request('ui/message', {
-          role: 'user', content: [{type: 'text', text: 'OUF ha registrato il CSV con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}]
+          role: 'user', content: [{type: 'text', text: 'OUF ha registrato il file con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}]
         }),
         resize: height => notification('ui/notifications/size-changed', {height})
       };
@@ -114,7 +114,7 @@
       },
       open: url => api.openExternal ? api.openExternal({href: url, redirectUrl: false}) : window.open(url, '_blank', 'noopener'),
       call: id => api.callTool('source.file.upload.status', {handoffId: id}),
-      message: id => api.sendFollowUpMessage({prompt: 'OUF ha registrato il CSV con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}),
+      message: id => api.sendFollowUpMessage({prompt: 'OUF ha registrato il file con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}),
       resize: height => api.notifyIntrinsicHeight?.(height)
     };
   }
@@ -147,7 +147,7 @@
       try { await host.open(url); }
       catch (_) { status.textContent = 'Apri il collegamento OUF mostrato nella risposta del tool.'; }
     };
-    status.textContent = 'Scegli il CSV in OUF. Questo riquadro attende l’esito.';
+    status.textContent = 'Scegli un file in OUF. Questo riquadro attende l’esito.';
     height();
     for (let n = 0; n < 90; n++) {
       await wait(10000);
@@ -162,7 +162,7 @@
       if (result?.status !== 'STAGED' || !uuid.test(result.assetId ?? '')) continue;
       asset.hidden = false;
       asset.textContent = 'Asset ID: ' + result.assetId;
-      status.textContent = 'CSV registrato. L’host potrebbe chiederti di confermare il messaggio per proseguire in chat.';
+      status.textContent = 'File registrato. L’host potrebbe chiederti di confermare il messaggio per proseguire in chat.';
       height();
       try {
         const acknowledged = await host.message(result.assetId);
