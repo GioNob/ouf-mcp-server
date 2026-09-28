@@ -86,7 +86,9 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			args, _ := json.Marshal(input)
 			maxObjects := 200
-			if c.ToolName == "resolution.issue.read" { maxObjects = 1000 }
+			if c.ToolName == "resolution.issue.read" {
+				maxObjects = 1000
+			}
 			return invoke(ctx, c, checksum, args, service, maxObjects, 1<<20)
 		})
 		return
