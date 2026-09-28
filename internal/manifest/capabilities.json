@@ -501,7 +501,7 @@
     {
       "toolName": "authorization.permissions.read",
       "capabilityId": "authorization.permissions.read",
-      "purpose": "Inspect configured grants or the OUF application-role catalogue in the caller tenant; view ROLES returns roles and nominal/organizational assignments, not an IAM directory",
+      "purpose": "Inspect configured grants, the tenant role catalogue, or active HUMAN-compatible capability descriptors; view CAPABILITIES supports complete admin role proposals",
       "useWhen": [
         "an authorized user requests permission administration"
       ],
@@ -570,7 +570,8 @@
             "type": "string",
             "enum": [
               "GRANTS",
-              "ROLES"
+              "ROLES",
+              "CAPABILITIES"
             ]
           }
         },
@@ -581,7 +582,10 @@
             ],
             "properties": {
               "view": {
-                "const": "ROLES"
+                "enum": [
+                  "ROLES",
+                  "CAPABILITIES"
+                ]
               }
             },
             "not": {
