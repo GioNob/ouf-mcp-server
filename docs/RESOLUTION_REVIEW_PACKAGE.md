@@ -1,0 +1,3 @@
+# Canonical object review package
+
+`resolution.issue.read` retrieves the complete OPEN issue snapshot for the authenticated tenant through Gateway and UDP. It accepts no tenant selector or target identifier. The chatbot can display the evidence and candidate table, suggest one action per issue, and incorporate user edits. A single candidate is only a tentative suggestion. The chatbot never sends the package confirmation: the user opens the Trusted Human Surface, reviews all rows and confirms one unchanged package there. Snapshot hash and issue versions protect against stale review. The Gateway and UDP owner each verify the delegated HUMAN and current capability. Package output remains subject to the response budget; overflow fails rather than omitting issues.
