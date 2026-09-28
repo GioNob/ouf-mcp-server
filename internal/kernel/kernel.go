@@ -77,7 +77,7 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	if strings.HasPrefix(c.ToolName, "authorization.") {
+	if strings.HasPrefix(c.ToolName, "authorization.") || c.ToolName == "resolution.issue.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -85,7 +85,9 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		checksum, _ := snapshot.Checksum()
 		mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			args, _ := json.Marshal(input)
-			return invoke(ctx, c, checksum, args, service, 200, 1<<20)
+			maxObjects := 200
+			if c.ToolName == "resolution.issue.read" { maxObjects = 1000 }
+			return invoke(ctx, c, checksum, args, service, maxObjects, 1<<20)
 		})
 		return
 	}
