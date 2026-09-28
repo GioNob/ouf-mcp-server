@@ -34,6 +34,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
 		"ouf.system.status",
+		"resolution.issue.read",
 		"urban.object.related_search",
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {

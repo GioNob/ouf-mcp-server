@@ -499,9 +499,30 @@
       }
     },
     {
+      "toolName": "resolution.issue.read",
+      "capabilityId": "resolution.issue.read",
+      "purpose": "Read the complete tenant-scoped OPEN identity review package and propose choices for each issue",
+      "useWhen": ["an authorized human asks to inspect unresolved canonical object matches"],
+      "doNotUseWhen": ["confirming or changing an issue; only the Trusted Human Surface commits the whole package"],
+      "preferredAlternatives": ["Trusted Human Surface for final review and confirmation"],
+      "operationalLimits": {"maxResultBytes": 1048576, "completeSnapshotRequired": true},
+      "resultSemantics": "Returns all currently OPEN tenant issues, evidence, candidate references, tentative single-candidate suggestions and a snapshot hash; suggestions are not decisions",
+      "securityNotes": ["Gateway authenticates delegated HUMAN identity and UDP reevaluates resolution.issue.read", "No confirmation operation or human bearer is exposed to the chatbot"],
+      "mcpClass": "MCP_TOOL",
+      "owner": "udp",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "resolution.issue.read",
+      "gatewayBindingRef": "capability://resolution.issue.read",
+      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 1000, "hardMaxResultBytes": 1048576, "hardMaxElapsedMs": 3000},
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1},
+      "toolEligible": true,
+      "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
+    },
+    {
       "toolName": "authorization.permissions.read",
       "capabilityId": "authorization.permissions.read",
-      "purpose": "Inspect configured grants or the OUF application-role catalogue in the caller tenant; view ROLES returns roles and nominal/organizational assignments, not an IAM directory",
+      "purpose": "Inspect configured grants, OUF application roles or the active HUMAN capability descriptors in the caller tenant; view CAPABILITIES prepares a complete role without granting anything",
       "useWhen": [
         "an authorized user requests permission administration"
       ],
@@ -514,7 +535,7 @@
       "operationalLimits": {
         "maxGrants": 200
       },
-      "resultSemantics": "Configured grants or a bounded proposal receipt with trusted human review path; never an approval",
+      "resultSemantics": "Configured grants, tenant roles or active HUMAN capability descriptors; never an approval",
       "securityNotes": [
         "Gateway verifies workload and delegation; owner reevaluates current policy",
         "Confirmation is only on the direct authenticated THS; no human bearer is forwarded by MCP"
@@ -570,7 +591,8 @@
             "type": "string",
             "enum": [
               "GRANTS",
-              "ROLES"
+              "ROLES",
+              "CAPABILITIES"
             ]
           }
         },
@@ -611,6 +633,25 @@
                     "policyRef"
                   ]
                 }
+              ]
+            }
+          },
+          {
+            "required": [
+              "view"
+            ],
+            "properties": {
+              "view": {
+                "const": "CAPABILITIES"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {"required": ["subjectId"]},
+                {"required": ["externalRoleRef"]},
+                {"required": ["limit"]},
+                {"required": ["after"]},
+                {"required": ["policyRef"]}
               ]
             }
           },

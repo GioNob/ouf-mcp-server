@@ -34,6 +34,8 @@ func TestApplicationRoleInputsRemainClosedAndProposalOnly(t *testing.T) {
 		valid      bool
 	}{
 		{"read", `{"view":"ROLES"}`, true},
+		{"read", `{"view":"CAPABILITIES"}`, true},
+		{"read", `{"view":"CAPABILITIES","subjectId":"person"}`, false},
 		{"read", `{"subjectId":"person"}`, true},
 		{"read", `{"view":"ROLES","subjectId":"person"}`, false},
 		{"read", `{"view":"ROLES","tenantId":"other"}`, false},
