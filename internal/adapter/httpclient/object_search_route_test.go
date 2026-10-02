@@ -14,6 +14,8 @@ import (
 func TestObjectSearchUsesExactGovernedExecuteBinding(t *testing.T) {
 	for _, tc := range []struct{ capability, suffix string }{
 		{"urban.object.search", "/urban.object.search"},
+		{"ouf.semantic.search", "/semantic/search"},
+		{"ouf.semantic.read", "/semantic/get"},
 		{"urban.object.related_search", ""},
 		{"authorization.permissions.read", "/authorization/read"},
 	} {

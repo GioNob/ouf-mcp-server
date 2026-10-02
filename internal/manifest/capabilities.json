@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0-managed-file-host-attachment-and-object-search-candidate",
+  "version": "1.7.0-semantic-read",
   "capabilities": [
     {
       "toolName": "urban.object.search",
@@ -1251,35 +1251,73 @@
       "toolName": "source.file.upload",
       "capabilityId": "ouf.managed-source.file.upload",
       "purpose": "Stage an authenticated user's CSV through the governed Gateway",
-      "useWhen": ["the authenticated human wants to choose a local CSV through the first-party picker, or a supported host supplies a governed file parameter"],
-      "doNotUseWhen": ["the requested upload mode is not configured"],
-      "preferredAlternatives": ["request the user to choose a CSV from the first-party OUF picker"],
-      "operationalLimits": {"maxArgumentsBytes": 4096, "maxResultBytes": 4096},
+      "useWhen": [
+        "the authenticated human wants to choose a local CSV through the first-party picker, or a supported host supplies a governed file parameter"
+      ],
+      "doNotUseWhen": [
+        "the requested upload mode is not configured"
+      ],
+      "preferredAlternatives": [
+        "request the user to choose a CSV from the first-party OUF picker"
+      ],
+      "operationalLimits": {
+        "maxArgumentsBytes": 4096,
+        "maxResultBytes": 4096
+      },
       "resultSemantics": "An idempotent staged asset identity; profiling and DRAFT creation are separate actions",
-      "securityNotes": ["The host URL stays in private request memory and never enters the Gateway envelope", "Gateway checks delegated HUMAN scope; Onboarding verifies streamed bytes and owner receipt"],
+      "securityNotes": [
+        "The host URL stays in private request memory and never enters the Gateway envelope",
+        "Gateway checks delegated HUMAN scope; Onboarding verifies streamed bytes and owner receipt"
+      ],
       "mcpClass": "MCP_PROPOSAL_ONLY",
       "owner": "onboarding",
       "operationClass": "COMMAND",
       "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.managed-source.file.upload",
       "gatewayBindingRef": "capability://ouf.managed-source.file.upload",
-      "baseCostEnvelope": {"hardMaxToolCalls": 1, "hardMaxGraphCalls": 0, "hardMaxDistinctObjects": 1, "hardMaxResultBytes": 4096, "hardMaxElapsedMs": 30000},
-      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1},
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 4096,
+        "hardMaxElapsedMs": 30000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
       "toolEligible": true,
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["file"],
+        "required": [
+          "file"
+        ],
         "properties": {
           "file": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["file_id", "download_url"],
+            "required": [
+              "file_id",
+              "download_url"
+            ],
             "properties": {
-              "file_id": {"type": "string", "pattern": "^file_[A-Za-z0-9_-]{1,128}$"},
-              "download_url": {"type": "string", "format": "uri"},
-              "mime_type": {"type": "string", "const": "text/csv"},
-              "file_name": {"type": "string", "maxLength": 255}
+              "file_id": {
+                "type": "string",
+                "pattern": "^file_[A-Za-z0-9_-]{1,128}$"
+              },
+              "download_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "mime_type": {
+                "type": "string",
+                "const": "text/csv"
+              },
+              "file_name": {
+                "type": "string",
+                "maxLength": 255
+              }
             }
           }
         }
@@ -1293,7 +1331,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user’s file"
+        "the user has no asset ID or wants to read a different user\u2019s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -1347,7 +1385,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user’s file"
+        "the user has no asset ID or wants to read a different user\u2019s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -1590,6 +1628,161 @@
               }
             },
             "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.search",
+      "capabilityId": "ouf.semantic.search",
+      "purpose": "Search current published semantic artifacts for assisted source mapping",
+      "useWhen": [
+        "source mapping needs official semantic metadata and immutable references"
+      ],
+      "doNotUseWhen": [
+        "publication, approval or arbitrary external query execution is requested"
+      ],
+      "preferredAlternatives": [
+        "semantic.get"
+      ],
+      "operationalLimits": {
+        "maxResults": 100,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Owner metadata with exact revision/publication pins; no adoption or lifecycle mutation; dependency truncation is explicit",
+      "securityNotes": [
+        "Gateway workload and signed delegation required",
+        "Owner revalidates purpose-bound receipt and current authorization policy",
+        "No latest revision fallback; historical reads never approve new mappings"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "SEARCH",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.search",
+      "gatewayBindingRef": "capability://ouf.semantic.search",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "q"
+        ],
+        "properties": {
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CLASS",
+              "PROPERTY",
+              "RELATIONSHIP",
+              "VOCABULARY",
+              "CONCEPT",
+              "ONTOLOGY"
+            ]
+          },
+          "namespace": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "range": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.get",
+      "capabilityId": "ouf.semantic.read",
+      "purpose": "Read one exact published semantic reference including its definition and constraints",
+      "useWhen": [
+        "source mapping needs official semantic metadata and immutable references"
+      ],
+      "doNotUseWhen": [
+        "publication, approval or arbitrary external query execution is requested"
+      ],
+      "preferredAlternatives": [
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxResults": 1,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Owner metadata with exact revision/publication pins; no adoption or lifecycle mutation; dependency truncation is explicit",
+      "securityNotes": [
+        "Gateway workload and signed delegation required",
+        "Owner revalidates purpose-bound receipt and current authorization policy",
+        "No latest revision fallback; historical reads never approve new mappings"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.read",
+      "gatewayBindingRef": "capability://ouf.semantic.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "semanticId",
+          "revisionId",
+          "publicationSetId"
+        ],
+        "properties": {
+          "semanticId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "revisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "publicationSetId": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       }
