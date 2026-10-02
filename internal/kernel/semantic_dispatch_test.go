@@ -66,7 +66,7 @@ func TestSemanticSearchUsesPublishedReadDescriptorAndPreservesArguments(t *testi
 			t.Fatal(err)
 		}
 		for _, tool := range tools.Tools {
-			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.semantic search.confirm" {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
 				t.Fatal("human admin exposed as tool")
 			}
 			if tool.Name == "semantic.search" && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
@@ -139,7 +139,7 @@ func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, tool := range tools.Tools {
-			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.semantic get.confirm" {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
 				t.Fatal("human admin exposed as tool")
 			}
 			if tool.Name == "semantic.get" && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
