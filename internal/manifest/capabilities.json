@@ -1722,7 +1722,7 @@
     },
     {
       "toolName": "semantic.get",
-      "capabilityId": "ouf.semantic.read",
+      "capabilityId": "ouf.semantic.consultation.read",
       "purpose": "Read one exact published semantic reference including its definition and constraints",
       "useWhen": [
         "source mapping needs official semantic metadata and immutable references"
@@ -1747,8 +1747,8 @@
       "owner": "semantic",
       "operationClass": "READ",
       "publicationState": "ACTIVE",
-      "requiredAuthorizationCapability": "ouf.semantic.read",
-      "gatewayBindingRef": "capability://ouf.semantic.read",
+      "requiredAuthorizationCapability": "ouf.semantic.consultation.read",
+      "gatewayBindingRef": "capability://ouf.semantic.consultation.read",
       "baseCostEnvelope": {
         "hardMaxToolCalls": 1,
         "hardMaxGraphCalls": 0,

@@ -91,9 +91,10 @@ func TestSemanticSearchUsesPublishedReadDescriptorAndPreservesArguments(t *testi
 }
 
 func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
-	const capID = "ouf.semantic.read"
+	const capID = "ouf.semantic.consultation.read"
+	const scopeID = "ouf.semantic.read"
 	now := time.Now().UTC()
-	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "READ", RequiredScope: capID, AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "READ", RequiredScope: scopeID, AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
 	if err := cache.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []string{capID, "mcp.connect"} {
+	for _, scope := range []string{scopeID, "mcp.connect"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
 				r.Header.Set(k, v)
@@ -151,7 +152,7 @@ func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if scope == capID {
+		if scope == scopeID {
 			if result.IsError || calls.Load() != before+1 {
 				t.Fatalf("semantic get failed: %+v", result)
 			}

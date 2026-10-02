@@ -142,7 +142,7 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode
 	case "ouf.semantic.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/search"
-	case "ouf.semantic.read":
+	case "ouf.semantic.consultation.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/get"
 	case "urban.object.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
