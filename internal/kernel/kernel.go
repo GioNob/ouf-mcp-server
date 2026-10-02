@@ -290,7 +290,7 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	if strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)

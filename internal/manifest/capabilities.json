@@ -1657,7 +1657,7 @@
       ],
       "mcpClass": "MCP_TOOL",
       "owner": "semantic",
-      "operationClass": "SEARCH",
+      "operationClass": "READ",
       "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.semantic.search",
       "gatewayBindingRef": "capability://ouf.semantic.search",
