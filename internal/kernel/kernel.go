@@ -298,6 +298,9 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		checksum, _ := snapshot.Checksum()
 		mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			args, _ := json.Marshal(input)
+			if strings.HasPrefix(c.ToolName, "semantic.") {
+				return invoke(ctx, c, checksum, args, service, 100, 262144)
+			}
 			return invoke(ctx, c, checksum, args, service, 200, 1<<20)
 		})
 		return

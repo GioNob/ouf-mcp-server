@@ -1,0 +1,21 @@
+name: Semantic dispatch Gateway schema
+on:
+  push:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/semantic-gateway-schema.yml']
+  pull_request:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/semantic-gateway-schema.yml']
+permissions: {contents: read}
+jobs:
+  semantic-envelope:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: c14d3f230684e3cb42c283b52f4210d5bfff3dc7
+          path: .pairwise/semantic-gateway
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.25.13', cache: true}
+      - run: pip install -r .pairwise/semantic-gateway/requirements-dev.txt
+      - run: GATEWAY_SEMANTIC_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway" go test ./internal/kernel -run 'TestSemantic(Search|Get)' -v

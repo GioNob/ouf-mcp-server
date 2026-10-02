@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
@@ -12,10 +13,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func assertSemanticGatewaySchema(t *testing.T, name string, in orchestration.GatewayRequest) {
+	t.Helper()
+	if in.MaxResultBytes != 262144 {
+		t.Errorf("semantic dispatch byte limit %d exceeds Gateway contract", in.MaxResultBytes)
+	}
+	root := os.Getenv("GATEWAY_SEMANTIC_PAIRWISE_ROOT")
+	if root == "" {
+		return
+	}
+	body, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("python3", "-B", "-c", "import json,sys,jsonschema; jsonschema.validate(json.load(sys.stdin),json.load(open(sys.argv[1])))", filepath.Join(root, "schemas", "mcp-gateway-semantic-"+name+"-dispatch-v1.json"))
+	command.Stdin = bytes.NewReader(body)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("actual Gateway semantic %s schema rejected MCP envelope: %s: %v", name, output, err)
+	}
+}
 
 func TestSemanticSearchUsesPublishedReadDescriptorAndPreservesArguments(t *testing.T) {
 	const capID = "ouf.semantic.search"
@@ -35,6 +59,7 @@ func TestSemanticSearchUsesPublishedReadDescriptorAndPreservesArguments(t *testi
 			t.Fatal(err)
 		}
 		var args map[string]any
+		assertSemanticGatewaySchema(t, "search", in)
 		json.Unmarshal(in.Arguments, &args)
 		if args["q"] != "Cinema" || args["limit"] != float64(1) || args["type"] != "CLASS" || args["namespace"] != "urn:test:" || args["domain"] != "urn:test:domain" || args["range"] != "urn:test:range" || len(args) != 6 || in.OperationClass != "READ" || in.Owner != "semantic" || in.Identity.Delegation != "" {
 			t.Error("semantic search arguments or owner changed")
@@ -109,6 +134,7 @@ func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
 			t.Fatal(err)
 		}
 		var args map[string]any
+		assertSemanticGatewaySchema(t, "get", in)
 		json.Unmarshal(in.Arguments, &args)
 		if args["semanticId"] != "urn:test:Cinema" || args["revisionId"] != "11111111-1111-4111-8111-111111111111" || args["publicationSetId"] != "22222222-2222-4222-8222-222222222222" || len(args) != 3 || in.OperationClass != "READ" || in.Owner != "semantic" || in.Identity.Delegation != "" {
 			t.Error("semantic get arguments or owner changed")
