@@ -6,12 +6,12 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ouf-mcp ./cmd/ouf-mcp \
-    && mkdir /runtime-tmp \
-    && chmod 1777 /runtime-tmp
+    && mkdir -p /runtime-rootfs/tmp \
+    && chmod 1777 /runtime-rootfs/tmp
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build --chmod=1777 /runtime-tmp /tmp
+COPY --from=build /runtime-rootfs/ /
 COPY --from=build /out/ouf-mcp /usr/local/bin/ouf-mcp
 USER 10005:10005
 WORKDIR /app
