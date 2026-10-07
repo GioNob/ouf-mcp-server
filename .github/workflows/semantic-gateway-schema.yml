@@ -13,9 +13,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: c14d3f230684e3cb42c283b52f4210d5bfff3dc7
+          ref: 5b1d31935ea60bc4fee2595f5810a1baebd5898d
           path: .pairwise/semantic-gateway
       - uses: actions/setup-go@v6
         with: {go-version: '1.25.13', cache: true}
       - run: pip install -r .pairwise/semantic-gateway/requirements-dev.txt
-      - run: GATEWAY_SEMANTIC_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway" go test ./internal/kernel -run 'TestSemantic(Search|Get)' -v
+      - run: GATEWAY_SEMANTIC_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway" go test ./internal/kernel -run 'TestSemantic(Search|Get)|TestDiscoveryCandidateMCPDispatch' -v
