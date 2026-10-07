@@ -5,12 +5,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ouf-mcp ./cmd/ouf-mcp
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ouf-mcp ./cmd/ouf-mcp \
+    && mkdir /runtime-tmp \
+    && chmod 1777 /runtime-tmp
 
-FROM alpine:3.22
-RUN apk add --no-cache ca-certificates \
-    && addgroup -g 10005 -S ouf \
-    && adduser -u 10005 -S -D -H -G ouf ouf
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build --chmod=1777 /runtime-tmp /tmp
 COPY --from=build /out/ouf-mcp /usr/local/bin/ouf-mcp
 USER 10005:10005
 WORKDIR /app
