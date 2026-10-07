@@ -1,0 +1,190 @@
+name: Signed mcp discovery candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/semantic-discovery-mcp-tools]
+    paths: [.github/workflows/signed-discovery-candidate.yml]
+permissions:
+  contents: read
+  attestations: write
+  id-token: write
+concurrency:
+  group: ouf-static-mcp-candidate
+  cancel-in-progress: false
+jobs:
+  build-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-mcp-server
+          ref: 3d51524eeddb539d6f78961447e64d9d640141c4
+          path: mcp-source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-semantic-registry
+          ref: 84e91e199892bfda1d116a49f53a9990f61724c7
+          path: verification-source
+          persist-credentials: false
+      - name: Build and exercise static non-root binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C mcp-source rev-parse HEAD)" = 3d51524eeddb539d6f78961447e64d9d640141c4
+          docker build --label org.opencontainers.image.revision=3d51524eeddb539d6f78961447e64d9d640141c4 -t ouf-mcp:static-56783ce mcp-source
+          test "$(docker image inspect ouf-mcp:static-56783ce --format '{{.Config.User}}')" = 10005:10005
+          docker run --rm -e MCP_DATABASE_URL=unused-for-help ouf-mcp:static-56783ce server -h
+          mkdir package
+          docker save ouf-mcp:static-56783ce > package/mcp.image.tar
+          docker image inspect ouf-mcp:static-56783ce > package/build-image.json
+      - name: Prepare existing pinned offline scanners
+        run: sudo /usr/bin/python3 -B verification-source/tests/prepare_native_vulnerability_scanners.py --database-pin verification-source/docs/handoffs/receipts/SEMANTIC_IMAGE_VULNERABILITY_DATABASE_PIN_2026-10-07.json
+      - name: Verify image, CA roots, temporary directory and vulnerability threshold
+        shell: bash
+        run: |
+          sudo /usr/bin/python3 -B - <<'PY'
+          import ast, base64, gzip, hashlib, json, os, subprocess, sys, tarfile
+          from pathlib import Path
+          sys.path.insert(0, str(Path("verification-source").resolve()))
+          from tools import verify_semantic_image_archive as archive
+          def verify_general_image(path, expected_id):
+              # Read archive members only; no rootfs files are extracted or executed.
+              blobs, names = {}, set()
+              with tarfile.open(path, "r:") as bundle:
+                  members = bundle.getmembers()
+                  assert len(members) <= 512
+                  for entry in members:
+                      name = archive.path_name(entry.name)
+                      assert name not in names
+                      names.add(name)
+                      if entry.isdir():
+                          continue
+                      assert entry.isfile() and 0 <= entry.size <= 2147483648
+                      source = bundle.extractfile(entry)
+                      prefix = source.read(min(entry.size, 512))
+                      h = hashlib.sha256(prefix)
+                      metadata = prefix.lstrip().startswith((b"{", b"["))
+                      chunks = [prefix] if metadata else []
+                      if metadata:
+                          assert entry.size <= 2097152
+                      while chunk := source.read(65536):
+                          h.update(chunk)
+                          if metadata:
+                              chunks.append(chunk)
+                      row = {"sha256":h.hexdigest(), "size":entry.size}
+                      if name.startswith("blobs/sha256/"):
+                          assert name == "blobs/sha256/" + row["sha256"]
+                      if metadata:
+                          row["json"] = archive.json_bytes(b"".join(chunks))
+                      else:
+                          stream = bundle.extractfile(entry)
+                          if prefix.startswith(bytes.fromhex("1f8b")):
+                              stream = gzip.GzipFile(fileobj=stream)
+                          diff = hashlib.sha256()
+                          size = 0
+                          while chunk := stream.read(65536):
+                              size += len(chunk)
+                              assert size <= 2147483648
+                              diff.update(chunk)
+                          row["diffId"] = "sha256:" + diff.hexdigest()
+                      blobs[name] = row
+                  manifests = blobs["manifest.json"]["json"]
+                  assert len(manifests) == 1
+                  item = manifests[0]
+                  config = blobs[archive.path_name(item["Config"])]
+                  doc = config["json"]
+                  layers = item["Layers"]
+                  diffs = doc["rootfs"]["diff_ids"]
+                  assert doc["rootfs"]["type"] == "layers"
+                  assert len(layers) == len(diffs) and 1 <= len(layers) <= 256
+                  assert len(set(layers)) == len(layers)
+                  assert (doc["os"], doc["architecture"]) == ("linux", "amd64")
+                  for name, expected in zip(layers, diffs):
+                      assert blobs[archive.path_name(name)]["diffId"] == expected
+                  kind = archive.image_identity_binding(blobs, expected_id, config, layers, ("linux", "amd64"))
+                  return {"configByteSha256":config["sha256"], "imageIdentityBindingKind":kind}
+          
+          verify = verify_general_image
+          root = Path("/root/ouf-static-mcp")
+          root.mkdir(mode=0o700)
+          output = Path("package").resolve()
+          image = json.loads((output / "build-image.json").read_bytes())[0]
+          verified = verify(output / "mcp.image.tar", image["Id"])
+          home = root / "home"
+          home.mkdir(mode=0o700)
+          env = {"PATH":"/usr/bin:/bin", "HOME":str(home), "XDG_CONFIG_HOME":str(home), "SYFT_CHECK_FOR_APP_UPDATE":"false", "SYFT_PACKAGE_EXCLUDE_BINARY_OVERLAP_BY_OWNERSHIP":"false"}
+          syft = output / "mcp.syft.json"
+          subprocess.run(["/usr/bin/unshare","--net","--","/root/ouf-ci-vulnerability/syft","scan","docker-archive:"+str(output/"mcp.image.tar"),"--quiet","-o","syft-json="+str(syft)],env=env,check=True,timeout=180)
+          sbom = json.loads(syft.read_bytes())
+          assert sbom["source"]["metadata"]["imageID"] == "sha256:" + verified["configByteSha256"]
+          assert hashlib.sha256(base64.b64decode(sbom["source"]["metadata"]["config"],validate=True)).hexdigest() == verified["configByteSha256"]
+          assert not any(p["name"] in {"libcrypto3","libssl3","zlib"} for p in sbom["artifacts"])
+          scan = subprocess.run(["/usr/bin/python3","-B","verification-source/tests/scan_semantic_extended_inventory.py","--sbom",str(syft)],capture_output=True,check=True,timeout=400)
+          report = json.loads(scan.stdout)
+          (output / "mcp.grype.json").write_bytes(scan.stdout)
+          counts = {k:0 for k in ("Critical","High","Medium","Low","Negligible","Unknown")}
+          for match in report["matches"]:
+              counts[match["vulnerability"]["severity"]] += 1
+          accepted = not any(counts[k] for k in ("Critical","High","Unknown")) and not report.get("alertsByPackage")
+          result = {"schema":"ouf.mcp.static-candidate.v1","sourceCommit":"3d51524eeddb539d6f78961447e64d9d640141c4","imageId":image["Id"],"archiveByteVerified":True,"runtimeUser":image["Config"]["User"],"severityCounts":counts,"thresholdMet":accepted,"releaseApplied":False,"acceptanceGranted":False,"publisherTrustAccepted":False}
+          (output / "inventory.json").write_text(json.dumps(result,indent=2)+chr(10))
+          print("OUF_STATIC_MCP_CANDIDATE="+json.dumps(result,sort_keys=True))
+          if not accepted:
+              raise SystemExit("STATIC_MCP_SCAN_BLOCKED")
+          PY
+      - name: Check final runtime filesystem without starting the service
+        run: |
+          set -euo pipefail
+          docker create --name mcp-filesystem-proof ouf-mcp:static-56783ce
+          docker export mcp-filesystem-proof > package/rootfs.tar
+          docker rm mcp-filesystem-proof
+          python3 - <<'PY'
+          import tarfile
+          with tarfile.open("package/rootfs.tar") as root:
+              assert root.getmember("tmp").mode == 0o1777
+              assert root.getmember("etc/ssl/certs/ca-certificates.crt").size > 1024
+              assert root.getmember("usr/local/bin/ouf-mcp").mode & 0o111
+          print("STATIC_MCP_RUNTIME_FILES=PASS")
+          PY
+          rm package/rootfs.tar
+          gzip -n package/mcp.image.tar
+      - name: Make public build evidence readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" package
+      - name: Bind exact archive and evidence digests
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib
+          root=pathlib.Path('package')
+          files=sorted(p for p in root.iterdir() if p.is_file())
+          (root/'checksums.sha256').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p)+'\n' for p in files))
+          PY
+      - name: Attest candidate bytes and scan evidence
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: package/checksums.sha256
+          create-storage-record: false
+      - name: Verify exact producer identity and retain signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$PROVENANCE_BUNDLE" package/provenance.json
+          for file in mcp.image.tar.gz inventory.json mcp.syft.json mcp.grype.json build-image.json; do
+            gh attestation verify "package/$file" --repo GioNob/ouf-mcp-server --signer-workflow GioNob/ouf-mcp-server/.github/workflows/signed-discovery-candidate.yml --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" --deny-self-hosted-runners --bundle "$PROVENANCE_BUNDLE" --format json > "package/$file.verification.json"
+          done
+          echo SIGNED_DISCOVERY_CANDIDATE_CRYPTO=PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-mcp-discovery-candidate-${{ github.run_id }}
+          path: package/
+          if-no-files-found: warn
+          retention-days: 30
