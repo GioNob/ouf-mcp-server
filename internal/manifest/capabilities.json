@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0-semantic-read",
+  "version": "1.8.0-semantic-discovery-candidate",
   "capabilities": [
     {
       "toolName": "urban.object.search",
@@ -1331,7 +1331,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user\u2019s file"
+        "the user has no asset ID or wants to read a different user’s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -1385,7 +1385,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user\u2019s file"
+        "the user has no asset ID or wants to read a different user’s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -1783,6 +1783,204 @@
           "publicationSetId": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.discovery.request",
+      "capabilityId": "ouf.semantic.discovery",
+      "purpose": "Start a bounded national semantic discovery job for assisted source mapping",
+      "useWhen": [
+        "national discovery is needed before proposing semantic mapping"
+      ],
+      "doNotUseWhen": [
+        "adoption, publication, approval or local fallback is requested"
+      ],
+      "preferredAlternatives": [
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxResults": 100,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Persisted asynchronous job state; PENDING does not prove provider success or approve mapping",
+      "securityNotes": [
+        "Gateway workload and signed HUMAN delegation required",
+        "Owner rechecks current discovery policy and caller issuer/tenant/subject",
+        "No arbitrary endpoint; discovery does not authorize adoption or publication"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.discovery",
+      "gatewayBindingRef": "capability://ouf.semantic.discovery",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestedArtifactType",
+          "intent",
+          "preferredLanguages",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "requestedArtifactType": {
+            "type": "string",
+            "enum": [
+              "CLASS",
+              "PROPERTY",
+              "RELATIONSHIP",
+              "VOCABULARY",
+              "CONCEPT",
+              "ONTOLOGY"
+            ]
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "preferredLanguages": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$"
+            }
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{16,128}$"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.discovery.status",
+      "capabilityId": "ouf.semantic.discovery.status",
+      "purpose": "Read the state of one caller-owned semantic discovery job",
+      "useWhen": [
+        "a requestId from semantic.discovery.request is known"
+      ],
+      "doNotUseWhen": [
+        "adoption, publication, approval or local fallback is requested"
+      ],
+      "preferredAlternatives": [
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxResults": 100,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Persisted owner state; FAILED remains a failure and empty results are not inferred",
+      "securityNotes": [
+        "Gateway workload and signed HUMAN delegation required",
+        "Owner rechecks current discovery policy and caller issuer/tenant/subject",
+        "No arbitrary endpoint; discovery does not authorize adoption or publication"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.discovery.status",
+      "gatewayBindingRef": "capability://ouf.semantic.discovery.status",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.discovery.candidates",
+      "capabilityId": "ouf.semantic.discovery.candidates",
+      "purpose": "Read unexpired candidates from one caller-owned national discovery job",
+      "useWhen": [
+        "a requestId from semantic.discovery.request is known"
+      ],
+      "doNotUseWhen": [
+        "adoption, publication, approval or local fallback is requested"
+      ],
+      "preferredAlternatives": [
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxResults": 100,
+        "maxResultBytes": 262144
+      },
+      "resultSemantics": "Unapproved provider candidates; these are not published semantic revisions",
+      "securityNotes": [
+        "Gateway workload and signed HUMAN delegation required",
+        "Owner rechecks current discovery policy and caller issuer/tenant/subject",
+        "No arbitrary endpoint; discovery does not authorize adoption or publication"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.discovery.candidates",
+      "gatewayBindingRef": "capability://ouf.semantic.discovery.candidates",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 1,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
           }
         }
       }

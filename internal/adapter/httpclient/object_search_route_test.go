@@ -17,6 +17,9 @@ func TestObjectSearchUsesExactGovernedExecuteBinding(t *testing.T) {
 		{"ouf.semantic.search", "/semantic/search"},
 		{"ouf.semantic.consultation.read", "/semantic/get"},
 		{"urban.object.related_search", ""},
+		{"ouf.semantic.discovery", "/semantic/discovery/request"},
+		{"ouf.semantic.discovery.status", "/semantic/discovery/status"},
+		{"ouf.semantic.discovery.candidates", "/semantic/discovery/candidates"},
 		{"authorization.permissions.read", "/authorization/read"},
 	} {
 		t.Run(tc.capability, func(t *testing.T) {
