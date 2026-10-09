@@ -35,7 +35,7 @@ jobs:
           ref: fb2dd51dfc204577a47c1e702f17531dd0709b3c
           path: .pairwise/authorization
       - uses: actions/setup-go@v6
-        with: {go-version: '1.25.13', cache: true}
+        with: {go-version: '1.26.9', cache: true}
       - run: go mod download
       - run: node scripts/test_picker_portability.mjs
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
