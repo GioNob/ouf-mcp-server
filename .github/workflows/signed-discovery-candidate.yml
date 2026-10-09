@@ -2,7 +2,7 @@ name: Signed mcp discovery candidate
 on:
   workflow_dispatch:
   push:
-    branches: [codex/semantic-discovery-mcp-tools]
+    branches: [codex/discovery-go-security-20261009]
     paths: [.github/workflows/signed-discovery-candidate.yml]
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-mcp-server
-          ref: 3d51524eeddb539d6f78961447e64d9d640141c4
+          ref: 3ba1d4abcf62af1572997a217a333fa8d231c29f
           path: mcp-source
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -35,15 +35,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C mcp-source rev-parse HEAD)" = 3d51524eeddb539d6f78961447e64d9d640141c4
-          docker build --label org.opencontainers.image.revision=3d51524eeddb539d6f78961447e64d9d640141c4 -t ouf-mcp:static-56783ce mcp-source
+          test "$(git -C mcp-source rev-parse HEAD)" = 3ba1d4abcf62af1572997a217a333fa8d231c29f
+          docker build --label org.opencontainers.image.revision=3ba1d4abcf62af1572997a217a333fa8d231c29f -t ouf-mcp:static-56783ce mcp-source
           test "$(docker image inspect ouf-mcp:static-56783ce --format '{{.Config.User}}')" = 10005:10005
           docker run --rm -e MCP_DATABASE_URL=unused-for-help ouf-mcp:static-56783ce server -h
           mkdir package
           docker save ouf-mcp:static-56783ce > package/mcp.image.tar
           docker image inspect ouf-mcp:static-56783ce > package/build-image.json
+      - name: Bind the exact fresh database from the remediation source
+        run: cp docs/discovery-remediation-database-pin-20261009.json verification-source/docs/discovery-remediation-database-pin-20261009.json
       - name: Prepare existing pinned offline scanners
-        run: sudo /usr/bin/python3 -B verification-source/tests/prepare_native_vulnerability_scanners.py --database-pin verification-source/docs/handoffs/receipts/SEMANTIC_IMAGE_VULNERABILITY_DATABASE_PIN_2026-10-07.json
+        run: sudo /usr/bin/python3 -B verification-source/tests/prepare_native_vulnerability_scanners.py --database-pin verification-source/docs/discovery-remediation-database-pin-20261009.json
       - name: Verify image, CA roots, temporary directory and vulnerability threshold
         shell: bash
         run: |
@@ -131,7 +133,7 @@ jobs:
           for match in report["matches"]:
               counts[match["vulnerability"]["severity"]] += 1
           accepted = not any(counts[k] for k in ("Critical","High","Unknown")) and not report.get("alertsByPackage")
-          result = {"schema":"ouf.mcp.static-candidate.v1","sourceCommit":"3d51524eeddb539d6f78961447e64d9d640141c4","imageId":image["Id"],"archiveByteVerified":True,"runtimeUser":image["Config"]["User"],"severityCounts":counts,"thresholdMet":accepted,"releaseApplied":False,"acceptanceGranted":False,"publisherTrustAccepted":False}
+          result = {"schema":"ouf.mcp.static-candidate.v1","sourceCommit":"3ba1d4abcf62af1572997a217a333fa8d231c29f","imageId":image["Id"],"archiveByteVerified":True,"runtimeUser":image["Config"]["User"],"severityCounts":counts,"thresholdMet":accepted,"releaseApplied":False,"acceptanceGranted":False,"publisherTrustAccepted":False}
           (output / "inventory.json").write_text(json.dumps(result,indent=2)+chr(10))
           print("OUF_STATIC_MCP_CANDIDATE="+json.dumps(result,sort_keys=True))
           if not accepted:

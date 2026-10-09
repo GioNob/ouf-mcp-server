@@ -10,7 +10,7 @@ separa la correzione software dall'accettazione live ancora bloccata.
 
 MCP 1A/1B implements the protocol kernel and durable lifecycle defined by MCP Server PET v1.2 in Reality Baseline Package v1.6.
 
-- Go 1.25.13 and official MCP Go SDK v1.7.0 are pinned.
+- Go 1.26.9 and official MCP Go SDK v1.7.0 are pinned.
 - `/mcp` accepts only MCP 2026-07-28 Streamable HTTP modern/stateless POST requests.
 - `server/discover`, `tools/list` and closed JSON Schema descriptors are provided by the official SDK.
 - Legacy initialize/session transport is disabled.
@@ -20,7 +20,7 @@ MCP 1A/1B implements the protocol kernel and durable lifecycle defined by MCP Se
 - Migration is an explicit role; application processes never auto-migrate.
 - Tool execution remains fail-closed until Gateway mediation and authorization land in MCP 1C.
 
-Run `scripts/verify.sh` with Go 1.25.13. Commands are `ouf-mcp migrate`, `ouf-mcp server`, and `ouf-mcp maintenance-worker` and require `MCP_DATABASE_URL`.
+Run `scripts/verify.sh` with Go 1.26.9. Commands are `ouf-mcp migrate`, `ouf-mcp server`, and `ouf-mcp maintenance-worker` and require `MCP_DATABASE_URL`.
 
 See [MCP 1A traceability](docs/MCP_1A_TRACEABILITY.md) and [MCP 1B traceability](docs/MCP_1B_TRACEABILITY.md).
 ## MCP 1C runtime configuration
