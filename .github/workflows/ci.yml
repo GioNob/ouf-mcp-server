@@ -22,12 +22,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 0ab1a9290b03c51ac71e0e90ae70582241ab48d5
+          ref: 85b91415f6f5abab617e78c9baa5628c74921b89
           path: .pairwise/gateway
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-ingestion-runtime
-          ref: 58d9caf609b2d1f3b8ce49d6fac0abff73f740db
+          ref: 25de72ce1b01307378874ae8aef73e9f87dd0969
           path: .pairwise/ingestion
       - uses: actions/checkout@v4
         with:

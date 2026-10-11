@@ -40,3 +40,14 @@ Normative baseline: OUF Reality Baseline Package v1.7, MCP PET v1.4 and Cross-Mo
 Integrate MCP PR51, Ingestion PR35 e Gateway PR59: priorità prima dei limiti, recuperi vecchi visibili nel catch-up supportato, conteggi Gateway dell'intera finestra e troncamento esplicito. Prove: MCP full38105960598/race38105960600 e gate sicurezza con0 vulnerabilità raggiungibili dopo aggiornamento Go/dipendenze; Ingestion native21/module137 test; Gateway229 test + APISIX reale. [Evidenza](https://github.com/GioNob/ouf-deploy/blob/main/evidence/operational-priority-qualified-20261011.json).
 
 Restano OPEN cursor/checkpoint operatore, grouping multirun per dipendenza/contatori impatto, detector/quote/capacità, outbox alert e integrazione target multi-owner/autorizzazioni. Reference/fixture e summary di finestra non provano conformità globale o salute corrente. Nessun deploy VPS o email; R9/R10 consumati e precedente preflight sospeso. Le accettazioni precedenti restano preservate.
+
+
+## Owner scope and nested read identity — 2026-10-11
+
+Nested producer invocations now carry an explicit server-resolved operational resource: tenant and module, TENANT_OPERATIONAL plus sourceRef for Ingestion; RESTRICTED_OPERATIONAL and PLATFORM incident scope for the Gateway control plane. The Ingestion-only sourceId is not forwarded to the Gateway reference producer as an invented source filter. Other supported filters remain unchanged. Fine-grained owner authorization and independent producer grants still apply; a global read grant does not imply a platform control-plane grant.
+
+Nested idempotency keys bind parent attempt/correlation, capability and the SHA-256 digest of canonical owner arguments. Equivalent reads retain their key; changed query/page arguments get a different claim. Independent calls with no parent identity receive a fresh server-generated identity. This does not reset the existing persistent admission/equivalence window or silently retry a failed producer.
+
+The paired producer baselines now include qualified owner snapshots: Gateway `85b91415f6f5abab617e78c9baa5628c74921b89` (PR60; 243 reference tests, 2 explicit skips, real APISIX proof) and Ingestion `25de72ce1b01307378874ae8aef73e9f87dd0969` (PR37; 37 focused PostgreSQL tests and all18 push/PR gates). Global MCP endpoints continue to publish the existing bounded query schema. They do not yet accept a global cursor, record a consultation receipt, or certify complete publication-revision catch-up. An owner snapshot token is not a global operator bookmark.
+
+Qualification for this MCP increment is pending native full/race/security/pairwise workflows. Three added regression groups validate owner-specific resources and filters, stable/distinct nested keys and refusal before I/O on invalid internal query shapes.

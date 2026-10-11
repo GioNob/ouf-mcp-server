@@ -293,3 +293,81 @@ func TestMalformedIncidentEnvelopeCannotBecomeEmptySuccess(t *testing.T) {
 		}
 	}
 }
+
+type scopedProducerFixture struct{ calls []orchestration.Invocation }
+
+func (f *scopedProducerFixture) Call(_ context.Context, in orchestration.Invocation) (orchestration.Result, error) {
+	f.calls = append(f.calls, in)
+	return orchestration.Result{Body: []byte(`{"items":[],"partial":false}`)}, nil
+}
+
+func TestProducerReadsCarryExplicitOwnerScopeAndCompatibleFilters(t *testing.T) {
+	caller := &scopedProducerFixture{}
+	a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+	in := aggregateInput()
+	in.Arguments = []byte(`{"sourceId":"source-a","limit":3,"state":"OPEN","since":"2026-10-11T00:00:00Z"}`)
+	for _, producer := range incidentProducers {
+		if _, ok := a.callProducer(context.Background(), in, producer); !ok {
+			t.Fatal("producer rejected")
+		}
+	}
+	for _, call := range caller.calls {
+		if call.Resource.ResourceType != "operational" || call.Resource.TenantID != in.Identity.TenantID {
+			t.Fatalf("missing owner resource: %+v", call.Resource)
+		}
+		var query map[string]any
+		if err := json.Unmarshal(call.Arguments, &query); err != nil {
+			t.Fatal(err)
+		}
+		if query["limit"] != float64(3) || query["state"] != "OPEN" || query["since"] != "2026-10-11T00:00:00Z" {
+			t.Fatalf("lost shared query filters: %s", call.Arguments)
+		}
+		if call.Owner == "gateway" {
+			if _, exists := query["sourceId"]; exists {
+				t.Fatal("Ingestion filter sent to platform owner")
+			}
+			if call.Resource.Attributes["detailLevel"] != "RESTRICTED_OPERATIONAL" || call.Resource.Attributes["incidentScope"] != "PLATFORM" || call.Resource.Attributes["module"] != "GATEWAY" {
+				t.Fatal("platform grant missing")
+			}
+		} else if query["sourceId"] != "source-a" || call.Resource.Attributes["sourceRef"] != "source-a" || call.Resource.Attributes["detailLevel"] != "TENANT_OPERATIONAL" {
+			t.Fatal("source grant/filter missing")
+		}
+	}
+}
+
+func TestNestedReadKeysBindCanonicalArgumentsAndPreserveEquivalentRetry(t *testing.T) {
+	caller := &scopedProducerFixture{}
+	a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+	in := aggregateInput()
+	for _, raw := range []string{`{"limit":3,"state":"OPEN"}`, `{"state":"OPEN","limit":3}`, `{"state":"OPEN","limit":4}`} {
+		in.Arguments = []byte(raw)
+		if _, ok := a.callProducer(context.Background(), in, incidentProducers[0]); !ok {
+			t.Fatal("producer rejected")
+		}
+	}
+	if caller.calls[0].IdempotencyKey != caller.calls[1].IdempotencyKey || caller.calls[1].IdempotencyKey == caller.calls[2].IdempotencyKey {
+		t.Fatal("nested argument identity is not stable and distinct")
+	}
+	in.AttemptID, in.CorrelationID = "", ""
+	for range 2 {
+		_, _ = a.callProducer(context.Background(), in, incidentProducers[0])
+	}
+	if caller.calls[3].IdempotencyKey == caller.calls[4].IdempotencyKey {
+		t.Fatal("unidentified independent reads share a replay claim")
+	}
+}
+
+func TestInvalidProducerQueryDoesNotCallOwner(t *testing.T) {
+	caller := &scopedProducerFixture{}
+	a := Aggregator{Caller: caller, ManifestChecksum: "manifest"}
+	for _, raw := range []string{`null`, `[]`, `{bad`, `{"sourceId":123}`} {
+		in := aggregateInput()
+		in.Arguments = []byte(raw)
+		if _, ok := a.callProducer(context.Background(), in, incidentProducers[0]); ok {
+			t.Fatal("invalid producer query accepted")
+		}
+	}
+	if len(caller.calls) != 0 {
+		t.Fatal("invalid request reached owner")
+	}
+}

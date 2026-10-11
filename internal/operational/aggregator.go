@@ -2,6 +2,7 @@ package operational
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/statusview"
+	"github.com/google/uuid"
 )
 
 type GovernedCaller interface {
@@ -200,14 +202,24 @@ func (a Aggregator) callProducers(ctx context.Context, in aggregateRequest, prod
 }
 
 func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, producer producerSpec) ([]byte, bool) {
-	idempotency := in.AttemptID + ":" + producer.CapabilityID
-	if in.AttemptID == "" {
-		idempotency = in.CorrelationID + ":" + producer.CapabilityID
+	arguments, resource, valid := producerRead(in, producer)
+	if !valid {
+		return nil, false
 	}
+	parent := in.AttemptID
+	if parent == "" {
+		parent = in.CorrelationID
+	}
+	if parent == "" {
+		parent = uuid.NewString()
+	}
+	// Bind each nested read/page to its canonical arguments. Reusing one
+	// parent id for different pages must not collide with an admitted request.
+	idempotency := fmt.Sprintf("%s:%s:%x", parent, producer.CapabilityID, sha256.Sum256(arguments))
 	result, err := a.Caller.Call(ctx, orchestration.Invocation{
-		Identity: in.Identity, CapabilityID: producer.CapabilityID, Owner: producer.Owner, OperationClass: "READ",
+		Identity: in.Identity, Resource: resource, CapabilityID: producer.CapabilityID, Owner: producer.Owner, OperationClass: "READ",
 		GatewayBindingRef: "capability://" + producer.CapabilityID, ManifestChecksum: a.ManifestChecksum,
-		Arguments: in.Arguments, IdempotencyKey: idempotency, CorrelationID: in.CorrelationID,
+		Arguments: arguments, IdempotencyKey: idempotency, CorrelationID: in.CorrelationID,
 		Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3,
 		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
 	})
@@ -215,6 +227,33 @@ func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, produ
 		return nil, false
 	}
 	return result.Body, true
+}
+
+// Build an owner-specific request without inventing cross-owner filter
+// equivalence. Gateway control-plane faults are platform scoped; sourceId is
+// an Ingestion collection filter, not a Gateway tenant/source grant.
+func producerRead(in aggregateRequest, producer producerSpec) (json.RawMessage, orchestration.ResourceContext, bool) {
+	var query map[string]json.RawMessage
+	if json.Unmarshal(in.Arguments, &query) != nil || query == nil {
+		return nil, orchestration.ResourceContext{}, false
+	}
+	attributes := map[string]string{"module": producer.Name}
+	if producer.Name == "GATEWAY" {
+		attributes["detailLevel"] = "RESTRICTED_OPERATIONAL"
+		attributes["incidentScope"] = "PLATFORM"
+		delete(query, "sourceId")
+	} else {
+		attributes["detailLevel"] = "TENANT_OPERATIONAL"
+		if source, exists := query["sourceId"]; exists {
+			var value string
+			if json.Unmarshal(source, &value) != nil || value == "" {
+				return nil, orchestration.ResourceContext{}, false
+			}
+			attributes["sourceRef"] = value
+		}
+	}
+	arguments, err := json.Marshal(query)
+	return arguments, orchestration.ResourceContext{ResourceType: "operational", TenantID: in.Identity.TenantID, Attributes: attributes}, err == nil
 }
 
 func combineStatus(current, next string) string {
