@@ -1,3 +1,5 @@
+**Punti di ripresa persistenti:** fondazione vettore e composizione qualificati (PR59/60); [accesso HTTP e tool MCP](docs/OPERATIONAL_PUBLICATION_HTTP.md) in qualificazione. Copertura storica GATEWAY/INGESTION; ricevute client, checkpoint di consultazione e altre storie owner restano aperti.
+
 > **Policy di piattaforma vigente:** [Resilienza, quarantena, incidenti e alert — v3](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md). Obbligatoria per sviluppo e revisione; [adozione e prove](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md).
 
 
@@ -41,3 +43,4 @@ See `docs/MCP_1C_TRACEABILITY.md` for the bounded PET coverage and explicit defe
 The maintenance worker additionally requires `MCP_GATEWAY_RECOVERY_ENDPOINT` and the same renewable workload identity configuration. It never contacts an owner directly: outcome lookup is Gateway-mediated and keyed by the persisted backend request ID.
 
 MCP 1E preserves object-budget uncertainty as durable debt. `MCP_MAX_UNKNOWN_HOLD` defaults to `24h`; expiry changes `UNKNOWN` to `UNRESOLVED` without releasing debt or retry blockers. Only verified Evidence Inbox records can drive late compensation. See `docs/MCP_1E_TRACEABILITY.md`.
+

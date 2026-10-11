@@ -38,6 +38,8 @@ type relatedSearchInput struct {
 }
 
 type operationalInput struct {
+ Coverage bool `json:"coverage,omitempty"`
+ ResumeFrom string `json:"resumeFrom,omitempty"`
 	Snapshot   bool   `json:"snapshot,omitempty"`
 	Cursor     string `json:"cursor,omitempty"`
 	IncidentID string `json:"incidentId,omitempty"`
@@ -217,3 +219,4 @@ func modernOnly(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
 	})
 }
+
