@@ -14,13 +14,16 @@ import (
 	"time"
 )
 
-type publicationHTTPPolicyFixture struct { sourceReads atomic.Int64 }
-func (p *publicationHTTPPolicyFixture) Authorize(ctx context.Context,in orchestration.AuthorizationRequest)(orchestration.AuthorizationDecision,error) {
- if in.CapabilityID=="ouf.ingestion.operations.incidents" {
-  if in.Resource.Attributes["sourceRef"]!="source-a" {return orchestration.AuthorizationDecision{},fmt.Errorf("source grant lost")}
-  p.sourceReads.Add(1)
- }
- return (controlPolicyFixture{}).Authorize(ctx,in)
+type publicationHTTPPolicyFixture struct{ sourceReads atomic.Int64 }
+
+func (p *publicationHTTPPolicyFixture) Authorize(ctx context.Context, in orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	if in.CapabilityID == "ouf.ingestion.operations.incidents" {
+		if in.Resource.Attributes["sourceRef"] != "source-a" {
+			return orchestration.AuthorizationDecision{}, fmt.Errorf("source grant lost")
+		}
+		p.sourceReads.Add(1)
+	}
+	return (controlPolicyFixture{}).Authorize(ctx, in)
 }
 
 type publicationHTTPGatewayFixture struct {
@@ -115,7 +118,7 @@ func TestOperationalControlPublicationHTTPReopenLoginAndIdleKeepsFiniteBudget(t 
 	if err = store.Pool().QueryRow(ctx, `select count(*) from ouf_mcp.operational_publication_bookmark where tenant_id=$1`, tenant).Scan(&books); err != nil {
 		t.Fatal(err)
 	}
-	if windows != 1 || consumed != 9 || reserved != 0 || gateway.root.calls != 3 || producers.calls != 6 || books != 1 || policy.sourceReads.Load()!=3 {
+	if windows != 1 || consumed != 9 || reserved != 0 || gateway.root.calls != 3 || producers.calls != 6 || books != 1 || policy.sourceReads.Load() != 3 {
 		t.Fatal("idle reset/bypass/capacity growth", windows, consumed, reserved, gateway.root.calls, producers.calls, books)
 	}
 }

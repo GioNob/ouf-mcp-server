@@ -1,9 +1,9 @@
-**Punti di ripresa persistenti:** fondazione vettore e composizione qualificati (PR59/60); [accesso HTTP e tool MCP](docs/OPERATIONAL_PUBLICATION_HTTP.md) in qualificazione. Copertura storica GATEWAY/INGESTION; ricevute client, checkpoint di consultazione e altre storie owner restano aperti.
+**Punti di ripresa persistenti:** fondazione vettore e composizione qualificati (PR59/60); [accesso HTTP e tool MCP tipizzato](docs/OPERATIONAL_PUBLICATION_HTTP.md) implementato. Prove e gate correnti nel ledger di adozione. Copertura storica GATEWAY/INGESTION; ricevute client, checkpoint di consultazione e altre storie owner restano aperti.
 
 > **Policy di piattaforma vigente:** [Resilienza, quarantena, incidenti e alert — v3](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md). Obbligatoria per sviluppo e revisione; [adozione e prove](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md).
 
 
-**Resilience v3 — prima tranche integrata:** priorità incidenti e catch-up qualificati per i perimetri MCP/Ingestion/Gateway; [prove e limiti](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md), [piano operativo](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_RESILIENCE_PLAN.md). Cursor/memoria operatore, correlazione dipendenze e alert restano aperti.
+**Resilience v3 — prima tranche integrata:** priorità incidenti e catch-up qualificati per i perimetri MCP/Ingestion/Gateway; [prove e limiti](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md), [piano operativo](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_RESILIENCE_PLAN.md). Checkpoint di consultazione, correlazione dipendenze e alert reali restano aperti.
 
 **Seconda tranche integrata e qualificata:** autorizzazione owner e proiezioni incomplete MCP; osservazione persistente delle modifiche Ingestion. [Prove e limiti](evidence/operational-read-catchup-qualified-20261011.json), [design cursor/consultazione — OPEN](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_CURSOR_DESIGN.md).
 
