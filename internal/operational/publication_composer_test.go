@@ -258,4 +258,5 @@ func TestPublicationComposerRequiresConsistentOwnerNoProgressAndParent(t *testin
 	if _, err := p.Start(context.Background(), in, "policy:1"); !errors.Is(err, ErrCursorConflict) {
 		t.Fatal("forged initial lineage accepted", err)
 	}
+	if book.writes != 0 { t.Fatal("forged owner parent issued a global position") }
 }
