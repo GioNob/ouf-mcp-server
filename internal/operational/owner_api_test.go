@@ -276,3 +276,27 @@ func TestAggregateOwnerAcceptsOnlyPublishedTypedQueries(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateOwnerRejectsResponseBeyondResultBudget(t *testing.T) {
+	_, caller, handler := aggregateOwnerFixture()
+	handler.WithAuthorization(&aggregateAuthorizationFixture{})
+	for _, owner := range []string{"ingestion", "gateway"} {
+		caller.responses["ouf."+owner+".operations.incidents"] = []byte(`{"items":[{"incident_id":"` + owner + `","impact_summary":"` + strings.Repeat("x", 300<<10) + `"}],"partial":false}`)
+	}
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, aggregateOwnerRequest("incidents", "{}"))
+	if res.Code != http.StatusServiceUnavailable || res.Body.Len() > 1024 {
+		t.Fatalf("oversized aggregate escaped its result budget: status=%d bytes=%d", res.Code, res.Body.Len())
+	}
+	// A single producer over its bound is unavailable evidence, not an empty success.
+	caller.responses["ouf.gateway.operations.incidents"] = []byte(strings.Repeat("x", (512<<10)+1))
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, aggregateOwnerRequest("incidents", "{}"))
+	var got struct {
+		Partial     bool
+		Unavailable []string `json:"unavailableProducers"`
+	}
+	if res.Code != 200 || json.Unmarshal(res.Body.Bytes(), &got) != nil || !got.Partial || len(got.Unavailable) != 1 || got.Unavailable[0] != "GATEWAY" {
+		t.Fatal("oversized producer was not explicit unavailable evidence")
+	}
+}
