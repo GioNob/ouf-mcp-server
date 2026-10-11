@@ -21,10 +21,10 @@ jobs:
       - run: go mod download
       - name: Native formatter and exact source evidence
         run: |
-          gofmt -w internal/operational/cursor_composer_test.go internal/operational/owner_api.go internal/operational/cursor_http.go internal/operational/cursor_http_test.go cmd/ouf-mcp/main.go
+          gofmt -w internal/adapter/postgres/operational_cursor_service_integration_test.go internal/operational/cursor_composer_test.go internal/operational/owner_api.go internal/operational/cursor_http.go internal/operational/cursor_http_test.go cmd/ouf-mcp/main.go
           python3 - <<'PY'
           import json,pathlib
-          paths=["internal/operational/cursor_composer_test.go","internal/operational/owner_api.go","internal/operational/cursor_http.go","internal/operational/cursor_http_test.go","cmd/ouf-mcp/main.go"]
+          paths=["internal/adapter/postgres/operational_cursor_service_integration_test.go","internal/operational/cursor_composer_test.go","internal/operational/owner_api.go","internal/operational/cursor_http.go","internal/operational/cursor_http_test.go","cmd/ouf-mcp/main.go"]
           for path in paths:
               print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
           PY
