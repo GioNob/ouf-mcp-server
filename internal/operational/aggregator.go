@@ -109,6 +109,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		return nil, fmt.Errorf("operational aggregator is not configured")
 	}
 	items := make([]map[string]any, 0)
+	producerTruncated := false
 	unavailable := make([]string, 0, 2)
 	partial := false
 	for result := range a.callProducers(ctx, in, incidentProducers) {
@@ -118,8 +119,9 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			continue
 		}
 		var decoded struct {
-			Items   []map[string]any `json:"items"`
-			Partial bool             `json:"partial"`
+			Items     []map[string]any `json:"items"`
+			Partial   bool             `json:"partial"`
+			Truncated bool             `json:"truncated"`
 		}
 		if json.Unmarshal(result.Body, &decoded) != nil {
 			partial = true
@@ -133,6 +135,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			items = append(items, item)
 		}
 		partial = partial || decoded.Partial
+		producerTruncated = producerTruncated || decoded.Truncated
 	}
 
 	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
@@ -157,12 +160,14 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
-	sort.SliceStable(items, func(i, j int) bool { return stringValue(items[i]["module"]) < stringValue(items[j]["module"]) })
+	sort.Slice(items, func(i, j int) bool { return incidentBefore(items[i], items[j]) })
+	truncated := producerTruncated || len(items) > limit
 	if len(items) > limit {
 		items = items[:limit]
 	}
 	sort.Strings(unavailable)
-	return json.Marshal(map[string]any{"items": items, "partial": partial, "unavailableProducers": unavailable})
+	return json.Marshal(map[string]any{"items": items, "partial": partial, "unavailableProducers": unavailable, "truncated": truncated,
+		"selectionScope": "RETURNED_OWNER_PROJECTIONS", "priorityProfile": "ouf.incident-priority.v1"})
 }
 
 func (a Aggregator) callProducers(ctx context.Context, in aggregateRequest, producers []producerSpec) <-chan producerResult {
@@ -229,4 +234,64 @@ func mapStatusSeverity(status string) string {
 		return "ERROR"
 	}
 	return "WARNING"
+}
+
+// incidentBefore prioritizes owner-provided evidence before the aggregate limit.
+// It does not infer business impact from occurrence counts or merge owner identities.
+func incidentBefore(a, b map[string]any) bool {
+	av, bv := incidentField(a, "lifecycle_state", "lifecycleState"), incidentField(b, "lifecycle_state", "lifecycleState")
+	if (av == "RESOLVED") != (bv == "RESOLVED") {
+		return av != "RESOLVED"
+	}
+	if ar, br := severityRank(stringValue(a["severity"])), severityRank(stringValue(b["severity"])); ar != br {
+		return ar > br
+	}
+	aa, _ := incidentValue(a, "action_required", "actionRequired").(bool)
+	ba, _ := incidentValue(b, "action_required", "actionRequired").(bool)
+	if aa != ba {
+		return aa
+	}
+	at, bt := incidentTime(a), incidentTime(b)
+	if !at.Equal(bt) {
+		return at.After(bt)
+	}
+	if am, bm := stringValue(a["module"]), stringValue(b["module"]); am != bm {
+		return am < bm
+	}
+	return incidentField(a, "incident_id", "incidentId") < incidentField(b, "incident_id", "incidentId")
+}
+
+func severityRank(value string) int {
+	switch value {
+	case "CRITICAL":
+		return 4
+	case "ERROR":
+		return 3
+	case "WARNING":
+		return 2
+	case "INFO":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func incidentValue(item map[string]any, snake, camel string) any {
+	if value, ok := item[snake]; ok {
+		return value
+	}
+	return item[camel]
+}
+
+func incidentField(item map[string]any, snake, camel string) string {
+	return stringValue(incidentValue(item, snake, camel))
+}
+
+func incidentTime(item map[string]any) time.Time {
+	value := incidentField(item, "last_seen_at", "lastSeenAt")
+	if value == "" {
+		value = incidentField(item, "first_seen_at", "firstSeenAt")
+	}
+	parsed, _ := time.Parse(time.RFC3339Nano, value)
+	return parsed
 }

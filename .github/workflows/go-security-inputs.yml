@@ -1,0 +1,20 @@
+name: Qualified Go security dependency inputs
+on:
+  push:
+    paths: [.github/workflows/go-security-inputs.yml]
+permissions: {contents: read}
+jobs:
+  checksum-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: go mod edit -go=1.26.9
+      - run: go get golang.org/x/text@v0.41.0
+      - run: go mod tidy
+      - name: Emit verified module and checksum inputs
+        run: |
+          cat go.mod
+          cat go.sum

@@ -1,0 +1,13 @@
+name: Incident priority resilience v3
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  bounded-priority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: go mod download
+      - run: go test -race ./internal/operational -count=1 -v
