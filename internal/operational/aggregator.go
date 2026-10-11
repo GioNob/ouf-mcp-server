@@ -109,6 +109,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		return nil, fmt.Errorf("operational aggregator is not configured")
 	}
 	items := make([]map[string]any, 0)
+	producerTruncated := false
 	unavailable := make([]string, 0, 2)
 	partial := false
 	for result := range a.callProducers(ctx, in, incidentProducers) {
@@ -120,6 +121,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		var decoded struct {
 			Items   []map[string]any `json:"items"`
 			Partial bool             `json:"partial"`
+			Truncated bool           `json:"truncated"`
 		}
 		if json.Unmarshal(result.Body, &decoded) != nil {
 			partial = true
@@ -133,6 +135,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			items = append(items, item)
 		}
 		partial = partial || decoded.Partial
+		producerTruncated = producerTruncated || decoded.Truncated
 	}
 
 	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
@@ -158,7 +161,7 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		limit = 50
 	}
 	sort.Slice(items, func(i, j int) bool { return incidentBefore(items[i], items[j]) })
-	truncated := len(items) > limit
+	truncated := producerTruncated || len(items) > limit
 	if len(items) > limit {
 		items = items[:limit]
 	}

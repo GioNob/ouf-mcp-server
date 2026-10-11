@@ -136,20 +136,24 @@ func stringContains(value, needle string) bool {
 func TestCriticalIncidentSurvivesAggregateLimit(t *testing.T) {
 	caller := &aggregateCallerFixture{responses: map[string][]byte{
 		"ouf.ingestion.operations.incidents": []byte(`{"items":[{"incident_id":"ing-critical","module":"INGESTION","lifecycle_state":"OPEN","severity":"CRITICAL"}],"partial":false}`),
-		"ouf.gateway.operations.incidents": []byte(`{"items":[{"incident_id":"gw-info","module":"GATEWAY","lifecycle_state":"OPEN","severity":"INFO"}],"partial":false}`),
+		"ouf.gateway.operations.incidents":   []byte(`{"items":[{"incident_id":"gw-info","module":"GATEWAY","lifecycle_state":"OPEN","severity":"INFO"}],"partial":false}`),
 	}, fail: map[string]bool{}}
 	a := Aggregator{Caller: caller, Self: aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"HEALTHY"}`)}, ManifestChecksum: "manifest"}
 	in := aggregateInput()
 	in.RequestedLimit = 1
 	for i := 0; i < 30; i++ {
 		body, err := a.Incidents(context.Background(), in)
-		if err != nil { t.Fatal(err) }
-		var got struct {
-			Items []map[string]any `json:"items"`
-			Truncated bool `json:"truncated"`
-			SelectionScope string `json:"selectionScope"`
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err := json.Unmarshal(body, &got); err != nil { t.Fatal(err) }
+		var got struct {
+			Items          []map[string]any `json:"items"`
+			Truncated      bool             `json:"truncated"`
+			SelectionScope string           `json:"selectionScope"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
 		if len(got.Items) != 1 || got.Items[0]["incident_id"] != "ing-critical" || !got.Truncated || got.SelectionScope != "RETURNED_OWNER_PROJECTIONS" {
 			t.Fatalf("critical incident lost before limit: %s", body)
 		}
@@ -157,33 +161,68 @@ func TestCriticalIncidentSurvivesAggregateLimit(t *testing.T) {
 }
 
 func TestIncidentPriorityKeepsActiveBeforeResolved(t *testing.T) {
-	active := map[string]any{"incident_id":"active", "lifecycle_state":"OPEN", "severity":"WARNING"}
-	resolved := map[string]any{"incident_id":"resolved", "lifecycle_state":"RESOLVED", "severity":"CRITICAL"}
+	active := map[string]any{"incident_id": "active", "lifecycle_state": "OPEN", "severity": "WARNING"}
+	resolved := map[string]any{"incident_id": "resolved", "lifecycle_state": "RESOLVED", "severity": "CRITICAL"}
 	if !incidentBefore(active, resolved) || incidentBefore(resolved, active) {
 		t.Fatal("resolved history displaced current incident")
 	}
 }
 
 func TestIncidentPriorityUsesActionThenActualTimeThenStableIdentity(t *testing.T) {
-	a := map[string]any{"incidentId":"a", "module":"INGESTION", "lifecycleState":"OPEN", "severity":"ERROR", "actionRequired":true, "lastSeenAt":"2026-10-11T04:00:00+02:00"}
-	b := map[string]any{"incident_id":"b", "module":"INGESTION", "lifecycle_state":"OPEN", "severity":"ERROR", "action_required":false, "last_seen_at":"2026-10-11T03:00:00Z"}
-	if !incidentBefore(a,b) { t.Fatal("action priority ignored") }
+	a := map[string]any{"incidentId": "a", "module": "INGESTION", "lifecycleState": "OPEN", "severity": "ERROR", "actionRequired": true, "lastSeenAt": "2026-10-11T04:00:00+02:00"}
+	b := map[string]any{"incident_id": "b", "module": "INGESTION", "lifecycle_state": "OPEN", "severity": "ERROR", "action_required": false, "last_seen_at": "2026-10-11T03:00:00Z"}
+	if !incidentBefore(a, b) {
+		t.Fatal("action priority ignored")
+	}
 	b["action_required"] = true
-	if !incidentBefore(b,a) { t.Fatal("offset timestamps compared as strings") }
+	if !incidentBefore(b, a) {
+		t.Fatal("offset timestamps compared as strings")
+	}
 	b["last_seen_at"] = "2026-10-11T02:00:00Z"
-	if !incidentBefore(a,b) || incidentBefore(b,a) { t.Fatal("equal instant lacks stable identity tie") }
+	if !incidentBefore(a, b) || incidentBefore(b, a) {
+		t.Fatal("equal instant lacks stable identity tie")
+	}
 }
 
 func TestIncidentsNoTruncationAndUnavailableProducerStayExplicit(t *testing.T) {
 	caller := &aggregateCallerFixture{responses: map[string][]byte{
 		"ouf.ingestion.operations.incidents": []byte(`{"items":[{"incident_id":"ing-1","severity":"ERROR"}],"partial":false}`),
-	}, fail: map[string]bool{"ouf.gateway.operations.incidents":true}}
-	a := Aggregator{Caller:caller, Self:aggregateSelfFixture{body:[]byte(`{"module":"MCP","status":"HEALTHY"}`)}, ManifestChecksum:"manifest"}
+	}, fail: map[string]bool{"ouf.gateway.operations.incidents": true}}
+	a := Aggregator{Caller: caller, Self: aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"HEALTHY"}`)}, ManifestChecksum: "manifest"}
 	body, err := a.Incidents(context.Background(), aggregateInput())
-	if err != nil { t.Fatal(err) }
-	var got struct { Partial bool `json:"partial"`; Truncated bool `json:"truncated"`; Unavailable []string `json:"unavailableProducers"` }
-	if err := json.Unmarshal(body, &got); err != nil { t.Fatal(err) }
-	if !got.Partial || got.Truncated || len(got.Unavailable)!=1 || got.Unavailable[0]!="GATEWAY" {
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Partial     bool     `json:"partial"`
+		Truncated   bool     `json:"truncated"`
+		Unavailable []string `json:"unavailableProducers"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Partial || got.Truncated || len(got.Unavailable) != 1 || got.Unavailable[0] != "GATEWAY" {
 		t.Fatalf("partial evidence hidden: %s", body)
+	}
+}
+
+func TestProducerTruncationSurvivesSmallAggregate(t *testing.T) {
+	caller := &aggregateCallerFixture{responses: map[string][]byte{
+		"ouf.ingestion.operations.incidents": []byte(`{"items":[],"partial":false,"truncated":true}`),
+		"ouf.gateway.operations.incidents":   []byte(`{"items":[],"partial":false}`),
+	}, fail: map[string]bool{}}
+	a := Aggregator{Caller: caller, Self: aggregateSelfFixture{body: []byte(`{"module":"MCP","status":"HEALTHY"}`)}, ManifestChecksum: "manifest"}
+	body, err := a.Incidents(context.Background(), aggregateInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated {
+		t.Fatalf("producer truncation hidden: %s", body)
 	}
 }
