@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -82,5 +83,72 @@ func TestOperationalControlCursorReadbacksUseFreshAdmissionWithoutResettingWindo
 	}
 	if windows != 1 || consumed != 8 || reserved != 0 || gateway.calls != 8 {
 		t.Fatal("fresh page read reset or bypassed persistent accounting", windows, consumed, reserved, gateway.calls)
+	}
+}
+
+type cursorHTTPGatewayFixture struct {
+	root      controlGatewayFixture
+	producers *cursorServiceGatewayFixture
+}
+
+func (g *cursorHTTPGatewayFixture) Execute(ctx context.Context, in orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
+	if in.Owner == "mcp" {
+		return g.root.Execute(ctx, in, timeout)
+	}
+	return g.producers.Execute(ctx, in, timeout)
+}
+func TestOperationalControlCursorHTTPRootAndOwnersChargePersistentWindow(t *testing.T) {
+	ctx, store, manifest := controlStore(t)
+	tenant := "control-http-cursor-" + uuid.NewString()
+	producers := &cursorServiceGatewayFixture{tokens: map[string]string{"INGESTION": uuid.NewString(), "GATEWAY": uuid.NewString()}, snapshots: map[string]string{"INGESTION": uuid.NewString(), "GATEWAY": uuid.NewString()}}
+	gateway := &cursorHTTPGatewayFixture{producers: producers}
+	service := &orchestration.Service{RequireDelegation: true, Auth: controlPolicyFixture{}, Admission: store, Gateway: gateway, Audit: store, FingerprintKey: make([]byte, 32)}
+	self := controlSelfFixture{}
+	aggregate := &operational.Aggregator{Caller: service, Self: self, ManifestChecksum: manifest}
+	gateway.root.owner = operational.NewOwnerAPI(self, aggregate).WithAuthorization(controlPolicyFixture{}).WithOperationalDelegation("workload").WithIncidentCursors(store)
+	in := orchestration.Invocation{
+		Identity:     orchestration.Identity{ServicePrincipalID: "workload", PrincipalID: "operator", TenantID: tenant, ActorType: "HUMAN", Delegation: "e30." + strings.Repeat("a", 43)},
+		Resource:     orchestration.ResourceContext{ResourceType: "capability", TenantID: tenant, Attributes: map[string]string{"detailLevel": "TENANT_OPERATIONAL"}},
+		CapabilityID: "ouf.operations.incidents", Owner: "mcp", OperationClass: "READ", GatewayBindingRef: "capability://ouf.operations.incidents", ManifestChecksum: manifest,
+		Arguments: json.RawMessage(`{"snapshot":true,"limit":1}`), IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: 5 * time.Second, RetryThreshold: 3,
+		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
+	}
+	first, err := service.Call(ctx, in)
+	if err != nil || first.Problem != nil {
+		t.Fatalf("snapshot failed: %v %s", err, first.Body)
+	}
+	var page struct {
+		Cursor    string `json:"cursor"`
+		Next      string `json:"nextCursor"`
+		Consulted bool   `json:"consultationRecorded"`
+	}
+	if json.Unmarshal(first.Body, &page) != nil || page.Next == "" || page.Consulted {
+		t.Fatal("invalid snapshot")
+	}
+	reopened, err := Open(ctx, os.Getenv("MCP_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	gateway.root.owner = operational.NewOwnerAPI(self, aggregate).WithAuthorization(controlPolicyFixture{}).WithOperationalDelegation("workload").WithIncidentCursors(reopened)
+	in.Arguments = json.RawMessage(`{"cursor":"` + page.Cursor + `"}`)
+	in.IdempotencyKey = uuid.NewString()
+	replay, err := service.Call(ctx, in)
+	if err != nil || string(replay.Body) != string(first.Body) {
+		t.Fatalf("reconstructed owner replay failed: %v %s", err, replay.Body)
+	}
+	in.Arguments = json.RawMessage(`{"cursor":"` + page.Next + `"}`)
+	in.IdempotencyKey = uuid.NewString()
+	next, err := service.Call(ctx, in)
+	if err != nil || next.Problem != nil || string(next.Body) == string(first.Body) {
+		t.Fatalf("continuation failed: %v %s", err, next.Body)
+	}
+	var windows int
+	var consumed, reserved int64
+	if err = store.Pool().QueryRow(ctx, `select count(*),coalesce(sum(consumed_tool_calls),0),coalesce(sum(reserved_tool_calls),0) from ouf_mcp.budget_window where tenant_id=$1 and policy_ref=$2`, tenant, manifest+":"+orchestration.OperationalControlBudgetProfile).Scan(&windows, &consumed, &reserved); err != nil {
+		t.Fatal(err)
+	}
+	if windows != 1 || consumed != 9 || reserved != 0 || gateway.root.calls != 3 || producers.calls != 6 {
+		t.Fatal("root/owner cursor accounting bypassed window", windows, consumed, reserved, gateway.root.calls, producers.calls)
 	}
 }

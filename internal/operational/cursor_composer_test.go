@@ -105,6 +105,7 @@ func (f *composerCallerFixture) Call(_ context.Context, in orchestration.Invocat
 		}
 	}
 	encoded, _ := json.Marshal(page)
+	page = cursorOwnerPage{} // Deep copy: transforms must not mutate the owner fixture.
 	_ = json.Unmarshal(encoded, &page)
 	if f.transform != nil {
 		f.transform(name, &page)

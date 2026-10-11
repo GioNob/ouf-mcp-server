@@ -21,6 +21,7 @@ type SelfStatusProvider interface {
 
 type ownerAPI struct {
 	delegationWorkload string
+	cursorStore        CursorStore
 	auth               orchestration.AuthorizationPort
 	self               SelfStatusProvider
 	aggregator         *Aggregator
@@ -44,6 +45,12 @@ func (h *ownerAPI) WithAuthorization(auth orchestration.AuthorizationPort) *owne
 // Gateway-verified aggregate context. Empty configuration remains fail-closed.
 func (h *ownerAPI) WithOperationalDelegation(workload string) *ownerAPI {
 	h.delegationWorkload = strings.TrimSpace(workload)
+	return h
+}
+
+// WithIncidentCursors installs durable metadata; no payload or consultation is cached.
+func (h *ownerAPI) WithIncidentCursors(store CursorStore) *ownerAPI {
+	h.cursorStore = store
 	return h
 }
 
@@ -120,6 +127,12 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(raw) == 0 {
 			raw = []byte(`{}`)
+		}
+		if capability == "ouf.operations.incidents" {
+			handled := h.incidentCursor(w, r, identity, raw)
+			if handled {
+				return
+			}
 		}
 		limit, valid := operationalQuery(raw, capability == "ouf.operations.incidents")
 		if !valid {

@@ -38,6 +38,8 @@ type relatedSearchInput struct {
 }
 
 type operationalInput struct {
+	Snapshot   bool   `json:"snapshot,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
 	IncidentID string `json:"incidentId,omitempty"`
 	SourceID   string `json:"sourceId,omitempty"`
 	State      string `json:"state,omitempty"`
@@ -133,6 +135,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
 		return errorResult(err.Error(), false), nil, nil
+	}
+	if result.Replay && len(result.Body) == 0 && orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
+		// Admission replay has no cached authorized payload. Never turn metadata
+		// into a successful empty incident page or infer NO_INCIDENTS.
+		return errorResult("OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT", true), nil, nil
 	}
 	if result.Problem != nil {
 		body, _ := json.Marshal(result.Problem)
