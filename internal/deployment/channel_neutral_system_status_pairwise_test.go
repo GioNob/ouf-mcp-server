@@ -58,7 +58,7 @@ func TestChannelNeutralSystemStatusPairwise(t *testing.T) {
 			t.Fatalf("%s route recursively targets MCP protocol", name)
 		}
 	}
-	if !strings.Contains(string(internalRaw), "identity: M2M") || !strings.Contains(string(internalRaw), "allowedServiceIdentities: [ouf-mcp-server]") {
+	if !strings.Contains(string(internalRaw), "identity: M2M") || !strings.Contains(string(internalRaw), "allowedServiceIdentities: [installation://iam.workloadClients.mcpServer]") {
 		t.Fatal("internal MCP channel binding is not constrained to MCP workload identity")
 	}
 	if !strings.Contains(string(publicRaw), "identity: OIDC") || !strings.Contains(string(publicRaw), "/api/v1/operations/system/status") {

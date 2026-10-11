@@ -45,7 +45,7 @@ func TestMCPGatewayOperationalAwarenessPairwise(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := string(raw)
-		if !strings.Contains(s, "capabilityRef: "+c.CapabilityID+"@1.0.0") || !strings.Contains(s, "allowedServiceIdentities: [ouf-mcp-server]") || !strings.Contains(s, "service: ouf-ingestion-runtime") || !strings.Contains(s, "path: "+e.backend) {
+		if !strings.Contains(s, "capabilityRef: "+c.CapabilityID+"@1.0.0") || !strings.Contains(s, "allowedServiceIdentities: [installation://iam.workloadClients.mcpServer]") || !strings.Contains(s, "service: ouf-ingestion-runtime") || !strings.Contains(s, "path: "+e.backend) {
 			t.Fatalf("Gateway operational route mismatch for %s", c.CapabilityID)
 		}
 		seen[c.CapabilityID] = true
