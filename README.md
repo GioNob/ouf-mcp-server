@@ -5,6 +5,8 @@
 
 **Seconda tranche integrata e qualificata:** autorizzazione owner e proiezioni incomplete MCP; osservazione persistente delle modifiche Ingestion. [Prove e limiti](evidence/operational-read-catchup-qualified-20261011.json), [design cursor/consultazione — OPEN](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_CURSOR_DESIGN.md).
 
+**Consultazione operativa:** [cursor e autorizzazione HTTP](docs/OPERATIONAL_CURSOR_HTTP.md), [budget control persistente](docs/OPERATIONAL_CONTROL_BUDGET.md), [delega aggregate](docs/OPERATIONAL_AGGREGATE_DELEGATION.md). Il checkpoint di consultazione e il rollout Gateway/target restano separati; leggere una pagina non la marca come vista.
+
 # OUF MCP Server
 
 ## Installazione e collaudo del collegamento ChatGPT
