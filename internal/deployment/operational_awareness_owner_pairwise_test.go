@@ -20,7 +20,7 @@ func TestOperationalExplainOwnerPairwise(t *testing.T) {
 	routeText := string(route)
 	for _, want := range []string{
 		"capabilityRef: ouf.operations.explain@1.0.0",
-		"allowedServiceIdentities: [ouf-mcp-server]",
+		"allowedServiceIdentities: [installation://iam.workloadClients.mcpServer]",
 		"service: ouf-ingestion-runtime",
 		"path: /api/internal/v1/ingestion/operations/incidents/explain",
 	} {
