@@ -21,7 +21,7 @@ type SelfStatusProvider interface {
 
 type ownerAPI struct {
 	delegationWorkload string
-	cursorStore CursorStore
+	cursorStore        CursorStore
 	auth               orchestration.AuthorizationPort
 	self               SelfStatusProvider
 	aggregator         *Aggregator
@@ -50,8 +50,8 @@ func (h *ownerAPI) WithOperationalDelegation(workload string) *ownerAPI {
 
 // WithIncidentCursors installs durable metadata; no payload or consultation is cached.
 func (h *ownerAPI) WithIncidentCursors(store CursorStore) *ownerAPI {
- h.cursorStore = store
- return h
+	h.cursorStore = store
+	return h
 }
 
 func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +129,11 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			raw = []byte(`{}`)
 		}
 		if capability == "ouf.operations.incidents" {
- handled := h.incidentCursor(w, r, identity, raw)
- if handled { return }
- }
+			handled := h.incidentCursor(w, r, identity, raw)
+			if handled {
+				return
+			}
+		}
 		limit, valid := operationalQuery(raw, capability == "ouf.operations.incidents")
 		if !valid {
 			http.Error(w, "invalid operational request", http.StatusBadRequest)
