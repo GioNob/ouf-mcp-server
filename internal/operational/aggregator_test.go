@@ -237,13 +237,13 @@ func TestSummaryMalformedOrUnknownProducerCannotBecomeHealthy(t *testing.T) {
 		t.Run(invalid, func(t *testing.T) {
 			caller := &aggregateCallerFixture{responses: map[string][]byte{
 				"ouf.ingestion.operations.summary": []byte(`{"module":"INGESTION","status":"HEALTHY","partial":false}`),
-				"ouf.gateway.operations.summary": []byte(invalid),
+				"ouf.gateway.operations.summary":   []byte(invalid),
 			}}
 			a := Aggregator{Caller: caller, Self: &ownerStatusFixture{}, ManifestChecksum: "manifest"}
 			body, err := a.Summary(context.Background(), aggregateInput())
 			var got struct {
-				Status string
-				Partial bool
+				Status      string
+				Partial     bool
 				Unavailable []string `json:"unavailableProducers"`
 			}
 			if err != nil || json.Unmarshal(body, &got) != nil || got.Status != "DEGRADED" || !got.Partial || len(got.Unavailable) != 1 || got.Unavailable[0] != "GATEWAY" {
@@ -255,10 +255,10 @@ func TestSummaryMalformedOrUnknownProducerCannotBecomeHealthy(t *testing.T) {
 
 func TestAggregateSelfProjectionAndPartialRemainSafe(t *testing.T) {
 	caller := &aggregateCallerFixture{responses: map[string][]byte{
-		"ouf.ingestion.operations.summary": []byte(`{"module":"INGESTION","status":"HEALTHY","partial":false}`),
-		"ouf.gateway.operations.summary": []byte(`{"module":"GATEWAY","status":"HEALTHY","partial":false}`),
+		"ouf.ingestion.operations.summary":   []byte(`{"module":"INGESTION","status":"HEALTHY","partial":false}`),
+		"ouf.gateway.operations.summary":     []byte(`{"module":"GATEWAY","status":"HEALTHY","partial":false}`),
 		"ouf.ingestion.operations.incidents": []byte(`{"items":[],"partial":false}`),
-		"ouf.gateway.operations.incidents": []byte(`{"items":[],"partial":false}`),
+		"ouf.gateway.operations.incidents":   []byte(`{"items":[],"partial":false}`),
 	}}
 	for _, self := range []string{
 		`{"module":"MCP","status":"HEALTHY","actionRequired":false,"partial":true,"futureSecret":"protected","securityIncidentCount":9}`,
@@ -280,12 +280,12 @@ func TestMalformedIncidentEnvelopeCannotBecomeEmptySuccess(t *testing.T) {
 	for _, invalid := range []string{`null`, `{}`, `{"items":null,"partial":false}`, `{"items":[]}`, `{"items":[null],"partial":false}`, `{"items":[{"module":"OTHER"}],"partial":false}`} {
 		caller := &aggregateCallerFixture{responses: map[string][]byte{
 			"ouf.ingestion.operations.incidents": []byte(`{"items":[],"partial":false}`),
-			"ouf.gateway.operations.incidents": []byte(invalid),
+			"ouf.gateway.operations.incidents":   []byte(invalid),
 		}}
 		a := Aggregator{Caller: caller, Self: &ownerStatusFixture{}, ManifestChecksum: "manifest"}
 		body, err := a.Incidents(context.Background(), aggregateInput())
 		var got struct {
-			Partial bool
+			Partial     bool
 			Unavailable []string `json:"unavailableProducers"`
 		}
 		if err != nil || json.Unmarshal(body, &got) != nil || !got.Partial || len(got.Unavailable) != 1 || got.Unavailable[0] != "GATEWAY" {

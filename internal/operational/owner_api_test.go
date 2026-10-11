@@ -191,10 +191,10 @@ func aggregateOwnerRequest(kind, body string) *http.Request {
 func aggregateOwnerFixture() (*ownerStatusFixture, *aggregateCallerFixture, *ownerAPI) {
 	self := &ownerStatusFixture{}
 	caller := &aggregateCallerFixture{responses: map[string][]byte{
-		"ouf.ingestion.operations.summary": []byte(`{"module":"INGESTION","status":"HEALTHY","partial":false}`),
-		"ouf.gateway.operations.summary": []byte(`{"module":"GATEWAY","status":"HEALTHY","partial":false}`),
+		"ouf.ingestion.operations.summary":   []byte(`{"module":"INGESTION","status":"HEALTHY","partial":false}`),
+		"ouf.gateway.operations.summary":     []byte(`{"module":"GATEWAY","status":"HEALTHY","partial":false}`),
 		"ouf.ingestion.operations.incidents": []byte(`{"items":[],"partial":false}`),
-		"ouf.gateway.operations.incidents": []byte(`{"items":[],"partial":false}`),
+		"ouf.gateway.operations.incidents":   []byte(`{"items":[],"partial":false}`),
 	}}
 	return self, caller, NewOwnerAPI(self, &Aggregator{Self: self, Caller: caller, ManifestChecksum: "manifest"})
 }
