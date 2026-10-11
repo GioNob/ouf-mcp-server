@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"math/rand/v2"
 )
 
@@ -128,21 +128,30 @@ func (s *Store) Admit(ctx context.Context, in Admission) (Attempt, error) {
 // Retry only database-confirmed aborts, never an unknown commit or owner call.
 // reserveOnce returns after its rollback; timers hold no transaction or lock.
 func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
-    ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-    defer cancel()
-    var decision orchestration.AdmissionDecision
-    var err error
-    for attempt := 0; attempt < 3; attempt++ {
-        decision, err = s.reserveOnce(ctx, in)
-        if err == nil { return decision,nil }
-        var databaseError *pgconn.PgError
-        if !errors.As(err,&databaseError) || (databaseError.Code!="40001" && databaseError.Code!="40P01") || attempt==2 { return decision,err }
-        pause := time.Duration(5+10*attempt)*time.Millisecond
-        pause += time.Duration(rand.Int64N(int64(pause)/5+1))-pause/10
-        timer := time.NewTimer(pause)
-        select {case <-ctx.Done():timer.Stop();return orchestration.AdmissionDecision{},ctx.Err();case <-timer.C:}
-    }
-    return decision,err
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var decision orchestration.AdmissionDecision
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		decision, err = s.reserveOnce(ctx, in)
+		if err == nil {
+			return decision, nil
+		}
+		var databaseError *pgconn.PgError
+		if !errors.As(err, &databaseError) || (databaseError.Code != "40001" && databaseError.Code != "40P01") || attempt == 2 {
+			return decision, err
+		}
+		pause := time.Duration(5+10*attempt) * time.Millisecond
+		pause += time.Duration(rand.Int64N(int64(pause)/5+1)) - pause/10
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return orchestration.AdmissionDecision{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return decision, err
 }
 
 func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
@@ -150,7 +159,9 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, errors.New("invalid admission policy")
 	}
 	policyKey, windowMaximum, err := orchestration.AdmissionWindowBudget(in)
-	if err != nil { return orchestration.AdmissionDecision{}, err }
+	if err != nil {
+		return orchestration.AdmissionDecision{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err

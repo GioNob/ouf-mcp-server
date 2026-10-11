@@ -66,7 +66,7 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
-	BudgetProfile string
+	BudgetProfile                                                                   string
 	AttemptID                                                                       uuid.UUID
 	Identity                                                                        Identity
 	CapabilityID, Owner, OperationClass, ManifestChecksum, AuthorizationDecisionRef string
@@ -125,8 +125,8 @@ type AuditPort interface {
 }
 
 type Invocation struct {
-	BudgetProfile string
-	ReadPositionRef string
+	BudgetProfile                                                            string
+	ReadPositionRef                                                          string
 	Identity                                                                 Identity
 	Resource                                                                 ResourceContext
 	CapabilityID, Owner, OperationClass, GatewayBindingRef, ManifestChecksum string
@@ -156,7 +156,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.BudgetProfile == "" && IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
 		in.BudgetProfile = OperationalControlBudgetProfile
 	}
-	if _, _, err := AdmissionWindowBudget(AdmissionRequest{BudgetProfile:in.BudgetProfile, CapabilityID:in.CapabilityID, OperationClass:in.OperationClass, ManifestChecksum:in.ManifestChecksum, Window:in.Window, RetryThreshold:in.RetryThreshold, Maximum:in.Maximum}); err != nil { return Result{}, err }
+	if _, _, err := AdmissionWindowBudget(AdmissionRequest{BudgetProfile: in.BudgetProfile, CapabilityID: in.CapabilityID, OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum}); err != nil {
+		return Result{}, err
+	}
 
 	if in.Identity.ServicePrincipalID == "" || in.Identity.PrincipalID == "" || in.Identity.TenantID == "" || in.CapabilityID == "" || in.Owner == "" || in.GatewayBindingRef == "" {
 		return Result{}, fmt.Errorf("invalid governed invocation")
@@ -196,19 +198,26 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	requestHash := sha256.Sum256(in.Arguments)
 	fingerprintArguments := in.Arguments
- if in.ReadPositionRef != "" {
-  if !IsOperationalProducerRead(in.CapabilityID,in.OperationClass) || in.BudgetProfile != OperationalControlBudgetProfile { return Result{},errors.New("unreviewed operational read position") }
-  position,parseErr:=uuid.Parse(in.ReadPositionRef)
-  if parseErr!=nil || position==uuid.Nil { return Result{},errors.New("invalid operational read position") }
-  fingerprintArguments,_=json.Marshal(struct{Arguments json.RawMessage `json:"arguments"`;Position string `json:"position"`}{in.Arguments,in.ReadPositionRef})
- }
- fingerprint, err := SemanticFingerprint(s.FingerprintKey, in.CapabilityID, fingerprintArguments)
+	if in.ReadPositionRef != "" {
+		if !IsOperationalProducerRead(in.CapabilityID, in.OperationClass) || in.BudgetProfile != OperationalControlBudgetProfile {
+			return Result{}, errors.New("unreviewed operational read position")
+		}
+		position, parseErr := uuid.Parse(in.ReadPositionRef)
+		if parseErr != nil || position == uuid.Nil {
+			return Result{}, errors.New("invalid operational read position")
+		}
+		fingerprintArguments, _ = json.Marshal(struct {
+			Arguments json.RawMessage `json:"arguments"`
+			Position  string          `json:"position"`
+		}{in.Arguments, in.ReadPositionRef})
+	}
+	fingerprint, err := SemanticFingerprint(s.FingerprintKey, in.CapabilityID, fingerprintArguments)
 	if err != nil {
 		return Result{}, err
 	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
 		BudgetProfile: in.BudgetProfile,
-		AttemptID: uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
+		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
 		IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(requestHash[:]), SemanticFingerprint: fingerprint,
 		FingerprintVersion: "v1", CorrelationID: in.CorrelationID, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum,
