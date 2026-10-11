@@ -75,22 +75,22 @@ func controlStore(t *testing.T) (context.Context, *Store, string) {
 		t.Fatal(err)
 	}
 	// These assertions measure one known minute window, not normal clock rollover.
- // Align the fixture away from the boundary using the authoritative DB clock;
- // no transaction, admission reservation or external operation is held.
- var databaseNow time.Time
- if err = store.Pool().QueryRow(ctx, "select clock_timestamp()").Scan(&databaseNow); err != nil {
-  t.Fatal(err)
- }
- remaining := databaseNow.Truncate(time.Minute).Add(time.Minute).Sub(databaseNow)
- if remaining < 5*time.Second {
-  timer := time.NewTimer(remaining + 50*time.Millisecond)
-  defer timer.Stop()
-  select {
-  case <-ctx.Done():
-   t.Fatal(ctx.Err())
-  case <-timer.C:
-  }
- }
+	// Align the fixture away from the boundary using the authoritative DB clock;
+	// no transaction, admission reservation or external operation is held.
+	var databaseNow time.Time
+	if err = store.Pool().QueryRow(ctx, "select clock_timestamp()").Scan(&databaseNow); err != nil {
+		t.Fatal(err)
+	}
+	remaining := databaseNow.Truncate(time.Minute).Add(time.Minute).Sub(databaseNow)
+	if remaining < 5*time.Second {
+		timer := time.NewTimer(remaining + 50*time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-timer.C:
+		}
+	}
 	return ctx, store, manifest
 }
 
