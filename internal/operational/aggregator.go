@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/GioNob/ouf-mcp-server/internal/statusview"
 )
 
 type GovernedCaller interface {
@@ -58,7 +59,7 @@ func (a Aggregator) Summary(ctx context.Context, in aggregateRequest) ([]byte, e
 	partial := false
 	status := "HEALTHY"
 
-	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
+	selfBody, err := a.selfStatus(ctx, in.Identity)
 	if err != nil {
 		partial = true
 		unavailable = append(unavailable, "MCP")
@@ -72,6 +73,10 @@ func (a Aggregator) Summary(ctx context.Context, in aggregateRequest) ([]byte, e
 		} else {
 			modules = append(modules, self)
 			status = combineStatus(status, stringValue(self["status"]))
+			if p, _ := self["partial"].(bool); p {
+				partial = true
+				status = "DEGRADED"
+			}
 		}
 	}
 
@@ -83,7 +88,7 @@ func (a Aggregator) Summary(ctx context.Context, in aggregateRequest) ([]byte, e
 			continue
 		}
 		var module map[string]any
-		if json.Unmarshal(result.Body, &module) != nil {
+		if json.Unmarshal(result.Body, &module) != nil || !validSummary(module, result.Producer.Name) {
 			partial = true
 			unavailable = append(unavailable, result.Producer.Name)
 			status = "DEGRADED"
@@ -120,10 +125,10 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		}
 		var decoded struct {
 			Items     []map[string]any `json:"items"`
-			Partial   bool             `json:"partial"`
+			Partial   *bool            `json:"partial"`
 			Truncated bool             `json:"truncated"`
 		}
-		if json.Unmarshal(result.Body, &decoded) != nil {
+		if json.Unmarshal(result.Body, &decoded) != nil || decoded.Items == nil || decoded.Partial == nil || !validIncidentItems(decoded.Items, result.Producer.Name) {
 			partial = true
 			unavailable = append(unavailable, result.Producer.Name)
 			continue
@@ -134,11 +139,11 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			}
 			items = append(items, item)
 		}
-		partial = partial || decoded.Partial
+		partial = partial || *decoded.Partial
 		producerTruncated = producerTruncated || decoded.Truncated
 	}
 
-	selfBody, err := a.Self.SystemStatus(ctx, in.Identity)
+	selfBody, err := a.selfStatus(ctx, in.Identity)
 	if err != nil {
 		partial = true
 		unavailable = append(unavailable, "MCP")
@@ -147,13 +152,18 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 		if json.Unmarshal(selfBody, &self) != nil {
 			partial = true
 			unavailable = append(unavailable, "MCP")
-		} else if state := stringValue(self["status"]); state != "" && state != "HEALTHY" {
-			items = append(items, map[string]any{
-				"incident_id": "mcp-operational-state", "module": "MCP", "event_type": "MCP_OPERATIONAL_" + state,
-				"lifecycle_state": mapStatusLifecycle(state), "severity": mapStatusSeverity(state),
-				"impact_summary":  "MCP has governed recovery, debt, evidence or unresolved orchestration state requiring attention.",
-				"action_required": state == "DEGRADED", "visibility_class": "TENANT_OPERATIONAL",
-			})
+		} else {
+			if p, _ := self["partial"].(bool); p {
+				partial = true
+			}
+			if state := stringValue(self["status"]); state != "HEALTHY" {
+				items = append(items, map[string]any{
+					"incident_id": "mcp-operational-state", "module": "MCP", "event_type": "MCP_OPERATIONAL_" + state,
+					"lifecycle_state": mapStatusLifecycle(state), "severity": mapStatusSeverity(state),
+					"impact_summary":  "MCP has governed recovery, debt, evidence or unresolved orchestration state requiring attention.",
+					"action_required": state == "DEGRADED", "visibility_class": "TENANT_OPERATIONAL",
+				})
+			}
 		}
 	}
 	limit := in.RequestedLimit
@@ -201,13 +211,16 @@ func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, produ
 		Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3,
 		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
 	})
-	if err != nil || result.Problem != nil || len(result.Body) == 0 {
+	if err != nil || result.Problem != nil || len(result.Body) == 0 || len(result.Body) > 512<<10 {
 		return nil, false
 	}
 	return result.Body, true
 }
 
 func combineStatus(current, next string) string {
+	if !validStatus(current) || !validStatus(next) {
+		return "DEGRADED"
+	}
 	if next == "DEGRADED" || current == "DEGRADED" {
 		return "DEGRADED"
 	}
@@ -294,4 +307,33 @@ func incidentTime(item map[string]any) time.Time {
 	}
 	parsed, _ := time.Parse(time.RFC3339Nano, value)
 	return parsed
+}
+
+func (a Aggregator) selfStatus(ctx context.Context, identity orchestration.Identity) ([]byte, error) {
+	raw, err := a.Self.SystemStatus(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	return statusview.Project(raw)
+}
+
+func validStatus(status string) bool {
+	return status == "HEALTHY" || status == "RECOVERING" || status == "DEGRADED"
+}
+
+func validSummary(module map[string]any, expected string) bool {
+	_, partialPresent := module["partial"].(bool)
+	return module != nil && module["module"] == expected && validStatus(stringValue(module["status"])) && partialPresent
+}
+
+func validIncidentItems(items []map[string]any, expected string) bool {
+	for _, item := range items {
+		if item == nil {
+			return false
+		}
+		if module, exists := item["module"]; exists && module != expected {
+			return false
+		}
+	}
+	return true
 }
