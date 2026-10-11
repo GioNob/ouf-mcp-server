@@ -38,6 +38,8 @@ type relatedSearchInput struct {
 }
 
 type operationalInput struct {
+ Snapshot bool `json:"snapshot,omitempty"`
+ Cursor string `json:"cursor,omitempty"`
 	IncidentID string `json:"incidentId,omitempty"`
 	SourceID   string `json:"sourceId,omitempty"`
 	State      string `json:"state,omitempty"`
