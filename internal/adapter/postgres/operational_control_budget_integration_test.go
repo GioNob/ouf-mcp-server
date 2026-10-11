@@ -209,4 +209,3 @@ func settleControlAdmission(ctx context.Context, store *Store, admitted orchestr
 	}
 	return store.Reconcile(ctx, admitted.AttemptID, orchestration.Cost{ToolCalls: 1}, orchestration.AttemptOutcome{Success: true, Code: "OK"})
 }
-

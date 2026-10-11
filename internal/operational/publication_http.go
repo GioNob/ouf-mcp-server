@@ -135,4 +135,3 @@ func publicationHTTPQuery(raw []byte) (string, json.RawMessage, uuid.UUID, bool)
 	}
 	return "start", query, uuid.Nil, true
 }
-

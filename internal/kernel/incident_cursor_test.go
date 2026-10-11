@@ -142,4 +142,3 @@ func TestIncidentCursorReadReplayMetadataCannotBecomeSuccessfulEmptyPage(t *test
 		t.Fatal(text)
 	}
 }
-

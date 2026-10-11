@@ -332,4 +332,3 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		os.Exit(1)
 	}
 }
-

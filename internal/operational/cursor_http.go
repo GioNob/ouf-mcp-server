@@ -137,4 +137,3 @@ func incidentCursorQuery(raw []byte) (json.RawMessage, uuid.UUID, bool, bool) {
 	}
 	return query, uuid.Nil, snapshot, true
 }
-

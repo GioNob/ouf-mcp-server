@@ -122,4 +122,3 @@ func TestOperationalControlPublicationHTTPReopenLoginAndIdleKeepsFiniteBudget(t 
 		t.Fatal("idle reset/bypass/capacity growth", windows, consumed, reserved, gateway.root.calls, producers.calls, books)
 	}
 }
-

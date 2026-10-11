@@ -159,4 +159,3 @@ func TestPublicationHTTPClosedQueriesAndConfigurationBeforeOwnerIO(t *testing.T)
 		}
 	}
 }
-

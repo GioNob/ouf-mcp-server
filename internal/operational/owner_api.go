@@ -302,4 +302,3 @@ func boundedDelegationProof(proof string) bool {
 	}
 	return true
 }
-
