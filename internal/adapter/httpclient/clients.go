@@ -126,6 +126,10 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
+	case "ouf.operations.summary", "ouf.operations.incidents",
+		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
+		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
 		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode

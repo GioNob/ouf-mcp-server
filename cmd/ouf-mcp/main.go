@@ -299,7 +299,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", metrics.Instrument("mcp", handler))
 	ownerAPI := operational.NewOwnerAPI(store, aggregator)
-	ownerAPI.WithAuthorization(authCache)
+	ownerAPI.WithAuthorization(authCache).WithOperationalDelegation(os.Getenv("MCP_OIDC_CLIENT_ID"))
 	mux.Handle("/api/internal/v1/mcp/operations/status", metrics.Instrument("operations_status", ownerAPI))
 	mux.Handle("/api/internal/v1/mcp/operations/summary", metrics.Instrument("operations_summary", ownerAPI))
 	mux.Handle("/api/internal/v1/mcp/operations/incidents", metrics.Instrument("operations_incidents", ownerAPI))
