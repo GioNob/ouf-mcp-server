@@ -14,18 +14,18 @@ import (
 func (h *ownerAPI) incidentPublication(w http.ResponseWriter, r *http.Request, identity orchestration.Identity, raw []byte) bool {
 	mode, query, token, valid := publicationHTTPQuery(raw)
 	if !valid {
-		http.Error(w, "invalid operational request", 400)
+		http.Error(w, "invalid operational request", http.StatusBadRequest)
 		return true
 	}
 	if mode == "" {
 		return false
 	}
 	if identity.Delegation == "" {
-		http.Error(w, "verified aggregate delegated context required", 403)
+		http.Error(w, "verified aggregate delegated context required", http.StatusForbidden)
 		return true
 	}
 	if h.cursorStore == nil || h.publicationStore == nil {
-		http.Error(w, "operational publication unavailable", 503)
+		http.Error(w, "operational publication unavailable", http.StatusServiceUnavailable)
 		return true
 	}
 	in := aggregateRequest{Identity: identity, Arguments: query, AttemptID: r.Header.Get("X-Tool-Attempt-ID"), CorrelationID: r.Header.Get("X-Correlation-ID")}
@@ -42,26 +42,26 @@ func (h *ownerAPI) incidentPublication(w http.ResponseWriter, r *http.Request, i
 		body, err = composer.Resume(r.Context(), in, policy, token)
 	}
 	if err != nil {
-		status, message := 503, "operational publication unavailable"
+		status, message := http.StatusServiceUnavailable, "operational publication unavailable"
 		switch {
 		case errors.Is(err, ErrCursorNotFound):
-			status, message = 404, "operational publication not found"
+			status, message = http.StatusNotFound, "operational publication not found"
 		case errors.Is(err, ErrCursorExpired):
-			status, message = 410, "operational publication history gap"
+			status, message = http.StatusGone, "operational publication history gap"
 		case errors.Is(err, ErrCursorConflict):
-			status, message = 409, "operational publication invalidated"
+			status, message = http.StatusConflict, "operational publication invalidated"
 		case errors.Is(err, ErrCursorCapacity):
-			status, message = 429, "operational publication capacity unavailable"
+			status, message = http.StatusTooManyRequests, "operational publication capacity unavailable"
 		}
 		http.Error(w, message, status)
 		return true
 	}
 	if len(body) > 512<<10 || !json.Valid(body) {
-		http.Error(w, "operational result unavailable", 503)
+		http.Error(w, "operational result unavailable", http.StatusServiceUnavailable)
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 	return true
 }
