@@ -31,7 +31,11 @@ type aggregateRequest struct {
 	CorrelationID  string
 	RequestedLimit int
 	ScopeSource    string
+	ReadPositionRef string
 }
+
+// CursorReadRequest is an internal typed adapter input; public query schemas remain closed.
+type CursorReadRequest = aggregateRequest
 
 type producerSpec struct {
 	Name, CapabilityID, Owner, Scope string
@@ -221,6 +225,7 @@ func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, produ
 		Identity: in.Identity, Resource: resource, CapabilityID: producer.CapabilityID, Owner: producer.Owner, OperationClass: "READ",
 		GatewayBindingRef: "capability://" + producer.CapabilityID, ManifestChecksum: a.ManifestChecksum,
 		Arguments: arguments, IdempotencyKey: idempotency, CorrelationID: in.CorrelationID,
+		ReadPositionRef: in.ReadPositionRef,
 		Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3,
 		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
 	})

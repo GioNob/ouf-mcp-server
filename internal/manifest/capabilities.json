@@ -282,7 +282,13 @@
         "ouf.ingestion.status"
       ],
       "operationalLimits": {
-        "maxLimit": 100
+        "maxLimit": 100,
+        "budgetProfile": "ouf.operational-control-budget.v1",
+        "windowSeconds": 60,
+        "maxWindowToolCalls": 24,
+        "maxWindowResultBytes": 12582912,
+        "maxWindowDistinctObjects": 2400,
+        "equivalentStallThreshold": 3
       },
       "resultSemantics": "Bounded cross-producer incident aggregates with lifecycle, severity and safe impact summaries",
       "securityNotes": [
@@ -407,7 +413,13 @@
         "ouf.ingestion.history"
       ],
       "operationalLimits": {
-        "maxLimit": 100
+        "maxLimit": 100,
+        "budgetProfile": "ouf.operational-control-budget.v1",
+        "windowSeconds": 60,
+        "maxWindowToolCalls": 24,
+        "maxWindowResultBytes": 12582912,
+        "maxWindowDistinctObjects": 2400,
+        "equivalentStallThreshold": 3
       },
       "resultSemantics": "Safe cross-producer catch-up summary preserving DEGRADED, RECOVERING and partial semantics",
       "securityNotes": [

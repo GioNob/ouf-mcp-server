@@ -42,6 +42,9 @@ type cursorOwnerPage struct {
 func (c CursorComposer) Start(ctx context.Context, in aggregateRequest, policyRef string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
+	in.AttemptID = in.AttemptID + ":cursor-read:" + uuid.NewString()
+	in.ScopeSource = ""
+	in.ReadPositionRef = ""
 	if err := c.configured(); err != nil {
 		return nil, err
 	}
@@ -104,6 +107,9 @@ func (c CursorComposer) Start(ctx context.Context, in aggregateRequest, policyRe
 func (c CursorComposer) Page(ctx context.Context, in aggregateRequest, policyRef string, token uuid.UUID) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
+	in.AttemptID = in.AttemptID + ":cursor-read:" + uuid.NewString()
+	in.ScopeSource = ""
+	in.ReadPositionRef = ""
 	if err := c.configured(); err != nil {
 		return nil, err
 	}
@@ -121,6 +127,7 @@ func (c CursorComposer) Page(ctx context.Context, in aggregateRequest, policyRef
 	if time.Now().After(node.ExpiresAt) {
 		return nil, ErrCursorExpired
 	}
+	in.ReadPositionRef = node.Token.String()
 	// Revalidate even completed owners: a cached grant or payload must never
 	// substitute for current owner authorization on a replay or later page.
 	pages := map[string]cursorOwnerPage{}
@@ -180,6 +187,7 @@ func sameOwnerPage(position OwnerPosition, page cursorOwnerPage) bool {
 func (c CursorComposer) readPage(ctx context.Context, in aggregateRequest, filters json.RawMessage, name, token string) (cursorOwnerPage, error) {
 	arguments, _ := json.Marshal(map[string]string{"cursor": token})
 	in.Arguments = arguments
+	in.ScopeSource = ""
 	// Preserve server-saved source scope while the wire query remains cursor-only.
 	var scope map[string]json.RawMessage
 	if json.Unmarshal(filters, &scope) != nil {

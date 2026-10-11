@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
+	"math/rand/v2"
 )
 
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
@@ -123,10 +125,32 @@ func (s *Store) Admit(ctx context.Context, in Admission) (Attempt, error) {
 	return out, nil
 }
 
+// Retry only database-confirmed aborts, never an unknown commit or owner call.
+// reserveOnce returns after its rollback; timers hold no transaction or lock.
 func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
+    ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+    defer cancel()
+    var decision orchestration.AdmissionDecision
+    var err error
+    for attempt := 0; attempt < 3; attempt++ {
+        decision, err = s.reserveOnce(ctx, in)
+        if err == nil { return decision,nil }
+        var databaseError *pgconn.PgError
+        if !errors.As(err,&databaseError) || (databaseError.Code!="40001" && databaseError.Code!="40P01") || attempt==2 { return decision,err }
+        pause := time.Duration(5+10*attempt)*time.Millisecond
+        pause += time.Duration(rand.Int64N(int64(pause)/5+1))-pause/10
+        timer := time.NewTimer(pause)
+        select {case <-ctx.Done():timer.Stop();return orchestration.AdmissionDecision{},ctx.Err();case <-timer.C:}
+    }
+    return decision,err
+}
+
+func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
 	if in.Window <= 0 || in.RetryThreshold < 1 || in.Maximum.ToolCalls < 1 {
 		return orchestration.AdmissionDecision{}, errors.New("invalid admission policy")
 	}
+	policyKey, windowMaximum, err := orchestration.AdmissionWindowBudget(in)
+	if err != nil { return orchestration.AdmissionDecision{}, err }
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
@@ -158,7 +182,7 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 	windowStart := now.Truncate(in.Window)
 	windowEnd := windowStart.Add(in.Window)
 	windowID := uuid.New()
-	err = tx.QueryRow(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end) values($1,$2,$3,$4,$5,$6,$7) on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update set policy_ref=excluded.policy_ref returning budget_window_id`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.ManifestChecksum, windowStart, windowEnd).Scan(&windowID)
+	err = tx.QueryRow(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end) values($1,$2,$3,$4,$5,$6,$7) on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update set policy_ref=excluded.policy_ref returning budget_window_id`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, policyKey, windowStart, windowEnd).Scan(&windowID)
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
@@ -170,8 +194,8 @@ func (s *Store) Reserve(ctx context.Context, in orchestration.AdmissionRequest) 
 	if err = tx.QueryRow(ctx, `select coalesce(sum(debt_amount),0) from ouf_mcp.budget_object_debt where budget_window_id=$1 and debt_state='ACTIVE'`, windowID).Scan(&objectDebt); err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > in.Maximum.DistinctObjects*int64(in.RetryThreshold)
-	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > in.Maximum.ToolCalls*int64(in.RetryThreshold) || reservedBytes+consumedBytes+in.Maximum.ResultBytes > in.Maximum.ResultBytes*int64(in.RetryThreshold) || objectBudgetExceeded {
+	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > windowMaximum.DistinctObjects
+	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls || reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes || objectBudgetExceeded {
 		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
 	}
 	groupID := uuid.New()
