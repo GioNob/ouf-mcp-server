@@ -1,0 +1,33 @@
+name: Publication HTTP and MCP tool qualification
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  publication-http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: go mod download
+      - name: Native formatter and exact public source evidence
+        run: |
+          gofmt -w internal/operational/owner_api.go internal/operational/cursor_http.go internal/kernel/kernel.go cmd/ouf-mcp/main.go internal/kernel/incident_cursor_test.go internal/operational/publication_http.go internal/operational/publication_http_test.go internal/adapter/postgres/publication_http_service_integration_test.go internal/adapter/postgres/operational_control_budget_integration_test.go
+          python3 - <<'PY'
+          import json,pathlib
+          paths=["internal/operational/owner_api.go","internal/operational/cursor_http.go","internal/kernel/kernel.go","cmd/ouf-mcp/main.go","internal/kernel/incident_cursor_test.go","internal/operational/publication_http.go","internal/operational/publication_http_test.go","internal/adapter/postgres/publication_http_service_integration_test.go","internal/adapter/postgres/operational_control_budget_integration_test.go"]
+          for path in paths:
+              print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
+          PY
+      - run: go test -race ./internal/operational ./internal/kernel -run 'TestPublication|TestIncidentCursor' -count=1 -v
+      - run: go test ./internal/adapter/postgres -run 'TestPublication|TestIncidentCursor|TestOperationalControl' -count=1 -v
+

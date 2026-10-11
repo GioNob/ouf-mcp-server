@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: c43723d9b9c66cc70c48608d3c56e24cff8bd8ba
+          ref: 46ec62f9658ec9c669d8ea6259fda40cc81c268e
           path: .pairwise/gateway
       - uses: actions/checkout@v4
         with:
@@ -77,3 +77,4 @@ jobs:
             internal/adapter/httpclient/policy_bundle.go
             internal/evidence/gateway_pairwise_test.go
           retention-days: 30
+

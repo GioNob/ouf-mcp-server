@@ -292,7 +292,7 @@
         "cursorProfile": "ouf.operational-owner-vector.v1",
         "cursorLifetimeSeconds": 1800
       },
-      "resultSemantics": "Bounded cross-producer incident aggregates with lifecycle, severity and safe impact summaries; opt-in snapshot=true or cursor-only yields stable independently authorized owner-vector pages, consultationRecorded=false",
+      "resultSemantics": "Bounded cross-producer incident aggregates with lifecycle, severity and safe impact summaries; opt-in snapshot=true or cursor-only yields stable independently authorized owner-vector pages, consultationRecorded=false Publication coverage is opt-in and covers GATEWAY and INGESTION only; historical MCP self incidents are not covered. Read current urgent owner state separately. Publication positions do not prove client delivery, consultation, acknowledgement or resolution.",
       "securityNotes": [
         "MCP aggregates only owner-provided governed projections",
         "Unavailable producer evidence yields partial output and is never mapped to no incidents",
@@ -353,40 +353,176 @@
             "not": {
               "const": "00000000-0000-0000-0000-000000000000"
             }
+          },
+          "coverage": {
+            "type": "boolean",
+            "const": true
+          },
+          "resumeFrom": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
           }
         },
         "oneOf": [
           {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "snapshot"
-                  ]
-                },
-                {
-                  "required": [
-                    "cursor"
-                  ]
-                }
-              ]
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "OPEN",
+                  "RECOVERING",
+                  "RESOLVED"
+                ]
+              },
+              "since": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
             }
           },
           {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "snapshot": {
+                "type": "boolean",
+                "const": true
+              },
+              "sourceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "OPEN",
+                  "RECOVERING",
+                  "RESOLVED"
+                ]
+              },
+              "since": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
             "required": [
               "snapshot"
-            ],
-            "not": {
-              "required": [
-                "cursor"
-              ]
-            }
+            ]
           },
           {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              }
+            },
             "required": [
               "cursor"
-            ],
-            "maxProperties": 1
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "snapshot": {
+                "type": "boolean",
+                "const": true
+              },
+              "coverage": {
+                "type": "boolean",
+                "const": true
+              },
+              "sourceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "OPEN",
+                  "RECOVERING",
+                  "RESOLVED"
+                ]
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "snapshot",
+              "coverage"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "coverage": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "cursor",
+              "coverage"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "resumeFrom": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "resumeFrom"
+            ]
           }
         ]
       }
@@ -1241,3 +1377,4 @@
     }
   ]
 }
+

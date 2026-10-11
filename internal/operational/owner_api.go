@@ -22,6 +22,7 @@ type SelfStatusProvider interface {
 type ownerAPI struct {
 	delegationWorkload string
 	cursorStore        CursorStore
+	publicationStore   PublicationBookmarkStore
 	auth               orchestration.AuthorizationPort
 	self               SelfStatusProvider
 	aggregator         *Aggregator
@@ -51,6 +52,12 @@ func (h *ownerAPI) WithOperationalDelegation(workload string) *ownerAPI {
 // WithIncidentCursors installs durable metadata; no payload or consultation is cached.
 func (h *ownerAPI) WithIncidentCursors(store CursorStore) *ownerAPI {
 	h.cursorStore = store
+	return h
+}
+
+// WithPublicationBookmarks installs durable READ positions without client receipts.
+func (h *ownerAPI) WithPublicationBookmarks(store PublicationBookmarkStore) *ownerAPI {
+	h.publicationStore = store
 	return h
 }
 

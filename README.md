@@ -1,7 +1,9 @@
+**Punti di ripresa persistenti:** fondazione vettore e composizione qualificati (PR59/60); [accesso HTTP e tool MCP tipizzato](docs/OPERATIONAL_PUBLICATION_HTTP.md) implementato. Prove e gate correnti nel ledger di adozione. Copertura storica GATEWAY/INGESTION; ricevute client, checkpoint di consultazione e altre storie owner restano aperti.
+
 > **Policy di piattaforma vigente:** [Resilienza, quarantena, incidenti e alert — v3](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md). Obbligatoria per sviluppo e revisione; [adozione e prove](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md).
 
 
-**Resilience v3 — prima tranche integrata:** priorità incidenti e catch-up qualificati per i perimetri MCP/Ingestion/Gateway; [prove e limiti](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md), [piano operativo](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_RESILIENCE_PLAN.md). Cursor/memoria operatore, correlazione dipendenze e alert restano aperti.
+**Resilience v3 — prima tranche integrata:** priorità incidenti e catch-up qualificati per i perimetri MCP/Ingestion/Gateway; [prove e limiti](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md), [piano operativo](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_RESILIENCE_PLAN.md). Checkpoint di consultazione, correlazione dipendenze e alert reali restano aperti.
 
 **Seconda tranche integrata e qualificata:** autorizzazione owner e proiezioni incomplete MCP; osservazione persistente delle modifiche Ingestion. [Prove e limiti](evidence/operational-read-catchup-qualified-20261011.json), [design cursor/consultazione — OPEN](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_CURSOR_DESIGN.md).
 
@@ -41,3 +43,4 @@ See `docs/MCP_1C_TRACEABILITY.md` for the bounded PET coverage and explicit defe
 The maintenance worker additionally requires `MCP_GATEWAY_RECOVERY_ENDPOINT` and the same renewable workload identity configuration. It never contacts an owner directly: outcome lookup is Gateway-mediated and keyed by the persisted backend request ID.
 
 MCP 1E preserves object-budget uncertainty as durable debt. `MCP_MAX_UNKNOWN_HOLD` defaults to `24h`; expiry changes `UNKNOWN` to `UNRESOLVED` without releasing debt or retry blockers. Only verified Evidence Inbox records can drive late compensation. See `docs/MCP_1E_TRACEABILITY.md`.
+

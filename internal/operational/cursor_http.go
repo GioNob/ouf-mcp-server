@@ -15,6 +15,9 @@ import (
 // Legacy reads retain their explicit partial semantics. Snapshot/continuation
 // is opt-in and requires a fresh root decision plus verified delegated context.
 func (h *ownerAPI) incidentCursor(w http.ResponseWriter, r *http.Request, identity orchestration.Identity, raw []byte) bool {
+	if h.incidentPublication(w, r, identity, raw) {
+		return true
+	}
 	query, token, snapshot, valid := incidentCursorQuery(raw)
 	if !valid {
 		http.Error(w, "invalid operational request", http.StatusBadRequest)
