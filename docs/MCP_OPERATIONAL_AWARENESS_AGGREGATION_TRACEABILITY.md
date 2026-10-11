@@ -1,3 +1,5 @@
+> **Policy di piattaforma vigente:** [Resilienza, quarantena, incidenti e alert — v3](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md). Obbligatoria per sviluppo e revisione; [adozione e prove](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md).
+
 # MCP Operational Awareness aggregation traceability
 
 Normative baseline: OUF Reality Baseline Package v1.7, MCP PET v1.4 and Cross-Module Alignment Matrix v1.7.
