@@ -104,3 +104,21 @@ func TestPublicationBookmarkLineageUsesOwnerEqualityNeverUUIDOrder(t *testing.T)
 		t.Fatal("changed scope accepted")
 	}
 }
+
+func TestPublicationBookmarkFiltersCanonicalAcrossUnicodeEncoding(t *testing.T) {
+	vector := publicationTestVector()
+	vector.Filters = json.RawMessage(`{"sourceId":"caf\u00e9","state":"OPEN"}`)
+	first, err := CanonicalPublicationVector(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vector.Filters = json.RawMessage(`{"state":"OPEN","sourceId":"café"}`)
+	second, err := CanonicalPublicationVector(vector)
+	if err != nil || string(first) != string(second) {
+		t.Fatal("equivalent filters created different publication scope", err)
+	}
+	vector.Filters = json.RawMessage(`{"sourceId":"` + strings.Repeat("\\u00e9", 200) + `"}`)
+	if _, err = CanonicalPublicationVector(vector); err != nil {
+		t.Fatal("bounded Unicode escape representation rejected", err)
+	}
+}

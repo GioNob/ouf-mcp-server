@@ -1,0 +1,15 @@
+# Bounded publication composition — private implementation
+
+Follow [resilience policy v3](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md), MCP PET1.4 §§33–34, [publication metadata](OPERATIONAL_PUBLICATION_VECTOR.md), and [cursor composition](OPERATIONAL_CURSOR_COMPOSITION.md).
+
+The private PublicationComposer captures the two hidden owners in explicit coverage mode, or resumes each exact owner bookmark from a previously retained vector. Source/state are saved scope: resume permits only a new bounded page limit, never replacement filters or a since cutoff. Current SDK resource decisions remain in the governed owner calls; SourceRef survives a resume even though its wire query contains only the opaque owner token.
+
+Every owner page must carry the reviewed bookmark profile, canonical tokens and complete unredacted evidence. Terminal pages must prove the exact expected parent and consistent no-publication-progress status. Unknown/malformed/duplicate, partial, mutated or missing owner pages cannot advance root metadata. The merge keeps global priority at captured independent watermarks, at most three owner reads per page and the existing2.5-second whole-operation bound. Reads remain in the persistent finite control profile; no new retry loop or business budget renewal is introduced.
+
+A global publication position is issued only after both owner page chains have been completely consumed by the root READ composition. It stores opaque positions and digests; producer payloads are freshly refetched, never retained in MCP. Cursor append preserves coverage mode, exact parent/base vector and immutable owner positions. Final replay and an unchanged publication boundary reuse existing positions; capacity/expiry failures remain explicit.
+
+READ completion is not client delivery. consultationRecorded remains false and operator checkpoints are unchanged. Results explicitly identify publicationModules GATEWAY/INGESTION, mcpSelfHistoryCovered=false and currentUrgentOwnerStateReadRequired=true. MCP current self-state participates in the read; its historical transitions are not fabricated. Urgent long-standing OPEN owner incidents require the separate current read, independent of a changed-publication window.
+
+This tranche remains private. Public owner HTTP/schema/tool, real Service/control budget composition with these new modes, global mediation and client receipt/confirmation COMMAND/CAS require their own gates. Existing legacy snapshots are kept separate and reject publication-mode frames. History compactor/capacity sizing and target SDK/hosting/HA remain distinct.
+
+Required proof: complete root chain and stable final replay without implicit consultation; resume after a new login and expired temporary page sessions; exact hidden-owner tokens and preserved source SDK resource; owner outage/mutation/metadata capacity without progression; closed input before owner I/O; consistent parent/no-progress evidence; PostgreSQL immutable capture lineage across append, plus all existing cursor/control/pairwise gates.
