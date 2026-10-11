@@ -119,9 +119,9 @@ func (a Aggregator) Incidents(ctx context.Context, in aggregateRequest) ([]byte,
 			continue
 		}
 		var decoded struct {
-			Items   []map[string]any `json:"items"`
-			Partial bool             `json:"partial"`
-			Truncated bool           `json:"truncated"`
+			Items     []map[string]any `json:"items"`
+			Partial   bool             `json:"partial"`
+			Truncated bool             `json:"truncated"`
 		}
 		if json.Unmarshal(result.Body, &decoded) != nil {
 			partial = true
