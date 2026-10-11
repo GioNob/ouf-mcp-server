@@ -21,10 +21,10 @@ jobs:
       - run: go mod download
       - name: Native formatter and exact source evidence
         run: |
-          gofmt -w internal/operational/cursor_state.go internal/operational/cursor_state_test.go internal/adapter/postgres/operational_cursor.go internal/adapter/postgres/operational_cursor_integration_test.go
+          gofmt -w internal/operational/cursor_composer.go internal/operational/cursor_composer_test.go internal/operational/aggregator.go internal/operational/cursor_state.go internal/operational/cursor_state_test.go internal/adapter/postgres/operational_cursor.go internal/adapter/postgres/operational_cursor_integration_test.go
           python3 - <<'PY'
           import json,pathlib
-          paths=['internal/operational/cursor_state.go','internal/operational/cursor_state_test.go','internal/adapter/postgres/operational_cursor.go','internal/adapter/postgres/operational_cursor_integration_test.go']
+          paths=['internal/operational/cursor_composer.go','internal/operational/cursor_composer_test.go','internal/operational/aggregator.go','internal/operational/cursor_state.go','internal/operational/cursor_state_test.go','internal/adapter/postgres/operational_cursor.go','internal/adapter/postgres/operational_cursor_integration_test.go']
           for path in paths:
               print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
           PY
@@ -36,6 +36,8 @@ jobs:
           name: operational-cursor-metadata-${{ github.run_id }}
           path: |
             internal/operational/cursor_state*
+            internal/operational/cursor_composer*
+            internal/operational/aggregator.go
             internal/adapter/postgres/operational_cursor*
             internal/adapter/postgres/migrations/008_operational_cursor_metadata.sql
           retention-days: 30
