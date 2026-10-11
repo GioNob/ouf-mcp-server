@@ -96,9 +96,11 @@ func TestIncidentCursorOfficialMCPClientPreservesClosedOptinArguments(t *testing
 		got := gateway.arguments[len(gateway.arguments)-1]
 		gateway.mu.Unlock()
 		expected, _ := json.Marshal(tc.args)
- var observed map[string]any
- if json.Unmarshal(got, &observed) != nil { t.Fatal("invalid forwarded JSON") }
- canonical, _ := json.Marshal(observed)
+		var observed map[string]any
+		if json.Unmarshal(got, &observed) != nil {
+			t.Fatal("invalid forwarded JSON")
+		}
+		canonical, _ := json.Marshal(observed)
 		if string(canonical) != string(expected) {
 			t.Fatalf("MCP typed decoder changed arguments: got=%s want=%s", got, expected)
 		}
