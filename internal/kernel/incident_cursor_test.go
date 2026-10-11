@@ -8,10 +8,12 @@ import (
  "net/http"
  "net/http/httptest"
  "sync"
+ "strings"
  "testing"
  "time"
 
  "github.com/GioNob/ouf-mcp-server/internal/orchestration"
+ "github.com/GioNob/ouf-mcp-server/internal/manifest"
  "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 type cursorKernelAuth struct{}
@@ -73,4 +75,24 @@ func TestIncidentCursorOfficialMCPClientPreservesClosedOptinArguments(t *testing
  if string(got)!=string(expected) {t.Fatalf("MCP typed decoder changed arguments: got=%s want=%s",got,expected)}
  if admission.calls.Load()!=before+1 {t.Fatal("root admission skipped or multiplied")}
  }
+}
+
+type cursorReplayAdmission struct {statusAdmission}
+func (a *cursorReplayAdmission) Reserve(_ context.Context,in orchestration.AdmissionRequest) (orchestration.AdmissionDecision,error) {
+ a.calls.Add(1)
+ return orchestration.AdmissionDecision{AttemptID:in.AttemptID,Replay:true},nil
+}
+func TestIncidentCursorReadReplayMetadataCannotBecomeSuccessfulEmptyPage(t *testing.T) {
+ gateway:=&cursorKernelGateway{}
+ admission:=&cursorReplayAdmission{}
+ service:=&orchestration.Service{RequireDelegation:true,Auth:cursorKernelAuth{},Admission:admission,Gateway:gateway,FingerprintKey:make([]byte,32)}
+ ctx:=context.WithValue(context.Background(),identityKey{},requestIdentity{Identity:orchestration.Identity{
+ ServicePrincipalID:"workload",PrincipalID:"operator",TenantID:"tenant",ActorType:"HUMAN",Delegation:"fixture-delegation",
+ }})
+ cap:=manifest.Capability{CapabilityID:"ouf.operations.incidents",Owner:"mcp",OperationClass:"READ",GatewayBindingRef:"capability://ouf.operations.incidents"}
+ result,_,err:=invoke(ctx,cap,strings.Repeat("a",64),[]byte(`{"cursor":"11111111-1111-4111-8111-111111111111"}`),service,100,512<<10)
+ if err!=nil || !result.IsError || len(result.Content)!=1 || len(gateway.arguments)!=0 || admission.calls.Load()!=1 {t.Fatal("admission metadata became successful page",err,result)}
+ var problem unavailableResult
+ text:=result.Content[0].(*mcp.TextContent).Text
+ if json.Unmarshal([]byte(text),&problem)!=nil || problem.Code!="OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT" || !problem.Retryable {t.Fatal(text)}
 }
