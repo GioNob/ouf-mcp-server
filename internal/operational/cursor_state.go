@@ -3,11 +3,11 @@ package operational
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
-	"sort"
 	"slices"
+	"sort"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -18,7 +18,7 @@ const CursorProfile = "ouf.operational-owner-vector.v1"
 
 var (
 	ErrCursorNotFound = errors.New("operational cursor not found")
-	ErrCursorExpired = errors.New("operational cursor expired")
+	ErrCursorExpired  = errors.New("operational cursor expired")
 	ErrCursorConflict = errors.New("operational cursor result changed")
 	ErrCursorCapacity = errors.New("operational cursor capacity unavailable")
 )
@@ -26,26 +26,26 @@ var (
 // Only owner positions/coverage and MCP's own public self-state are persisted.
 // Producer incident payloads and previously granted authority are never cached.
 type OwnerPosition struct {
-	Name string `json:"name"`
-	Cursor string `json:"cursor"`
-	Offset int `json:"offset"`
-	PageIndex int `json:"pageIndex"`
+	Name        string `json:"name"`
+	Cursor      string `json:"cursor"`
+	Offset      int    `json:"offset"`
+	PageIndex   int    `json:"pageIndex"`
 	ItemsDigest string `json:"itemsDigest"`
 	OwnerDigest string `json:"ownerDigest"`
 	SnapshotRef string `json:"snapshotRef"`
-	Done bool `json:"done"`
+	Done        bool   `json:"done"`
 }
 
 type CursorFrame struct {
-	Profile string `json:"profile"`
-	Filters json.RawMessage `json:"filters"`
-	Owners []OwnerPosition `json:"owners"`
-	PageLimit int `json:"pageLimit"`
-	PageNumber int `json:"pageNumber"`
-	SelfStatus string `json:"selfStatus"`
-	SelfActionRequired bool `json:"selfActionRequired"`
-	SelfConsumed bool `json:"selfConsumed"`
-	Partial bool `json:"partial"`
+	Profile            string          `json:"profile"`
+	Filters            json.RawMessage `json:"filters"`
+	Owners             []OwnerPosition `json:"owners"`
+	PageLimit          int             `json:"pageLimit"`
+	PageNumber         int             `json:"pageNumber"`
+	SelfStatus         string          `json:"selfStatus"`
+	SelfActionRequired bool            `json:"selfActionRequired"`
+	SelfConsumed       bool            `json:"selfConsumed"`
+	Partial            bool            `json:"partial"`
 }
 
 type CursorBinding struct {
@@ -54,10 +54,10 @@ type CursorBinding struct {
 
 type CursorNode struct {
 	Token, Session uuid.UUID
-	Frame CursorFrame
-	ExpiresAt time.Time
-	NextToken *uuid.UUID
-	PageDigest string
+	Frame          CursorFrame
+	ExpiresAt      time.Time
+	NextToken      *uuid.UUID
+	PageDigest     string
 }
 
 type CursorStore interface {
@@ -89,8 +89,8 @@ func BindIncidentCursor(identity orchestration.Identity, policyRef, manifest str
 	}
 	payload, err := json.Marshal(struct {
 		Principal, Tenant, Service, Actor, Authentication, Issuer, Audience string
-		Scopes []string
-		Claims *orchestration.IdentityClaims
+		Scopes                                                              []string
+		Claims                                                              *orchestration.IdentityClaims
 	}{identity.PrincipalID, identity.TenantID, identity.ServicePrincipalID, identity.ActorType,
 		identity.AuthenticationContextRef, identity.Issuer, identity.Audience, scopes, claims})
 	if err != nil {
