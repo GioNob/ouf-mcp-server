@@ -26,31 +26,31 @@ var (
 // Only owner positions/coverage and MCP's own public self-state are persisted.
 // Producer incident payloads and previously granted authority are never cached.
 type OwnerPosition struct {
-	Name        string `json:"name"`
-	Cursor      string `json:"cursor"`
-	Offset      int    `json:"offset"`
-	PageIndex   int    `json:"pageIndex"`
-	ItemsDigest string `json:"itemsDigest"`
-	OwnerDigest string `json:"ownerDigest"`
-	SnapshotRef string `json:"snapshotRef"`
-	Done        bool   `json:"done"`
+	Name                string `json:"name"`
+	Cursor              string `json:"cursor"`
+	Offset              int    `json:"offset"`
+	PageIndex           int    `json:"pageIndex"`
+	ItemsDigest         string `json:"itemsDigest"`
+	OwnerDigest         string `json:"ownerDigest"`
+	SnapshotRef         string `json:"snapshotRef"`
+	Done                bool   `json:"done"`
 	PublicationBookmark string `json:"publicationBookmark,omitempty"`
-	PublicationParent string `json:"publicationParent,omitempty"`
+	PublicationParent   string `json:"publicationParent,omitempty"`
 }
 
 type CursorFrame struct {
-	Profile            string          `json:"profile"`
-	Filters            json.RawMessage `json:"filters"`
-	Owners             []OwnerPosition `json:"owners"`
-	PageLimit          int             `json:"pageLimit"`
-	PageNumber         int             `json:"pageNumber"`
-	SelfStatus         string          `json:"selfStatus"`
-	SelfActionRequired bool            `json:"selfActionRequired"`
-	SelfConsumed       bool            `json:"selfConsumed"`
-	Partial            bool            `json:"partial"`
-	PublicationCoverage bool `json:"publicationCoverage,omitempty"`
-	PublicationParent *uuid.UUID `json:"publicationParent,omitempty"`
-	PublicationBase *PublicationVector `json:"publicationBase,omitempty"`
+	Profile             string             `json:"profile"`
+	Filters             json.RawMessage    `json:"filters"`
+	Owners              []OwnerPosition    `json:"owners"`
+	PageLimit           int                `json:"pageLimit"`
+	PageNumber          int                `json:"pageNumber"`
+	SelfStatus          string             `json:"selfStatus"`
+	SelfActionRequired  bool               `json:"selfActionRequired"`
+	SelfConsumed        bool               `json:"selfConsumed"`
+	Partial             bool               `json:"partial"`
+	PublicationCoverage bool               `json:"publicationCoverage,omitempty"`
+	PublicationParent   *uuid.UUID         `json:"publicationParent,omitempty"`
+	PublicationBase     *PublicationVector `json:"publicationBase,omitempty"`
 }
 
 type CursorBinding struct {
@@ -119,7 +119,9 @@ func ValidateCursorFrame(frame CursorFrame) error {
 	if _, ok := operationalQuery(frame.Filters, true); !ok {
 		return ErrCursorConflict
 	}
-	if err := validatePublicationCapture(frame); err != nil { return err }
+	if err := validatePublicationCapture(frame); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, owner := range frame.Owners {
 		if (owner.Name != "GATEWAY" && owner.Name != "INGESTION") || seen[owner.Name] || owner.Offset < 0 || owner.Offset > 100 || owner.PageIndex < 0 || owner.PageIndex > 200 || !validDigest(owner.ItemsDigest) || !validDigest(owner.OwnerDigest) {

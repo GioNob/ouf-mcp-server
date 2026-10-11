@@ -62,7 +62,9 @@ func CanonicalPublicationVector(vector PublicationVector) ([]byte, error) {
 		return nil, ErrCursorConflict
 	}
 	canonical, err := canonicalPublicationFilters(vector.Filters)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	for _, position := range vector.Owners {
 		for _, value := range []string{position.Bookmark, position.SnapshotRef} {
 			if !canonicalPublicationToken(value) {

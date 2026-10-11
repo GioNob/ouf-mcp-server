@@ -202,12 +202,16 @@ func cursorNodeCapacity(ctx context.Context, tx pgx.Tx, binding operational.Curs
 }
 
 func sameCursorScope(old, next operational.CursorFrame) bool {
-	if old.PublicationCoverage != next.PublicationCoverage { return false }
+	if old.PublicationCoverage != next.PublicationCoverage {
+		return false
+	}
 	oldParent, _ := json.Marshal(old.PublicationParent)
 	nextParent, _ := json.Marshal(next.PublicationParent)
 	oldBase, _ := json.Marshal(old.PublicationBase)
 	nextBase, _ := json.Marshal(next.PublicationBase)
-	if !sameMetadataJSON(oldParent, nextParent) || !sameMetadataJSON(oldBase, nextBase) { return false }
+	if !sameMetadataJSON(oldParent, nextParent) || !sameMetadataJSON(oldBase, nextBase) {
+		return false
+	}
 	var a, b any
 	if json.Unmarshal(old.Filters, &a) != nil || json.Unmarshal(next.Filters, &b) != nil {
 		return false

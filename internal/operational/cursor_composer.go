@@ -35,9 +35,12 @@ type cursorOwnerPage struct {
 	PriorityProfile      string           `json:"priorityProfile"`
 	CursorProfile        string           `json:"cursorProfile"`
 	ConsultationRecorded bool             `json:"consultationRecorded"`
-	BookmarkProfile string `json:"bookmarkProfile"`
-	PublicationBookmark string `json:"publicationBookmark"`
-	Coverage struct { ParentBookmark string `json:"parentBookmark"`; NoPublicationProgress *bool `json:"noPublicationProgress"` } `json:"coverage"`
+	BookmarkProfile      string           `json:"bookmarkProfile"`
+	PublicationBookmark  string           `json:"publicationBookmark"`
+	Coverage             struct {
+		ParentBookmark        string `json:"parentBookmark"`
+		NoPublicationProgress *bool  `json:"noPublicationProgress"`
+	} `json:"coverage"`
 }
 
 // Start captures two independent owner snapshots. No incident payload is
@@ -127,7 +130,9 @@ func (c CursorComposer) Page(ctx context.Context, in aggregateRequest, policyRef
 	if err := ValidateCursorFrame(node.Frame); err != nil {
 		return nil, err
 	}
-	if node.Frame.PublicationCoverage { return nil, ErrCursorConflict }
+	if node.Frame.PublicationCoverage {
+		return nil, ErrCursorConflict
+	}
 	if time.Now().After(node.ExpiresAt) {
 		return nil, ErrCursorExpired
 	}
@@ -190,7 +195,9 @@ func sameOwnerPage(position OwnerPosition, page cursorOwnerPage) bool {
 
 func (c CursorComposer) readPage(ctx context.Context, in aggregateRequest, filters json.RawMessage, name, token string, coverage ...bool) (cursorOwnerPage, error) {
 	query := map[string]any{"cursor": token}
-	if len(coverage) > 0 && coverage[0] { query["coverage"] = true }
+	if len(coverage) > 0 && coverage[0] {
+		query["coverage"] = true
+	}
 	arguments, _ := json.Marshal(query)
 	in.Arguments = arguments
 	in.ScopeSource = ""
@@ -219,7 +226,7 @@ func (c CursorComposer) readPage(ctx context.Context, in aggregateRequest, filte
 // Each page uses at most three governed owner reads: two fresh readbacks and
 // one refill. Ending early at an unknown head preserves global ordering. This
 // does not create another retry loop or reset the caller's durable budgets.
-func (c CursorComposer) compose(ctx context.Context, in aggregateRequest, binding CursorBinding, node CursorNode, pages map[string]cursorOwnerPage, calls int, finalize ...func(CursorFrame) (string,error)) ([]byte, error) {
+func (c CursorComposer) compose(ctx context.Context, in aggregateRequest, binding CursorBinding, node CursorNode, pages map[string]cursorOwnerPage, calls int, finalize ...func(CursorFrame) (string, error)) ([]byte, error) {
 	frame := node.Frame
 	frame.Owners = append([]OwnerPosition{}, frame.Owners...)
 	items := make([]map[string]any, 0, frame.PageLimit)
@@ -251,7 +258,11 @@ func (c CursorComposer) compose(ctx context.Context, in aggregateRequest, bindin
 			if err != nil {
 				return nil, err
 			}
-			if frame.PublicationCoverage { if err := validatePublicationPage(next, frame, position.Name); err != nil { return nil, err } }
+			if frame.PublicationCoverage {
+				if err := validatePublicationPage(next, frame, position.Name); err != nil {
+					return nil, err
+				}
+			}
 			if next.SnapshotRef != position.SnapshotRef || next.Cursor != page.NextCursor {
 				return nil, ErrCursorConflict
 			}
@@ -310,14 +321,20 @@ func (c CursorComposer) compose(ctx context.Context, in aggregateRequest, bindin
 		"coverage": map[string]any{"kind": "INDEPENDENT_OWNER_SNAPSHOT_VECTOR", "scanPending": scanPending, "pageComplete": !scanPending, "ownerCalls": calls, "atomicAcrossOwners": false}}
 	if frame.PublicationCoverage {
 		result["bookmarkProfile"] = PublicationVectorProfile
-		result["coverage"].(map[string]any)["publicationModules"] = []string{"GATEWAY","INGESTION"}
+		result["coverage"].(map[string]any)["publicationModules"] = []string{"GATEWAY", "INGESTION"}
 		result["coverage"].(map[string]any)["mcpSelfHistoryCovered"] = false
 		result["coverage"].(map[string]any)["currentUrgentOwnerStateReadRequired"] = true
-		if frame.PublicationParent != nil { result["coverage"].(map[string]any)["parentPublicationBookmark"] = frame.PublicationParent.String() }
+		if frame.PublicationParent != nil {
+			result["coverage"].(map[string]any)["parentPublicationBookmark"] = frame.PublicationParent.String()
+		}
 		if !more && !scanPending {
-			if len(finalize) != 1 || finalize[0] == nil { return nil, ErrCursorConflict }
+			if len(finalize) != 1 || finalize[0] == nil {
+				return nil, ErrCursorConflict
+			}
 			bookmark, err := finalize[0](frame)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			result["publicationBookmark"] = bookmark
 		}
 	}
@@ -360,7 +377,9 @@ func decodeCursorOwnerPage(body []byte, name string) (cursorOwnerPage, error) {
 	if len(body) > 512<<10 || decoder.Decode(&page) != nil {
 		return page, ErrCursorOwnerUnavailable
 	}
-	if _, err := uniquePublicationJSON(body); err != nil { return page, ErrCursorConflict }
+	if _, err := uniquePublicationJSON(body); err != nil {
+		return page, ErrCursorConflict
+	}
 	if name == "INGESTION" {
 		page.ExpiresAt = page.SnapshotExpiresAt
 	}
