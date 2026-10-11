@@ -21,10 +21,10 @@ jobs:
       - run: go mod download
       - name: Native formatter and exact public source evidence
         run: |
-          gofmt -w internal/operational/cursor_state.go internal/adapter/postgres/operational_cursor.go internal/operational/cursor_composer.go internal/operational/publication_vector.go internal/operational/publication_composer.go internal/operational/publication_composer_test.go internal/adapter/postgres/publication_capture_integration_test.go
+          gofmt -w internal/operational/publication_vector_test.go internal/operational/cursor_state.go internal/adapter/postgres/operational_cursor.go internal/operational/cursor_composer.go internal/operational/publication_vector.go internal/operational/publication_composer.go internal/operational/publication_composer_test.go internal/adapter/postgres/publication_capture_integration_test.go
           python3 - <<'PY'
           import json,pathlib
-          paths=['internal/operational/cursor_state.go','internal/adapter/postgres/operational_cursor.go','internal/operational/cursor_composer.go','internal/operational/publication_vector.go','internal/operational/publication_composer.go','internal/operational/publication_composer_test.go','internal/adapter/postgres/publication_capture_integration_test.go']
+          paths=['internal/operational/publication_vector_test.go','internal/operational/cursor_state.go','internal/adapter/postgres/operational_cursor.go','internal/operational/cursor_composer.go','internal/operational/publication_vector.go','internal/operational/publication_composer.go','internal/operational/publication_composer_test.go','internal/adapter/postgres/publication_capture_integration_test.go']
           for path in paths:
               print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
           PY

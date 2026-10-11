@@ -18,10 +18,12 @@ type PublicationComposer struct {
  Bookmarks PublicationBookmarkStore
 }
 func canonicalPublicationFilters(raw []byte)(json.RawMessage,error){
- if len(raw)>1024 || !utf8.Valid(raw){return nil,ErrCursorCapacity}
+ if len(raw)>4096{return nil,ErrCursorCapacity}
+ if !utf8.Valid(raw){return nil,ErrCursorConflict}
  if _,err:=uniquePublicationJSON(raw);err!=nil{return nil,ErrCursorConflict}
  var fields map[string]json.RawMessage
  if json.Unmarshal(raw,&fields)!=nil||fields==nil{return nil,ErrCursorConflict}
+ normalizedFields:=map[string]string{}
  for name,value:=range fields{
   var text string;if json.Unmarshal(value,&text)!=nil{return nil,ErrCursorConflict}
   switch name {
@@ -29,8 +31,9 @@ func canonicalPublicationFilters(raw []byte)(json.RawMessage,error){
   case "state":if text!="OPEN"&&text!="RECOVERING"&&text!="RESOLVED"{return nil,ErrCursorConflict}
   default:return nil,ErrCursorConflict
   }
+  normalizedFields[name]=text
  }
- normalized,err:=json.Marshal(fields);return normalized,err
+ normalized,err:=json.Marshal(normalizedFields);return normalized,err
 }
 func validatePublicationCapture(frame CursorFrame)error{
  if !frame.PublicationCoverage {
@@ -65,7 +68,7 @@ func validatePublicationPage(page cursorOwnerPage,frame CursorFrame,name string)
   if !canonicalPublicationToken(page.PublicationBookmark)||page.Coverage.ParentBookmark!=expected||page.Coverage.NoPublicationProgress==nil{return ErrCursorConflict}
   unchanged:=expected!=""&&page.PublicationBookmark==expected
   if *page.Coverage.NoPublicationProgress!=unchanged{return ErrCursorConflict}
- }else if page.PublicationBookmark!=""||page.Coverage.ParentBookmark!=""{return ErrCursorConflict}
+ }else if page.PublicationBookmark!=""||page.Coverage.ParentBookmark!=""||page.Coverage.NoPublicationProgress!=nil{return ErrCursorConflict}
  return nil
 }
 func(p PublicationComposer)configured()error{
