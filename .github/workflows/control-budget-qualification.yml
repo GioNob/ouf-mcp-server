@@ -1,0 +1,47 @@
+name: Operational control budget PostgreSQL qualification
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  owner-vector-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: go mod download
+      - name: Native formatter and exact source evidence
+        run: |
+          gofmt -w internal/orchestration/service.go internal/orchestration/operational_budget.go internal/orchestration/operational_budget_test.go internal/adapter/postgres/store.go internal/adapter/postgres/operational_control_budget_integration_test.go internal/adapter/postgres/operational_cursor_service_integration_test.go internal/operational/aggregator.go internal/operational/cursor_composer.go internal/kernel/kernel.go
+          python3 - <<'PY'
+          import json,pathlib
+          paths=["internal/orchestration/service.go","internal/orchestration/operational_budget.go","internal/orchestration/operational_budget_test.go","internal/adapter/postgres/store.go","internal/adapter/postgres/operational_control_budget_integration_test.go","internal/adapter/postgres/operational_cursor_service_integration_test.go","internal/operational/aggregator.go","internal/operational/cursor_composer.go","internal/kernel/kernel.go"]
+          for path in paths:
+              print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
+          PY
+      - run: go test -race ./internal/orchestration ./internal/operational -run 'TestOperationalControl|TestIncidentCursor|TestAggregateDelegation' -count=1 -v
+      - run: go test ./internal/adapter/postgres -run 'TestOperationalControl|TestIncidentCursor' -count=1 -v
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operational-cursor-metadata-${{ github.run_id }}
+          path: |
+            internal/orchestration/service.go
+            internal/orchestration/operational_budget.go
+            internal/orchestration/operational_budget_test.go
+            internal/adapter/postgres/store.go
+            internal/adapter/postgres/operational_control_budget_integration_test.go
+            internal/adapter/postgres/operational_cursor_service_integration_test.go
+            internal/operational/aggregator.go
+            internal/operational/cursor_composer.go
+            internal/kernel/kernel.go
+          retention-days: 30
