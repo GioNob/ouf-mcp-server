@@ -21,9 +21,9 @@ type SelfStatusProvider interface {
 
 type ownerAPI struct {
 	delegationWorkload string
-	auth       orchestration.AuthorizationPort
-	self       SelfStatusProvider
-	aggregator *Aggregator
+	auth               orchestration.AuthorizationPort
+	self               SelfStatusProvider
+	aggregator         *Aggregator
 }
 
 func NewOwnerAPI(self SelfStatusProvider, aggregator ...*Aggregator) *ownerAPI {
@@ -43,8 +43,8 @@ func (h *ownerAPI) WithAuthorization(auth orchestration.AuthorizationPort) *owne
 // WithOperationalDelegation binds the only workload allowed to consume the
 // Gateway-verified aggregate context. Empty configuration remains fail-closed.
 func (h *ownerAPI) WithOperationalDelegation(workload string) *ownerAPI {
-    h.delegationWorkload = strings.TrimSpace(workload)
-    return h
+	h.delegationWorkload = strings.TrimSpace(workload)
+	return h
 }
 
 func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -107,9 +107,9 @@ func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !h.aggregateDelegation(w, r, &identity, capability) {
-            return
-        }
-        raw, readErr := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
+			return
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
 		if readErr != nil {
 			http.Error(w, "invalid operational request", http.StatusBadRequest)
 			return
@@ -247,32 +247,38 @@ func operationalQuery(raw []byte, incidents bool) (int, bool) {
 // Owner NetworkPolicy and the Gateway marker remain prerequisites; every
 // subsequent governed Gateway hop verifies the original proof and current IAM.
 func (h *ownerAPI) aggregateDelegation(w http.ResponseWriter, r *http.Request, identity *orchestration.Identity, capability string) bool {
-    proof := r.Header.Get("X-OUF-Delegation")
-    marker := r.Header.Get("X-OUF-Delegation-Verified")
-    if proof == "" && marker == "" {
-        // Channel-neutral legacy projections remain explicitly partial when
-        // their governed caller requires delegation and has none.
-        return true
-    }
-    if h.delegationWorkload == "" || marker != "mcp-operational-aggregate-v1" ||
-        identity.ActorType != "HUMAN" || identity.ServicePrincipalID != h.delegationWorkload ||
-        r.Header.Get("X-OUF-Capability-ID") != capability || !boundedDelegationProof(proof) {
-        http.Error(w, "invalid aggregate delegated context", http.StatusForbidden)
-        return false
-    }
-    identity.Delegation = proof
-    return true
+	proof := r.Header.Get("X-OUF-Delegation")
+	marker := r.Header.Get("X-OUF-Delegation-Verified")
+	if proof == "" && marker == "" {
+		// Channel-neutral legacy projections remain explicitly partial when
+		// their governed caller requires delegation and has none.
+		return true
+	}
+	if h.delegationWorkload == "" || marker != "mcp-operational-aggregate-v1" ||
+		identity.ActorType != "HUMAN" || identity.ServicePrincipalID != h.delegationWorkload ||
+		r.Header.Get("X-OUF-Capability-ID") != capability || !boundedDelegationProof(proof) {
+		http.Error(w, "invalid aggregate delegated context", http.StatusForbidden)
+		return false
+	}
+	identity.Delegation = proof
+	return true
 }
 
 func boundedDelegationProof(proof string) bool {
-    if len(proof) > 16384 { return false }
-    parts := strings.Split(proof, ".")
-    if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) != 43 { return false }
-    for _, part := range parts {
-        for _, char := range part {
-            if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') &&
-                !(char >= '0' && char <= '9') && char != '_' && char != '-' { return false }
-        }
-    }
-    return true
+	if len(proof) > 16384 {
+		return false
+	}
+	parts := strings.Split(proof, ".")
+	if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) != 43 {
+		return false
+	}
+	for _, part := range parts {
+		for _, char := range part {
+			if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') &&
+				!(char >= '0' && char <= '9') && char != '_' && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
