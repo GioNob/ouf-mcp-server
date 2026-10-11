@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 4ce80ca5db4a2cf85b13aec85ca019cbb3dde202
+          ref: eccd2bd94b47bce0bf9a0a1cd106b480e6c2c330
           path: .pairwise/gateway
       - uses: actions/checkout@v4
         with:
