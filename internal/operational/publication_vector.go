@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -62,31 +61,8 @@ func CanonicalPublicationVector(vector PublicationVector) ([]byte, error) {
 		vector.Owners[0].Name != "GATEWAY" || vector.Owners[1].Name != "INGESTION" {
 		return nil, ErrCursorConflict
 	}
-	if _, err := uniquePublicationJSON(vector.Filters); err != nil {
-		return nil, ErrCursorConflict
-	}
-	var filters map[string]json.RawMessage
-	if json.Unmarshal(vector.Filters, &filters) != nil || filters == nil {
-		return nil, ErrCursorConflict
-	}
-	for key, raw := range filters {
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			return nil, ErrCursorConflict
-		}
-		switch key {
-		case "sourceId":
-			if strings.TrimSpace(value) == "" || len([]rune(value)) > 200 {
-				return nil, ErrCursorConflict
-			}
-		case "state":
-			if value != "OPEN" && value != "RECOVERING" && value != "RESOLVED" {
-				return nil, ErrCursorConflict
-			}
-		default:
-			return nil, ErrCursorConflict
-		}
-	}
+	canonical, err := canonicalPublicationFilters(vector.Filters)
+	if err != nil { return nil, err }
 	for _, position := range vector.Owners {
 		for _, value := range []string{position.Bookmark, position.SnapshotRef} {
 			if !canonicalPublicationToken(value) {
@@ -99,10 +75,6 @@ func CanonicalPublicationVector(vector PublicationVector) ([]byte, error) {
 		if !validDigest(position.ItemsDigest) {
 			return nil, ErrCursorConflict
 		}
-	}
-	canonical, err := json.Marshal(filters)
-	if err != nil {
-		return nil, err
 	}
 	vector.Filters = canonical
 	raw, err := json.Marshal(vector)

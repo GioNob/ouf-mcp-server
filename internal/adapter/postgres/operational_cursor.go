@@ -202,6 +202,12 @@ func cursorNodeCapacity(ctx context.Context, tx pgx.Tx, binding operational.Curs
 }
 
 func sameCursorScope(old, next operational.CursorFrame) bool {
+	if old.PublicationCoverage != next.PublicationCoverage { return false }
+	oldParent, _ := json.Marshal(old.PublicationParent)
+	nextParent, _ := json.Marshal(next.PublicationParent)
+	oldBase, _ := json.Marshal(old.PublicationBase)
+	nextBase, _ := json.Marshal(next.PublicationBase)
+	if !sameMetadataJSON(oldParent, nextParent) || !sameMetadataJSON(oldBase, nextBase) { return false }
 	var a, b any
 	if json.Unmarshal(old.Filters, &a) != nil || json.Unmarshal(next.Filters, &b) != nil {
 		return false
@@ -216,6 +222,7 @@ func sameCursorScope(old, next operational.CursorFrame) bool {
 		for _, current := range next.Owners {
 			if previous.Name == current.Name {
 				found = current.SnapshotRef == previous.SnapshotRef && (!previous.Done || current.Done) &&
+					(previous.PublicationBookmark == "" || previous.PublicationBookmark == current.PublicationBookmark && previous.PublicationParent == current.PublicationParent) &&
 					current.PageIndex >= previous.PageIndex && current.PageIndex <= previous.PageIndex+1
 				if current.PageIndex == previous.PageIndex {
 					found = found && current.Cursor == previous.Cursor && current.ItemsDigest == previous.ItemsDigest && current.OwnerDigest == previous.OwnerDigest && current.Offset >= previous.Offset
