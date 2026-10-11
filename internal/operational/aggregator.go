@@ -30,7 +30,7 @@ type aggregateRequest struct {
 	AttemptID      string
 	CorrelationID  string
 	RequestedLimit int
-	ScopeSource string
+	ScopeSource    string
 }
 
 type producerSpec struct {
@@ -245,7 +245,9 @@ func producerRead(in aggregateRequest, producer producerSpec) (json.RawMessage, 
 		delete(query, "sourceId")
 	} else {
 		attributes["detailLevel"] = "TENANT_OPERATIONAL"
-		if in.ScopeSource != "" { attributes["sourceRef"] = in.ScopeSource }
+		if in.ScopeSource != "" {
+			attributes["sourceRef"] = in.ScopeSource
+		}
 		if source, exists := query["sourceId"]; exists {
 			var value string
 			if json.Unmarshal(source, &value) != nil || value == "" {

@@ -13,3 +13,10 @@ Finite reference metadata profile:2second DB attempt, at most200page advances,10
 Additive migration008 creates private metadata/session tables with immutability and referential guards. Native PostgreSQL qualification covers restart/reopen, principal/tenant/authentication/policy/manifest replay denial, concurrent append/replay/result changes, immutable expiry/metadata, final/scope/position fencing, finite session admission and bounded expired cleanup. It preserves existing lifecycle/admission/maintenance contracts. No migration has run on the VPS.
 
 Public global cursor composition still needs the bounded k-way merge, current owner-page digest checks, fresh source-specific authorization, explicit incomplete selection and appropriate whole-request deadlines. A consultation confirmation write additionally needs its own reviewed capability/route, finite idempotency/CAS and actual client delivery proof; none is synthesized by READ or by this store. Owner publication-boundary resume bookmarks and their retention proof remain OPEN. No production SDK grants, network/HA or release acceptance is inferred from metadata tests.
+
+
+## Native qualification — 2026-10-11
+
+[PR54](https://github.com/GioNob/ouf-mcp-server/pull/54) merged as `61643ba0d4d5b6bdadf61537af96c141125319df` after all eight push/PR gates passed at candidate `85ccdb9fe356d4f3fa4b70d158fc6f86109fd2c3`. Dedicated PostgreSQL/race run [38123408694](https://github.com/GioNob/ouf-mcp-server/actions/runs/38123408694) passed two identity/frame groups and six real PostgreSQL groups; full lifecycle, maintenance, current pairwise, Authorization conformance, static analysis and vulnerability gates remained enabled and passed. No target migration or operator consultation is implied.
+
+The bounded composition primitive is under review in [PR55](https://github.com/GioNob/ouf-mcp-server/pull/55), with separate [design and qualification scope](OPERATIONAL_CURSOR_COMPOSITION.md). Public wiring and delivery-confirmation capability remain open.
