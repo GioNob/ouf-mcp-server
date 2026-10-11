@@ -21,10 +21,10 @@ jobs:
       - run: go mod download
       - name: Native formatter and exact public source evidence
         run: |
-          gofmt -w internal/operational/owner_api.go internal/operational/cursor_http.go internal/kernel/kernel.go cmd/ouf-mcp/main.go internal/kernel/incident_cursor_test.go internal/operational/publication_http.go internal/operational/publication_http_test.go
+          gofmt -w internal/operational/owner_api.go internal/operational/cursor_http.go internal/kernel/kernel.go cmd/ouf-mcp/main.go internal/kernel/incident_cursor_test.go internal/operational/publication_http.go internal/operational/publication_http_test.go internal/adapter/postgres/publication_http_service_integration_test.go internal/adapter/postgres/operational_control_budget_integration_test.go
           python3 - <<'PY'
           import json,pathlib
-          paths=["internal/operational/owner_api.go","internal/operational/cursor_http.go","internal/kernel/kernel.go","cmd/ouf-mcp/main.go","internal/kernel/incident_cursor_test.go","internal/operational/publication_http.go","internal/operational/publication_http_test.go"]
+          paths=["internal/operational/owner_api.go","internal/operational/cursor_http.go","internal/kernel/kernel.go","cmd/ouf-mcp/main.go","internal/kernel/incident_cursor_test.go","internal/operational/publication_http.go","internal/operational/publication_http_test.go","internal/adapter/postgres/publication_http_service_integration_test.go","internal/adapter/postgres/operational_control_budget_integration_test.go"]
           for path in paths:
               print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
           PY

@@ -45,7 +45,7 @@ func (g *controlGatewayFixture) Execute(ctx context.Context, in orchestration.Ga
 		return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"items":[],"partial":false}`)}, nil
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/mcp/operations/incidents", strings.NewReader(string(in.Arguments))).WithContext(ctx)
-	for name, value := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Principal-ID": in.Identity.PrincipalID, "X-OUF-Tenant-ID": in.Identity.TenantID, "X-OUF-Service-Principal": in.Identity.ServicePrincipalID, "X-OUF-Actor-Type": in.Identity.ActorType, "X-OUF-Capability-ID": in.CapabilityID, "X-OUF-Authorization-Decision-Ref": in.AuthorizationDecisionRef, "X-OUF-Delegation": in.Identity.Delegation, "X-OUF-Delegation-Verified": "mcp-operational-aggregate-v1", "X-Tool-Attempt-ID": in.AttemptID, "X-Correlation-ID": in.CorrelationID} {
+	for name, value := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Principal-ID": in.Identity.PrincipalID, "X-OUF-Tenant-ID": in.Identity.TenantID, "X-OUF-Service-Principal": in.Identity.ServicePrincipalID, "X-OUF-Actor-Type": in.Identity.ActorType, "X-OUF-Authentication-Context-Ref": in.Identity.AuthenticationContextRef, "X-OUF-Capability-ID": in.CapabilityID, "X-OUF-Authorization-Decision-Ref": in.AuthorizationDecisionRef, "X-OUF-Delegation": in.Identity.Delegation, "X-OUF-Delegation-Verified": "mcp-operational-aggregate-v1", "X-Tool-Attempt-ID": in.AttemptID, "X-Correlation-ID": in.CorrelationID} {
 		req.Header.Set(name, value)
 	}
 	response := httptest.NewRecorder()
@@ -209,3 +209,4 @@ func settleControlAdmission(ctx context.Context, store *Store, admitted orchestr
 	}
 	return store.Reconcile(ctx, admitted.AttemptID, orchestration.Cost{ToolCalls: 1}, orchestration.AttemptOutcome{Success: true, Code: "OK"})
 }
+

@@ -38,8 +38,8 @@ type relatedSearchInput struct {
 }
 
 type operationalInput struct {
- Coverage bool `json:"coverage,omitempty"`
- ResumeFrom string `json:"resumeFrom,omitempty"`
+	Coverage   bool   `json:"coverage,omitempty"`
+	ResumeFrom string `json:"resumeFrom,omitempty"`
 	Snapshot   bool   `json:"snapshot,omitempty"`
 	Cursor     string `json:"cursor,omitempty"`
 	IncidentID string `json:"incidentId,omitempty"`

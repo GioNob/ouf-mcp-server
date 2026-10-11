@@ -22,7 +22,7 @@ type SelfStatusProvider interface {
 type ownerAPI struct {
 	delegationWorkload string
 	cursorStore        CursorStore
-	publicationStore PublicationBookmarkStore
+	publicationStore   PublicationBookmarkStore
 	auth               orchestration.AuthorizationPort
 	self               SelfStatusProvider
 	aggregator         *Aggregator
@@ -57,8 +57,8 @@ func (h *ownerAPI) WithIncidentCursors(store CursorStore) *ownerAPI {
 
 // WithPublicationBookmarks installs durable READ positions without client receipts.
 func (h *ownerAPI) WithPublicationBookmarks(store PublicationBookmarkStore) *ownerAPI {
- h.publicationStore = store
- return h
+	h.publicationStore = store
+	return h
 }
 
 func (h *ownerAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
