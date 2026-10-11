@@ -1,0 +1,293 @@
+{
+  "schema": "ouf.resilience.operational-read-catchup-qualification.v1",
+  "date": "2026-10-11",
+  "status": "QUALIFIED_REPOSITORY_TRANCHE_NOT_TARGET_ACCEPTANCE",
+  "policy": "https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_POLICY.md",
+  "petReferences": [
+    "MCP PET1.4 §§33–34",
+    "Ingestion PET1.3 §46"
+  ],
+  "mcp": {
+    "repository": "GioNob/ouf-mcp-server",
+    "pullRequest": 52,
+    "candidateCommit": "0f8006711895cfb82166e8a3e22fb7c3bf29a00c",
+    "mergeCommit": "27ceed89709e7735f68145d335c9ef0c4d1df5d9",
+    "implemented": [
+      "owner reauthorization before self/producer I/O",
+      "strict published typed query including duplicate/null/unknown and byte limits",
+      "fixed MCP self allowlist",
+      "explicit unknown/malformed/partial/unavailable producer evidence",
+      "512KiB producer and final owner response budgets"
+    ],
+    "focused": {
+      "run": 38117976185,
+      "job": 114406647995,
+      "topLevelRaceTests": 20,
+      "newRegressionGroups": 6,
+      "status": "SUCCESS"
+    },
+    "full": {
+      "run": 38117976205,
+      "job": 114406648113,
+      "status": "SUCCESS",
+      "checks": [
+        "functional",
+        "race",
+        "PostgreSQL",
+        "migrations",
+        "maintenance",
+        "Gateway and owner pairwise",
+        "Java/Go conformance",
+        "staticcheck",
+        "govulncheck"
+      ],
+      "reachableVulnerabilities": 0,
+      "requiredModuleFindingsOutsideCalledCode": 1
+    },
+    "candidateRuns": [
+      {
+        "id": 38117978393,
+        "name": "Authorization Java Go conformance",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117978397,
+        "name": "Incident priority resilience v3",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117978398,
+        "name": "MCP evidence and late recovery",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117976183,
+        "name": "Authorization Java Go conformance",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117976185,
+        "name": "Incident priority resilience v3",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117976205,
+        "name": "MCP evidence and late recovery",
+        "event": "push",
+        "conclusion": "success"
+      }
+    ],
+    "qualificationHistory": [
+      {
+        "run": 38117580577,
+        "result": "FAILURE_FORMAT_ONLY",
+        "correction": "native gofmt applied without gate changes"
+      },
+      {
+        "run": 38117671054,
+        "attempt": 1,
+        "result": "FAILURE_UNCHANGED_POSTGRESQL_P95_FIXTURE",
+        "observedP95Ms": 59.45357,
+        "targetBelowMs": 25
+      },
+      {
+        "id": 38117671054,
+        "attempt": 2,
+        "conclusion": "success",
+        "action": "one failed-job retry; no threshold relaxation"
+      }
+    ]
+  },
+  "ingestion": {
+    "repository": "GioNob/ouf-ingestion-runtime",
+    "pullRequest": 36,
+    "candidateCommit": "50595a5b63c5236c9802964a69f934189a4b42cf",
+    "mergeCommit": "736a66eed3fb634e3915748d35f45cf942b030e3",
+    "migration": "V16__incident_observation_time.sql",
+    "implemented": [
+      "owner-maintained monotone timestamp for real incident changes",
+      "fresh persistence observation separate from historical occurrence",
+      "metadata and reopening included in timestamp catch-up",
+      "no-op and rollback preserve observation",
+      "direct timestamp update rejected",
+      "backfill retains only historically provable created/resolved times",
+      "tenant isolation and deterministic priority retained"
+    ],
+    "focused": {
+      "run": 38117925912,
+      "job": 114406491988,
+      "status": "SUCCESS",
+      "tests": 28,
+      "observationPriorityTests": 10,
+      "newObservationTests": 7,
+      "ownerAuthorizationTests": 2,
+      "humanRecoveryBudgetTests": 16
+    },
+    "full": {
+      "run": 38117926040,
+      "job": 114406492570,
+      "status": "SUCCESS",
+      "moduleTests": 144,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "otherJobs": [
+        {
+          "id": 114406492570,
+          "name": "java21-postgresql17",
+          "conclusion": "success"
+        },
+        {
+          "id": 114406492649,
+          "name": "disaster-recovery-drill",
+          "conclusion": "success"
+        },
+        {
+          "id": 114406492697,
+          "name": "supply-chain-deployment",
+          "conclusion": "success"
+        }
+      ]
+    },
+    "candidateRuns": [
+      {
+        "id": 38117928410,
+        "name": "Operational priority PostgreSQL qualification",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928263,
+        "name": "Retained live source continuity",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928253,
+        "name": "R4a frozen configuration consumer probe",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928282,
+        "name": "Shared Authorization SDK pairwise",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928255,
+        "name": "R2a Onboarding automatic activation",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928278,
+        "name": "R2b source to authorized serving",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928264,
+        "name": "Ingestion Runtime module CI",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928256,
+        "name": "R2c governed publication to historical serving",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117928260,
+        "name": "R2e GeoPackage features and governed camera-cabinet relations",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925948,
+        "name": "Retained live source continuity",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925905,
+        "name": "Shared Authorization SDK pairwise",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925960,
+        "name": "R4a frozen configuration consumer probe",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925912,
+        "name": "Operational priority PostgreSQL qualification",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925916,
+        "name": "R2a Onboarding automatic activation",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117926040,
+        "name": "Ingestion Runtime module CI",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925921,
+        "name": "R2b source to authorized serving",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925887,
+        "name": "R2e GeoPackage features and governed camera-cabinet relations",
+        "event": "push",
+        "conclusion": "success"
+      },
+      {
+        "id": 38117925980,
+        "name": "R2c governed publication to historical serving",
+        "event": "push",
+        "conclusion": "success"
+      }
+    ],
+    "backfillQualification": "V16 resource applied to populated isolated legacy-shaped runtime_issue table; native empty-schema Flyway V1–V16 also passed"
+  },
+  "remainingOpen": [
+    "commit-ordered owner transition publication ledger",
+    "stable global snapshot cursors and pagination/authorization coverage",
+    "persistent operator delivery receipts and consultation checkpoints",
+    "current-health vs historical-window summary separation",
+    "dependency incident deduplication and affected-job impact",
+    "capacity/retention/quotas/circuit/backpressure alignment",
+    "active alert outbox/delivery/escalation and independent monitoring",
+    "full retry/lease owner integration",
+    "actual target multi-owner grants/network/deployment qualification"
+  ],
+  "runtimeBoundary": {
+    "vpsDeploys": 0,
+    "vpsMigrations": 0,
+    "serviceRestarts": 0,
+    "providerCalls": 0,
+    "realEmails": 0,
+    "newRuntimeHumanGrants": 0,
+    "r9r10Claims": "CONSUMED_DO_NOT_REPLAY",
+    "priorRootPreflight": "SUSPENDED",
+    "applicationHealthProven": false,
+    "releaseAcceptance": false
+  },
+  "cursorDesign": "https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_CURSOR_DESIGN.md"
+}

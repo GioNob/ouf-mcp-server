@@ -3,6 +3,8 @@
 
 **Resilience v3 — prima tranche integrata:** priorità incidenti e catch-up qualificati per i perimetri MCP/Ingestion/Gateway; [prove e limiti](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_RESILIENCE_ADOPTION.md), [piano operativo](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_RESILIENCE_PLAN.md). Cursor/memoria operatore, correlazione dipendenze e alert restano aperti.
 
+**Seconda tranche integrata e qualificata:** autorizzazione owner e proiezioni incomplete MCP; osservazione persistente delle modifiche Ingestion. [Prove e limiti](evidence/operational-read-catchup-qualified-20261011.json), [design cursor/consultazione — OPEN](https://github.com/GioNob/ouf-deploy/blob/main/docs/OUF_OPERATIONAL_CURSOR_DESIGN.md).
+
 # OUF MCP Server
 
 ## Installazione e collaudo del collegamento ChatGPT
