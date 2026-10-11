@@ -1,0 +1,31 @@
+name: Private operational audit capture qualification
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  operational-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: go mod download
+      - name: Native formatter and exact public source evidence
+        run: |
+          gofmt -w internal/adapter/postgres/operational_audit_capture_integration_test.go
+          python3 - <<'PY'
+          import json,pathlib
+          path='internal/adapter/postgres/operational_audit_capture_integration_test.go'
+          print('OUF_NATIVE_GOFMT='+json.dumps({'path':path,'content':pathlib.Path(path).read_text()},separators=(',',':')))
+          PY
+      - run: go test -race ./internal/adapter/postgres -run TestOperationalAuditCapture -count=1 -v
+      - run: go test ./internal/adapter/postgres -count=1 -v
