@@ -125,6 +125,9 @@ type AuditPort interface {
 }
 
 type Invocation struct {
+	// Trusted manifest binding, never taken from tool arguments. Transport,
+	// fingerprints and budget identity continue to use CapabilityID.
+	AuthorizationCapabilityID string
 	BudgetProfile                                                            string
 	ReadPositionRef                                                          string
 	Identity                                                                 Identity
@@ -186,7 +189,11 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 		resource.Attributes["detailLevel"] = statusview.Public
 	}
-	decision, err := s.Auth.Authorize(ctx, AuthorizationRequest{Identity: in.Identity, Resource: resource, CapabilityID: in.CapabilityID, Owner: in.Owner, OperationClass: in.OperationClass})
+	authorizationCapability := in.CapabilityID
+	if in.AuthorizationCapabilityID != "" {
+		authorizationCapability = in.AuthorizationCapabilityID
+	}
+	decision, err := s.Auth.Authorize(ctx, AuthorizationRequest{Identity: in.Identity, Resource: resource, CapabilityID: authorizationCapability, Owner: in.Owner, OperationClass: in.OperationClass})
 	if err != nil {
 		return Result{}, err
 	}
