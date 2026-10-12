@@ -1,0 +1,29 @@
+name: Ingestion source read binding qualification
+on:
+  push:
+    branches: [csv-ingestion-source-read-20261012]
+    paths:
+      - internal/kernel/**
+      - internal/orchestration/service.go
+      - .github/workflows/ingestion-source-read.yml
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  sdk-source-authorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - name: Format review source and return exact nonsecret candidate bytes
+        run: |
+          gofmt -w internal/kernel/ingestion_read_authorization.go internal/kernel/ingestion_read_authorization_test.go internal/kernel/kernel.go internal/orchestration/service.go
+          python3 - <<'PY'
+          import base64,json
+          from pathlib import Path
+          paths=["internal/kernel/ingestion_read_authorization.go","internal/kernel/ingestion_read_authorization_test.go","internal/kernel/kernel.go","internal/orchestration/service.go"]
+          print("OUF_FORMATTED_REVIEW_SOURCE="+json.dumps({p:base64.b64encode(Path(p).read_bytes()).decode() for p in paths},separators=(",",":")))
+          PY
+      - run: go test -race ./internal/kernel -run 'TestIngestion' -v -count=1
