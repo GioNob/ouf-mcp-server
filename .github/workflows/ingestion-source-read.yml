@@ -17,13 +17,6 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.9', cache: true}
-      - name: Format review source and return exact nonsecret candidate bytes
-        run: |
-          gofmt -w internal/kernel/ingestion_read_authorization.go internal/kernel/ingestion_read_authorization_test.go internal/kernel/kernel.go internal/orchestration/service.go
-          python3 - <<'PY'
-          import base64,json
-          from pathlib import Path
-          paths=["internal/kernel/ingestion_read_authorization.go","internal/kernel/ingestion_read_authorization_test.go","internal/kernel/kernel.go","internal/orchestration/service.go"]
-          print("OUF_FORMATTED_REVIEW_SOURCE="+json.dumps({p:base64.b64encode(Path(p).read_bytes()).decode() for p in paths},separators=(",",":")))
-          PY
+      - name: Verify committed formatting
+        run: test -z "$(gofmt -l internal/kernel internal/orchestration)"
       - run: go test -race ./internal/kernel -run 'TestIngestion' -v -count=1

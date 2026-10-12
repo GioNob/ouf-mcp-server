@@ -127,7 +127,7 @@ type AuditPort interface {
 type Invocation struct {
 	// Trusted manifest binding, never taken from tool arguments. Transport,
 	// fingerprints and budget identity continue to use CapabilityID.
-	AuthorizationCapabilityID string
+	AuthorizationCapabilityID                                                string
 	BudgetProfile                                                            string
 	ReadPositionRef                                                          string
 	Identity                                                                 Identity
