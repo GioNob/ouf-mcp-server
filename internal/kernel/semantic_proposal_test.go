@@ -26,7 +26,7 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-1", "semanticId": "ouf:test:Place", "artifactType": "CLASS", "namespace": "ouf", "localName": "Place", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Luogo"}, "definition": map[string]any{}}},
 		{"semantic.review.prepare", "ouf.semantic.review.prepare", "ouf.semantic.review.prepare", "validate", "COMMAND", map[string]any{"commandKey": "validate-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0}},
 		{"semantic.approval.request", "ouf.semantic.approval.request", "ouf.semantic.approval.request", "review", "COMMAND", map[string]any{"commandKey": "review-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0, "validationRunId": "22222222-2222-4222-8222-222222222222"}},
-		{"semantic.proposal.read", "ouf.semantic.proposal.read", "ouf.semantic.propose", "read", "READ", map[string]any{"commandKey": "draft-1"}},
+		{"semantic.proposal.read", "ouf.semantic.proposal.read", "ouf.semantic.read", "read", "READ", map[string]any{"commandKey": "draft-1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1752,7 +1752,7 @@
       "owner": "semantic",
       "operationClass": "READ",
       "publicationState": "ACTIVE",
-      "requiredAuthorizationCapability": "ouf.semantic.propose",
+      "requiredAuthorizationCapability": "ouf.semantic.read",
       "gatewayBindingRef": "capability://ouf.semantic.proposal.read",
       "baseCostEnvelope": {
         "hardMaxToolCalls": 1,
