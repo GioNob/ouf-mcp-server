@@ -1,0 +1,7 @@
+# Governed native semantic proposal tools
+
+Four closed tools prepare DRAFTs, validate unedited owner revisions, request THS review and reconcile the stored preparation receipt. Creation/validation/request are COMMAND, MCP_PROPOSAL_ONLY and never read-only. The manifest contains no semantic model values or hardcoded Teatri definitions. The class/property definitions belong to the owner request, bounded to 21 commands and the Gateway byte limit.
+
+All transport is through fixed Gateway proposal paths with workload authentication and signed delegation. Fresh local policy gates every call; the owner checks its own current policy. Approval and publication are not added to tools/list. Keep the same proposalKey after timeouts and consult semantic.proposal.read before retrying an ambiguous mutation. Owner deduplication is independent of MCP attempt IDs and survives process restart. Preparation receipts do not claim ACTIVE semantics or extend challenge expiry.
+
+The new commands have a ten-second call timeout and 21-object envelope; the read stays bounded to three seconds. No automatic retry scheduler, HUMAN budget renewal, policy/grant write or target rollout is introduced. Tests and CI establish source/schema/protocol bindings, not target custody, installed routes, THS or CSV acceptance. Release assembly must include the separately merged source-read and resilience changes; this PR is stacked on the existing deployed file/semantic delivery source line.
