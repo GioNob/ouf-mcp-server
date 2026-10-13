@@ -189,3 +189,299 @@ func TestSemanticGetPreservesExactPublishedReference(t *testing.T) {
 		server.Close()
 	}
 }
+
+func TestSemanticProposalCreateUsesGovernedClosedBinding(t *testing.T) {
+	const capID = "ouf.semantic.propose"
+	now := time.Now().UTC()
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "COMMAND", RequiredScope: "ouf.semantic.propose", AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/internal/capabilities/v1/execute/semantic/proposals/create" || r.Header.Get("Authorization") != "Bearer workload" || r.Header.Get("X-OUF-Delegation") != "opaque-proof" {
+			t.Error("incorrect governed transport")
+		}
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Fatal(err)
+		}
+		var args map[string]any
+		assertSemanticGatewaySchema(t, "proposal-create", in)
+		json.Unmarshal(in.Arguments, &args)
+		if args["proposalKey"] != "teatri-test" || in.OperationClass != "COMMAND" || in.Owner != "semantic" || in.Identity.Delegation != "" {
+			t.Error("proposal intent or owner changed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[]`)
+	}))
+	defer gateway.Close()
+	u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: &statusAdmission{}, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
+	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"ouf.semantic.propose", "mcp.connect"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+				r.Header.Set(k, v)
+			}
+			handler.ServeHTTP(w, r)
+		}))
+		client := mcp.NewClient(&mcp.Implementation{Name: "semantic-test", Version: "1"}, nil)
+		session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range tools.Tools {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
+				t.Fatal("human admin exposed as tool")
+			}
+			if tool.Name == "semantic.propose" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint != false) {
+				t.Fatal("semantic search mislabelled read-only")
+			}
+		}
+		before := calls.Load()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "semantic.propose", Arguments: map[string]any{"proposalKey": "teatri-test", "commands": []any{map[string]any{"semanticId": "urn:test:Teatro", "namespace": "urn:test:", "localName": "Teatro", "artifactType": "CLASS", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Teatro"}, "definition": map[string]any{}}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scope == "ouf.semantic.propose" {
+			if result.IsError || calls.Load() != before+1 {
+				t.Fatalf("semantic search failed: %+v", result)
+			}
+		} else if !result.IsError || calls.Load() != before {
+			t.Fatal("unauthorized semantic search reached Gateway")
+		}
+		session.Close()
+		server.Close()
+	}
+}
+
+func TestSemanticProposalValidateUsesGovernedClosedBinding(t *testing.T) {
+	const capID = "ouf.semantic.review.prepare"
+	now := time.Now().UTC()
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "COMMAND", RequiredScope: "ouf.semantic.review.prepare", AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/internal/capabilities/v1/execute/semantic/proposals/validate" || r.Header.Get("Authorization") != "Bearer workload" || r.Header.Get("X-OUF-Delegation") != "opaque-proof" {
+			t.Error("incorrect governed transport")
+		}
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Fatal(err)
+		}
+		var args map[string]any
+		assertSemanticGatewaySchema(t, "proposal-validate", in)
+		json.Unmarshal(in.Arguments, &args)
+		if args["proposalKey"] != "teatri-test" || in.OperationClass != "COMMAND" || in.Owner != "semantic" || in.Identity.Delegation != "" {
+			t.Error("proposal intent or owner changed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[]`)
+	}))
+	defer gateway.Close()
+	u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: &statusAdmission{}, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
+	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"ouf.semantic.review.prepare", "mcp.connect"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+				r.Header.Set(k, v)
+			}
+			handler.ServeHTTP(w, r)
+		}))
+		client := mcp.NewClient(&mcp.Implementation{Name: "semantic-test", Version: "1"}, nil)
+		session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range tools.Tools {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
+				t.Fatal("human admin exposed as tool")
+			}
+			if tool.Name == "semantic.review.prepare" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint != false) {
+				t.Fatal("semantic search mislabelled read-only")
+			}
+		}
+		before := calls.Load()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "semantic.review.prepare", Arguments: map[string]any{"proposalKey": "teatri-test", "expectedVersion": 0}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scope == "ouf.semantic.review.prepare" {
+			if result.IsError || calls.Load() != before+1 {
+				t.Fatalf("semantic search failed: %+v", result)
+			}
+		} else if !result.IsError || calls.Load() != before {
+			t.Fatal("unauthorized semantic search reached Gateway")
+		}
+		session.Close()
+		server.Close()
+	}
+}
+
+func TestSemanticProposalRequestUsesGovernedClosedBinding(t *testing.T) {
+	const capID = "ouf.semantic.approval.request"
+	now := time.Now().UTC()
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "COMMAND", RequiredScope: "ouf.semantic.approval.request", AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/internal/capabilities/v1/execute/semantic/proposals/request" || r.Header.Get("Authorization") != "Bearer workload" || r.Header.Get("X-OUF-Delegation") != "opaque-proof" {
+			t.Error("incorrect governed transport")
+		}
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Fatal(err)
+		}
+		var args map[string]any
+		assertSemanticGatewaySchema(t, "proposal-request", in)
+		json.Unmarshal(in.Arguments, &args)
+		if args["proposalKey"] != "teatri-test" || in.OperationClass != "COMMAND" || in.Owner != "semantic" || in.Identity.Delegation != "" {
+			t.Error("proposal intent or owner changed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[]`)
+	}))
+	defer gateway.Close()
+	u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: &statusAdmission{}, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
+	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"ouf.semantic.approval.request", "mcp.connect"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+				r.Header.Set(k, v)
+			}
+			handler.ServeHTTP(w, r)
+		}))
+		client := mcp.NewClient(&mcp.Implementation{Name: "semantic-test", Version: "1"}, nil)
+		session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range tools.Tools {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
+				t.Fatal("human admin exposed as tool")
+			}
+			if tool.Name == "semantic.approval.request" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint != false) {
+				t.Fatal("semantic search mislabelled read-only")
+			}
+		}
+		before := calls.Load()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "semantic.approval.request", Arguments: map[string]any{"proposalKey": "teatri-test", "expectedVersion": 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scope == "ouf.semantic.approval.request" {
+			if result.IsError || calls.Load() != before+1 {
+				t.Fatalf("semantic search failed: %+v", result)
+			}
+		} else if !result.IsError || calls.Load() != before {
+			t.Fatal("unauthorized semantic search reached Gateway")
+		}
+		session.Close()
+		server.Close()
+	}
+}
+
+func TestSemanticProposalReadUsesGovernedClosedBinding(t *testing.T) {
+	const capID = "ouf.semantic.proposal.read"
+	now := time.Now().UTC()
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: "permissions", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "permissions", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: capID, Operation: "READ", RequiredScope: "ouf.semantic.propose", AllowedActors: []string{"HUMAN"}}}, Grants: []authorization.Grant{{GrantID: "proposer", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}}}}})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/internal/capabilities/v1/execute/semantic/proposals/read" || r.Header.Get("Authorization") != "Bearer workload" || r.Header.Get("X-OUF-Delegation") != "opaque-proof" {
+			t.Error("incorrect governed transport")
+		}
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Fatal(err)
+		}
+		var args map[string]any
+		assertSemanticGatewaySchema(t, "proposal-read", in)
+		json.Unmarshal(in.Arguments, &args)
+		if args["proposalKey"] != "teatri-test" || in.OperationClass != "READ" || in.Owner != "semantic" || in.Identity.Delegation != "" {
+			t.Error("proposal intent or owner changed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[]`)
+	}))
+	defer gateway.Close()
+	u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: &statusAdmission{}, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
+	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"ouf.semantic.propose", "mcp.connect"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+				r.Header.Set(k, v)
+			}
+			handler.ServeHTTP(w, r)
+		}))
+		client := mcp.NewClient(&mcp.Implementation{Name: "semantic-test", Version: "1"}, nil)
+		session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range tools.Tools {
+			if tool.Name == "authorization.policy.admin" || tool.Name == "authorization.proposal.confirm" {
+				t.Fatal("human admin exposed as tool")
+			}
+			if tool.Name == "semantic.proposal.read" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint != true) {
+				t.Fatal("semantic search mislabelled read-only")
+			}
+		}
+		before := calls.Load()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "semantic.proposal.read", Arguments: map[string]any{"proposalKey": "teatri-test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scope == "ouf.semantic.propose" {
+			if result.IsError || calls.Load() != before+1 {
+				t.Fatalf("semantic search failed: %+v", result)
+			}
+		} else if !result.IsError || calls.Load() != before {
+			t.Fatal("unauthorized semantic search reached Gateway")
+		}
+		session.Close()
+		server.Close()
+	}
+}

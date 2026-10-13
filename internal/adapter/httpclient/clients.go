@@ -144,6 +144,9 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/search"
 	case "ouf.semantic.consultation.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/get"
+	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
+		mode := map[string]string{"ouf.semantic.propose": "create", "ouf.semantic.review.prepare": "validate", "ouf.semantic.approval.request": "request", "ouf.semantic.proposal.read": "read"}[in.CapabilityID]
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/proposals/" + mode
 	case "urban.object.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
 	case "ouf.managed-source.file.profile":
