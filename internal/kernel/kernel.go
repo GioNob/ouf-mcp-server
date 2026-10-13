@@ -81,7 +81,7 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	if strings.HasPrefix(c.ToolName, "authorization.") {
+	if strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "semantic.") {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -89,7 +89,11 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		checksum, _ := snapshot.Checksum()
 		mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			args, _ := json.Marshal(input)
-			return invoke(ctx, c, checksum, args, service, 200, 1<<20)
+			maxObjects, maxBytes := 200, 1<<20
+			if strings.HasPrefix(c.ToolName, "semantic.") {
+				maxObjects, maxBytes = 1, 262144
+			}
+			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
 		})
 		return
 	}
@@ -135,12 +139,27 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		maxObjects = 100
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
+	if strings.HasPrefix(c.ToolName, "semantic.") {
+		authorizationCapability, resource, err = semanticProposalAuthorization(c, args, identity.TenantID)
+		if c.OperationClass == "COMMAND" {
+			var command struct {
+				CommandKey string `json:"commandKey"`
+			}
+			if parseErr := json.Unmarshal(args, &command); parseErr != nil || command.CommandKey == "" {
+				return errorResult("SEMANTIC_COMMAND_KEY_REQUIRED", false), nil, nil
+			}
+			identity.IdempotencyKey = command.CommandKey
+		}
+	}
 	if err != nil {
 		return errorResult("INVALID_INGESTION_READ_CONTEXT", false), nil, nil
 	}
 	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
 		return errorResult(err.Error(), false), nil, nil
+	}
+	if result.Replay && len(result.Body) == 0 && strings.HasPrefix(c.ToolName, "semantic.") {
+		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false), nil, nil
 	}
 	if result.Replay && len(result.Body) == 0 && orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
 		// Admission replay has no cached authorized payload. Never turn metadata

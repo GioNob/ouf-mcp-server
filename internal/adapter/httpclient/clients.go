@@ -130,6 +130,9 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
+	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
+		mode := map[string]string{"ouf.semantic.propose": "create", "ouf.semantic.review.prepare": "validate", "ouf.semantic.approval.request": "review", "ouf.semantic.proposal.read": "read"}[in.CapabilityID]
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/" + mode
 	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
 		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode

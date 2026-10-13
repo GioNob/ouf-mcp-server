@@ -1,0 +1,22 @@
+name: Semantic proposal channel qualification
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  sdk-owner-binding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - name: Format candidate and emit reviewable source
+        run: |
+          gofmt -w internal/kernel/semantic_proposal_authorization.go internal/kernel/semantic_proposal_test.go internal/kernel/kernel.go internal/adapter/httpclient/clients.go
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          paths=['internal/kernel/semantic_proposal_authorization.go','internal/kernel/semantic_proposal_test.go','internal/kernel/kernel.go','internal/adapter/httpclient/clients.go']
+          print('OUF_FORMATTED_SOURCES='+json.dumps({p:Path(p).read_text() for p in paths}))
+          PY
+      - run: go test -race ./internal/kernel ./internal/manifest ./internal/adapter/httpclient -run 'TestSemantic|TestCanonical|TestTrustedHuman|TestDiscovery' -v -count=1

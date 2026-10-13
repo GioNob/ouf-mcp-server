@@ -1374,7 +1374,411 @@
           }
         }
       }
+    },
+    {
+      "toolName": "semantic.propose",
+      "capabilityId": "ouf.semantic.propose",
+      "purpose": "Create one native semantic DRAFT with a durable caller-scoped receipt",
+      "useWhen": [
+        "preparing authorized native semantic proposals for human review"
+      ],
+      "doNotUseWhen": [
+        "approving, publishing, activating, adopting external terms or bypassing owner decisions"
+      ],
+      "preferredAlternatives": [
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "Owner receipt only; a review reference is not human approval or publication. Read current challenge in the THS before decision.",
+      "securityNotes": [
+        "Current owner authorization and Gateway signed delegation are required",
+        "Stable commandKey is mandatory for mutation; ambiguous effects require receipt reconciliation",
+        "Owner and authority references are proposal values, not grants"
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.propose",
+      "gatewayBindingRef": "capability://ouf.semantic.propose",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "semanticId",
+          "artifactType",
+          "namespace",
+          "localName",
+          "ownerRef",
+          "authorityRef",
+          "semanticVersion",
+          "labels",
+          "definition",
+          "commandKey"
+        ],
+        "properties": {
+          "semanticId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "artifactType": {
+            "enum": [
+              "CLASS",
+              "PROPERTY",
+              "RELATIONSHIP",
+              "VOCABULARY",
+              "CONCEPT",
+              "ONTOLOGY"
+            ]
+          },
+          "namespace": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "localName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "ownerRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "authorityRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "semanticVersion": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "it": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "en": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "de": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "sl": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              }
+            },
+            "maxProperties": 4
+          },
+          "definition": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "it": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "en": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "de": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "sl": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  }
+                },
+                "maxProperties": 4
+              },
+              "domainRefs": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "rangeRefs": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "datatype": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "minCardinality": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "maxCardinality": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "vocabularyRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "inverseRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              }
+            }
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.review.prepare",
+      "capabilityId": "ouf.semantic.review.prepare",
+      "purpose": "Validate the exact DRAFT row version and retain errors and warnings",
+      "useWhen": [
+        "preparing authorized native semantic proposals for human review"
+      ],
+      "doNotUseWhen": [
+        "approving, publishing, activating, adopting external terms or bypassing owner decisions"
+      ],
+      "preferredAlternatives": [
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "Owner receipt only; a review reference is not human approval or publication. Read current challenge in the THS before decision.",
+      "securityNotes": [
+        "Current owner authorization and Gateway signed delegation are required",
+        "Stable commandKey is mandatory for mutation; ambiguous effects require receipt reconciliation",
+        "Owner and authority references are proposal values, not grants"
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.review.prepare",
+      "gatewayBindingRef": "capability://ouf.semantic.review.prepare",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revisionId",
+          "expectedRowVersion",
+          "commandKey"
+        ],
+        "properties": {
+          "revisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedRowVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.approval.request",
+      "capabilityId": "ouf.semantic.approval.request",
+      "purpose": "Request a THS review challenge for the current green validated DRAFT",
+      "useWhen": [
+        "preparing authorized native semantic proposals for human review"
+      ],
+      "doNotUseWhen": [
+        "approving, publishing, activating, adopting external terms or bypassing owner decisions"
+      ],
+      "preferredAlternatives": [
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "Owner receipt only; a review reference is not human approval or publication. Read current challenge in the THS before decision.",
+      "securityNotes": [
+        "Current owner authorization and Gateway signed delegation are required",
+        "Stable commandKey is mandatory for mutation; ambiguous effects require receipt reconciliation",
+        "Owner and authority references are proposal values, not grants"
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.approval.request",
+      "gatewayBindingRef": "capability://ouf.semantic.approval.request",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revisionId",
+          "expectedRowVersion",
+          "commandKey",
+          "validationRunId"
+        ],
+        "properties": {
+          "revisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedRowVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          },
+          "validationRunId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "semantic.proposal.read",
+      "capabilityId": "ouf.semantic.proposal.read",
+      "purpose": "Read this caller\u2019s durable semantic command receipt after interruption",
+      "useWhen": [
+        "preparing authorized native semantic proposals for human review"
+      ],
+      "doNotUseWhen": [
+        "approving, publishing, activating, adopting external terms or bypassing owner decisions"
+      ],
+      "preferredAlternatives": [
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "Owner receipt only; a review reference is not human approval or publication. Read current challenge in the THS before decision.",
+      "securityNotes": [
+        "Current owner authorization and Gateway signed delegation are required",
+        "Stable commandKey is mandatory for mutation; ambiguous effects require receipt reconciliation",
+        "Owner and authority references are proposal values, not grants"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.read",
+      "gatewayBindingRef": "capability://ouf.semantic.proposal.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commandKey"
+        ],
+        "properties": {
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          }
+        }
+      }
     }
   ]
 }
-
