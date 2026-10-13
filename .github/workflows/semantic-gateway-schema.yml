@@ -16,6 +16,6 @@ jobs:
           ref: 5bdb36f3980a5b33fbce0a9bfe2c2cb64393e63a
           path: .pairwise/semantic-gateway
       - uses: actions/setup-go@v6
-        with: {go-version: '1.25.13', cache: true}
+        with: {go-version: '1.26.9', cache: true}
       - run: pip install -r .pairwise/semantic-gateway/requirements-dev.txt
       - run: GATEWAY_SEMANTIC_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway" go test ./internal/kernel -run 'TestSemantic(Search|Get|Proposal)' -v
