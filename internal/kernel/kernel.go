@@ -138,7 +138,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if strings.HasPrefix(c.ToolName, "semantic.") {
 		authorizationCapability, resource, err = semanticProposalAuthorization(c, args, identity.TenantID)
 		if c.OperationClass == "COMMAND" {
-			var command struct { CommandKey string `json:"commandKey"` }
+			var command struct {
+				CommandKey string `json:"commandKey"`
+			}
 			if parseErr := json.Unmarshal(args, &command); parseErr != nil || command.CommandKey == "" {
 				return errorResult("SEMANTIC_COMMAND_KEY_REQUIRED", false), nil, nil
 			}
@@ -236,4 +238,3 @@ func modernOnly(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
 	})
 }
-

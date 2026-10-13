@@ -194,4 +194,3 @@ func headers(r *http.Request, token, correlation, idempotency, attempt string) {
 	r.Header.Set("Idempotency-Key", idempotency)
 	r.Header.Set("X-Tool-Attempt-ID", attempt)
 }
-
