@@ -69,4 +69,3 @@ func validTestSnapshot() *Snapshot {
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
 	}}}
 }
-

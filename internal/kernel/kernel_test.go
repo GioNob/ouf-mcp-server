@@ -179,4 +179,3 @@ func TestRequiredProtocolHeadersFailClosed(t *testing.T) {
 		})
 	}
 }
-
