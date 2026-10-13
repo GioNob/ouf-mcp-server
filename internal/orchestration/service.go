@@ -299,6 +299,12 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return "", err
 	}
+	switch capability {
+	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request":
+		if args, ok := value.(map[string]any); ok {
+			delete(args, "commandKey")
+		}
+	}
 	value = normalize(value, "")
 	canonical, err := json.Marshal(map[string]any{"capabilityId": capability, "arguments": value})
 	if err != nil {
