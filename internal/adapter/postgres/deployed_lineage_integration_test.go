@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -81,24 +82,68 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err = Migrate(ctx, pool); err != nil {
+	// The target application user owns the existing schema but has no
+	// CREATEROLE. A bounded administrator bootstraps the dedicated audit owner
+	// and temporary SET membership, then removes both temporary privileges.
+	applicationRole := "mcp_lineage_app_" + uuid.NewString()[:8]
+	for _, statement := range []string{
+		"create role " + applicationRole + " nologin",
+		"alter schema ouf_mcp owner to " + applicationRole,
+		"alter table ouf_mcp.schema_migration owner to " + applicationRole,
+		"alter table ouf_mcp.audit_event owner to " + applicationRole,
+		"alter table ouf_mcp.tool_attempt owner to " + applicationRole,
+		"alter table ouf_mcp.security_incident owner to " + applicationRole,
+		"alter sequence ouf_mcp.audit_event_sequence_id_seq owner to " + applicationRole,
+		"do $r$ begin if not exists(select 1 from pg_roles where rolname='ouf_mcp_operational_audit_owner') then create role ouf_mcp_operational_audit_owner nologin; end if; end $r$",
+		"grant create on schema ouf_mcp to ouf_mcp_operational_audit_owner",
+		"grant ouf_mcp_operational_audit_owner to " + applicationRole + " with admin false, inherit false, set true",
+	} {
+		if _, err = pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appConfig := cfg.Copy()
+	appConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "set role "+applicationRole)
+		return err
+	}
+	appPool, err := pgxpool.NewWithConfig(ctx, appConfig)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer appPool.Close()
+	if err = Migrate(ctx, appPool); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"revoke ouf_mcp_operational_audit_owner from " + applicationRole,
+		"revoke create on schema ouf_mcp from ouf_mcp_operational_audit_owner",
+	} {
+		if _, err = pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var count int
-	var cursor, bookmark bool
+	var cursor, bookmark, membership, schemaCreate, noLogin, functionOwner bool
 	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != 12 {
 		t.Fatalf("migration count %d: %v", count, err)
 	}
 	if err = pool.QueryRow(ctx, "select to_regclass('ouf_mcp.operational_cursor_session') is not null,to_regclass('ouf_mcp.operational_publication_bookmark') is not null").Scan(&cursor, &bookmark); err != nil || !cursor || !bookmark {
 		t.Fatalf("operational tables %v/%v: %v", cursor, bookmark, err)
 	}
-	if err = Migrate(ctx, pool); err != nil {
+	if err = pool.QueryRow(ctx, `select exists(select 1 from pg_auth_members where roleid='ouf_mcp_operational_audit_owner'::regrole and member=$1::regrole),
+		has_schema_privilege('ouf_mcp_operational_audit_owner','ouf_mcp','CREATE'),
+		(select not rolcanlogin from pg_roles where rolname='ouf_mcp_operational_audit_owner'),
+		(select count(*)=2 from pg_proc where oid in (to_regprocedure('ouf_mcp.capture_operational_attempt_audit()'),to_regprocedure('ouf_mcp.capture_operational_security_audit()')) and proowner='ouf_mcp_operational_audit_owner'::regrole)`, applicationRole).Scan(&membership, &schemaCreate, &noLogin, &functionOwner); err != nil || membership || schemaCreate || !noLogin || !functionOwner {
+		t.Fatalf("retained audit role privilege drift: %v", err)
+	}
+	if err = Migrate(ctx, appPool); err != nil {
 		t.Fatalf("idempotent restart: %v", err)
 	}
 	if _, err = pool.Exec(ctx, "update ouf_mcp.schema_migration set checksum=$1 where version=8", fmt.Sprintf("%064d", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err = Migrate(ctx, pool); err == nil {
+	if err = Migrate(ctx, appPool); err == nil {
 		t.Fatal("altered installed migration accepted")
 	}
 }
