@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 4b0017fa3c507ae9a549f9274a41e8a7e9f9a25e
+          ref: 09c431be83a5d25ce4cc76d33aafea0ed1523702
           path: .pairwise/semantic-gateway
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.9', cache: true}

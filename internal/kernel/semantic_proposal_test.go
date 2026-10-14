@@ -28,12 +28,18 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-rdf-1", "semanticId": "urn:test:Theatres", "artifactType": "ONTOLOGY", "namespace": "urn:test:", "localName": "Theatres", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Teatri"}, "mediaType": "text/turtle", "rdfTurtle": "@prefix owl: <http://www.w3.org/2002/07/owl#> . <urn:test:Theatres> a owl:Ontology ."}},
 		{"semantic.review.prepare", "ouf.semantic.review.prepare", "ouf.semantic.review.prepare", "validate", "COMMAND", map[string]any{"commandKey": "validate-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0}},
 		{"semantic.approval.request", "ouf.semantic.approval.request", "ouf.semantic.approval.request", "review", "COMMAND", map[string]any{"commandKey": "review-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0, "validationRunId": "22222222-2222-4222-8222-222222222222"}},
-		{"semantic.proposal.read", "ouf.semantic.proposal.read", "ouf.semantic.read", "read", "READ", map[string]any{"commandKey": "draft-1"}},
+		{"semantic.proposal.read", "ouf.semantic.proposal.read", "ouf.semantic.proposal.read", "read", "READ", map[string]any{"commandKey": "draft-1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now().UTC()
-			source := statusBundle{authorization.ActivePolicyBundle{BundleID: "semantic", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "semantic", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.permission, Operation: tc.operation, RequiredScope: tc.permission, AllowedActors: []string{"AI_AGENT"}}}, Grants: []authorization.Grant{{GrantID: "semantic-grant", CapabilityID: tc.permission, TenantID: "tenant-a", SubjectID: "agent", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "semantic.proposalcommand", ResourceAttributes: map[string]string{"module": "SEMANTIC"}}}}}}}
+			actor := "AI_AGENT"
+			scopes := []string{tc.permission, "mcp.connect"}
+			if tc.operation == "READ" {
+				actor = "HUMAN"
+				scopes = append(scopes, "ouf.semantic.read")
+			}
+			source := statusBundle{authorization.ActivePolicyBundle{BundleID: "semantic", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "semantic", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.permission, Operation: tc.operation, RequiredScope: tc.permission, AllowedActors: []string{actor}}}, Grants: []authorization.Grant{{GrantID: "semantic-grant", CapabilityID: tc.permission, TenantID: "tenant-a", SubjectID: "agent", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "semantic.proposalcommand", ResourceAttributes: map[string]string{"module": "SEMANTIC"}}}}}}}
 			cache := authorization.NewCache(source)
 			if err := cache.Refresh(context.Background()); err != nil {
 				t.Fatal(err)
@@ -74,9 +80,9 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, scope := range []string{tc.permission, "mcp.connect"} {
+			for _, scope := range scopes {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "agent", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "AI_AGENT", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+					for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "agent", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": actor, "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
 						r.Header.Set(k, v)
 					}
 					handler.ServeHTTP(w, r)

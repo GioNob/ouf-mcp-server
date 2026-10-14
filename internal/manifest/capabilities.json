@@ -1797,7 +1797,7 @@
       "owner": "semantic",
       "operationClass": "READ",
       "publicationState": "ACTIVE",
-      "requiredAuthorizationCapability": "ouf.semantic.read",
+      "requiredAuthorizationCapability": "ouf.semantic.proposal.read",
       "gatewayBindingRef": "capability://ouf.semantic.proposal.read",
       "baseCostEnvelope": {
         "hardMaxToolCalls": 1,
