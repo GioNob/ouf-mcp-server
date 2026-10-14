@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 		args                                   map[string]any
 	}{
 		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-1", "semanticId": "ouf:test:Place", "artifactType": "CLASS", "namespace": "ouf", "localName": "Place", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Luogo"}, "definition": map[string]any{}}},
+		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-rdf-1", "semanticId": "urn:test:Theatres", "artifactType": "ONTOLOGY", "namespace": "urn:test:", "localName": "Theatres", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Teatri"}, "mediaType": "text/turtle", "rdfTurtle": "@prefix owl: <http://www.w3.org/2002/07/owl#> . <urn:test:Theatres> a owl:Ontology ."}},
 		{"semantic.review.prepare", "ouf.semantic.review.prepare", "ouf.semantic.review.prepare", "validate", "COMMAND", map[string]any{"commandKey": "validate-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0}},
 		{"semantic.approval.request", "ouf.semantic.approval.request", "ouf.semantic.approval.request", "review", "COMMAND", map[string]any{"commandKey": "review-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0, "validationRunId": "22222222-2222-4222-8222-222222222222"}},
 		{"semantic.proposal.read", "ouf.semantic.proposal.read", "ouf.semantic.read", "read", "READ", map[string]any{"commandKey": "draft-1"}},
@@ -50,6 +52,13 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				}
 				if in.CapabilityID != tc.cap || in.Owner != "semantic" || in.OperationClass != tc.operation || in.AuthorizationDecisionRef != "semantic:1:"+tc.permission {
 					t.Error("scope or owner binding changed")
+				}
+				var forwarded map[string]any
+				if err := json.Unmarshal(in.Arguments, &forwarded); err != nil {
+					t.Fatal(err)
+				}
+				if rdf, ok := tc.args["rdfTurtle"]; ok && forwarded["rdfTurtle"] != rdf {
+					t.Error("Turtle draft content changed")
 				}
 				if tc.operation == "COMMAND" && in.IdempotencyKey != tc.args["commandKey"] {
 					t.Error("stable command key lost")
@@ -112,6 +121,23 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				}
 				if calls.Load() != before {
 					t.Fatal("invalid input dispatched")
+				}
+				if _, rdf := tc.args["rdfTurtle"]; rdf {
+					for field, value := range map[string]any{"mediaType": "application/rdf+xml", "artifactType": "CLASS", "definition": map[string]any{"datatype": "urn:test:string"}, "rdfTurtle": strings.Repeat("è", 25000)} {
+						invalid := make(map[string]any)
+						for k, v := range tc.args {
+							invalid[k] = v
+						}
+						invalid[field] = value
+						before = calls.Load()
+						res, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: invalid})
+						if err == nil && !res.IsError {
+							t.Fatalf("invalid RDF %s accepted", field)
+						}
+						if calls.Load() != before {
+							t.Fatalf("invalid RDF %s dispatched", field)
+						}
+					}
 				}
 				session.Close()
 				server.Close()

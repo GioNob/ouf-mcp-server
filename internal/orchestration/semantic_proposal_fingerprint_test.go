@@ -33,3 +33,26 @@ func TestSemanticCommandKeyCannotBypassEquivalentIntentBudget(t *testing.T) {
 		t.Fatal("distinct receipt read targets conflated")
 	}
 }
+
+func TestSourceReviewCommandKeyCannotResetEquivalentIntentBudget(t *testing.T) {
+	key := make([]byte, 32)
+	const capability = "ouf.managed-source.onboarding.review.prepare"
+	a, err := SemanticFingerprint(key, capability, json.RawMessage(`{"sourceId":"theatres","onboardingVersionId":"version-a","expectedVersion":0,"commandKey":"first"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := SemanticFingerprint(key, capability, json.RawMessage(`{"sourceId":"theatres","onboardingVersionId":"version-a","expectedVersion":0,"commandKey":"different"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatal("new command key bypassed source review intent budget")
+	}
+	changed, err := SemanticFingerprint(key, capability, json.RawMessage(`{"sourceId":"theatres","onboardingVersionId":"version-a","expectedVersion":1,"commandKey":"first"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == changed {
+		t.Fatal("changed source lock version lost from intent")
+	}
+}

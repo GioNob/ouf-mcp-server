@@ -25,8 +25,21 @@ exact discovery, denial before dispatch, and the preserved operational code.
 External owners and identities in these tests remain fixtures. CI PostgreSQL
 and pairwise qualification are additional source evidence, not a VPS rollout.
 
-This change does not provide source submit/THS approval/activation or merge
-confirmation tools, publish grants, install a new executable, or demonstrate a
-production CSV run. Those remaining workflow edges must be accounted for in the
-complete application plan. A successful package scan alone did not establish
-that the candidate preserved the deployed functional surface.
+The bounded source review tools call the owner to prepare a version for human
+review and read its current state. Preparation preserves its command key, uses
+the exact source/version authorization scope and a ten-second request budget;
+read reconciliation uses three seconds. Changing a command key does not reset
+the equivalent-intent budget. Neither tool confirms approval or activates a
+source. The owner supplies the review link; the MCP does not invent one.
+
+The existing semantic proposal tool also accepts a bounded Turtle ONTOLOGY
+DRAFT. Native and RDF definitions are mutually exclusive. The media type must
+be text/turtle, the UTF-8 content is limited to 48KiB, and no source URL is
+fetched. This reuses the owner import/validation/THS pipeline and its existing
+proposal authority.
+
+These changes do not publish grants, install a new executable or demonstrate a
+production CSV run. HUMAN approval/activation, compatibility attestation and
+owner ingestion/UDP results remain runtime responsibilities. A successful
+package scan alone did not establish that the candidate preserved the deployed
+functional surface.

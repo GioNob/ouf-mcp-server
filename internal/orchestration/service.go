@@ -330,7 +330,7 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 		return "", err
 	}
 	switch capability {
-	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request":
+	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "commandKey")
 		}

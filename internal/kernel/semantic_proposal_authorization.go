@@ -14,9 +14,13 @@ func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant st
 	}
 	var input struct {
 		RevisionID string `json:"revisionId"`
+		RDFTurtle  string `json:"rdfTurtle"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", orchestration.ResourceContext{}, err
+	}
+	if len(input.RDFTurtle) > 49152 {
+		return "", orchestration.ResourceContext{}, fmt.Errorf("semantic Turtle input exceeds byte bound")
 	}
 	return required, orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", ResourceID: input.RevisionID, TenantID: tenant, Attributes: map[string]string{"module": "SEMANTIC"}}, nil
 }

@@ -294,7 +294,7 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -308,6 +308,9 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 				if c.ToolName == "semantic.search" {
 					maxObjects = 100
 				}
+			}
+			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
+				maxObjects, maxBytes = 1, 65536
 			}
 			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
 		})
@@ -370,6 +373,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
 		maxObjects = 100
 	}
+	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID)) && len(args) > 65536 {
+		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
+	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
 	if isSemanticProposalCapability(c.CapabilityID) {
 		authorizationCapability, resource, err = semanticProposalAuthorization(c, args, identity.TenantID)
@@ -383,12 +389,38 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 			identity.IdempotencyKey = command.CommandKey
 		}
 	}
-	if err != nil {
-		return errorResult("INVALID_INGESTION_READ_CONTEXT", false), nil, nil
+	if isSourceReviewCapability(c.CapabilityID) {
+		authorizationCapability, resource, err = sourceReviewAuthorization(c, args, identity.TenantID)
 	}
-	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
+	if c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+		var command struct {
+			CommandKey string `json:"commandKey"`
+		}
+		if parseErr := json.Unmarshal(args, &command); parseErr != nil || command.CommandKey == "" {
+			return errorResult("SOURCE_REVIEW_COMMAND_KEY_REQUIRED", false), nil, nil
+		}
+		identity.IdempotencyKey = command.CommandKey
+	}
+	if err != nil {
+		code := "INVALID_INGESTION_READ_CONTEXT"
+		if isSemanticProposalCapability(c.CapabilityID) {
+			code = "INVALID_SEMANTIC_PROPOSAL_CONTEXT"
+		}
+		if isSourceReviewCapability(c.CapabilityID) {
+			code = "INVALID_SOURCE_REVIEW_CONTEXT"
+		}
+		return errorResult(code, false), nil, nil
+	}
+	timeout := 3 * time.Second
+	if c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+		timeout = 10 * time.Second
+	}
+	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
 		return errorResult(err.Error(), false), nil, nil
+	}
+	if result.Replay && len(result.Body) == 0 && c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+		return errorResult("SOURCE_REVIEW_READ_REQUIRED", false), nil, nil
 	}
 	if result.Replay && len(result.Body) == 0 && isSemanticProposalCapability(c.CapabilityID) {
 		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false), nil, nil

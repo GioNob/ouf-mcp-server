@@ -26,7 +26,12 @@ func assertSemanticGatewaySchema(t *testing.T, name string, in orchestration.Gat
 	if in.MaxResultBytes != 262144 {
 		t.Errorf("semantic dispatch byte limit %d exceeds Gateway contract", in.MaxResultBytes)
 	}
-	root := os.Getenv("GATEWAY_SEMANTIC_PAIRWISE_ROOT")
+	assertGatewayDispatchSchema(t, "GATEWAY_SEMANTIC_PAIRWISE_ROOT", "mcp-gateway-semantic-"+name+"-dispatch-v1.json", in)
+}
+
+func assertGatewayDispatchSchema(t *testing.T, environment, schema string, in orchestration.GatewayRequest) {
+	t.Helper()
+	root := os.Getenv(environment)
 	if root == "" {
 		return
 	}
@@ -34,10 +39,10 @@ func assertSemanticGatewaySchema(t *testing.T, name string, in orchestration.Gat
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("python3", "-B", "-c", "import json,sys,jsonschema; jsonschema.validate(json.load(sys.stdin),json.load(open(sys.argv[1])))", filepath.Join(root, "schemas", "mcp-gateway-semantic-"+name+"-dispatch-v1.json"))
+	command := exec.Command("python3", "-B", "-c", "import json,sys,jsonschema; jsonschema.validate(json.load(sys.stdin),json.load(open(sys.argv[1])))", filepath.Join(root, "schemas", schema))
 	command.Stdin = bytes.NewReader(body)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("actual Gateway semantic %s schema rejected MCP envelope: %s: %v", name, output, err)
+		t.Fatalf("actual Gateway %s schema rejected MCP envelope: %s: %v", schema, output, err)
 	}
 }
 

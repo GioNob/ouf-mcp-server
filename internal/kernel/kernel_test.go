@@ -75,6 +75,8 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"source.file.preview",
 		"source.file.profile",
 		"source.onboarding.create",
+		"source.onboarding.read",
+		"source.onboarding.review.prepare",
 		"urban.object.related_search",
 		"urban.object.search",
 	}
