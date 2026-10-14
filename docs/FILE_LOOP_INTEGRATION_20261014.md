@@ -38,6 +38,14 @@ be text/turtle, the UTF-8 content is limited to 48KiB, and no source URL is
 fetched. This reuses the owner import/validation/THS pipeline and its existing
 proposal authority.
 
+Receipt reconciliation uses the dedicated READ capability and OAuth scope
+`ouf.semantic.proposal.read`. The existing `ouf.semantic.read` catalogue entry
+belongs to SERVICE reads and is not widened to authorize HUMAN callers. The
+owner still restricts the receipt to its original caller and requires the
+permission for the original proposal operation. Rollout must register/publish
+the exact READ descriptor and explicitly authorize its HUMAN caller, alongside
+the two source review permissions; existing consultation grants remain intact.
+
 These changes do not publish grants, install a new executable or demonstrate a
 production CSV run. HUMAN approval/activation, compatibility attestation and
 owner ingestion/UDP results remain runtime responsibilities. A successful
