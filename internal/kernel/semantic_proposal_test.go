@@ -50,6 +50,7 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 					w.WriteHeader(400)
 					return
 				}
+				assertGatewayDispatchSchema(t, "GATEWAY_SEMANTIC_PROPOSAL_PAIRWISE_ROOT", "mcp-gateway-semantic-proposals-v1.json", in)
 				if in.CapabilityID != tc.cap || in.Owner != "semantic" || in.OperationClass != tc.operation || in.AuthorizationDecisionRef != "semantic:1:"+tc.permission {
 					t.Error("scope or owner binding changed")
 				}
