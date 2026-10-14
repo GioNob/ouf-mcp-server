@@ -20,3 +20,12 @@ func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant st
 	}
 	return required, orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", ResourceID: input.RevisionID, TenantID: tenant, Attributes: map[string]string{"module": "SEMANTIC"}}, nil
 }
+
+// Consultation is a distinct deployed READ contract, not a proposal command.
+func isSemanticProposalCapability(id string) bool {
+	switch id {
+	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
+		return true
+	}
+	return false
+}

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/authorization"
@@ -290,7 +291,32 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
-	handler, err := kernel.NewGovernedHTTPHandler(logger, service)
+	var handler http.Handler
+	switch os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") {
+	case "picker":
+		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
+			logger.Error("host origins must be unset for the first-party file picker")
+			os.Exit(1)
+		}
+		handler, err = kernel.NewGovernedHTTPHandlerWithFilePicker(logger, service, os.Getenv("MCP_MANAGED_FILE_PICKER_URL"))
+	case "true":
+		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
+			logger.Error("legacy host origin configuration must be unset")
+			os.Exit(1)
+		}
+		handler, err = kernel.NewGovernedHTTPHandlerWithHostFiles(logger, service, hostfiles.New())
+	case "probe":
+		if os.Getenv("MCP_HOST_FILE_ORIGINS") != "" {
+			logger.Error("host origins must be unset during the attachment origin probe")
+			os.Exit(1)
+		}
+		handler, err = kernel.NewGovernedHTTPHandlerWithHostOriginProbe(logger, service)
+	case "":
+		handler, err = kernel.NewGovernedHTTPHandler(logger, service)
+	default:
+		logger.Error("invalid managed upload mode")
+		os.Exit(1)
+	}
 	if err != nil {
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)

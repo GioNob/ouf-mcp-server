@@ -37,6 +37,7 @@ jobs:
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.9', cache: true}
       - run: go mod download
+      - run: node scripts/test_picker_portability.mjs
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/adapter/httpclient -run TestMCPGatewayUDPPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/evidence -run TestGatewayEvidenceIngressPairwise -v
@@ -49,6 +50,8 @@ jobs:
       - run: go test ./internal/deployment -run TestAuthorizationLocalRuntimeContract -v
       - run: go test ./internal/deployment -run TestMCP1IObservabilityCapacityAndDRContracts -v
       - run: bash scripts/verify.sh
+      - run: docker build -t ouf-mcp:ci .
+      - run: python3 -m py_compile scripts/r4a_snapshot_mcp_runtime.py scripts/r4a_preflight_mcp_runtime.py scripts/r4a_prepare_mcp_candidate.py scripts/r4a_rollout_mcp_runtime.py
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
       - run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...

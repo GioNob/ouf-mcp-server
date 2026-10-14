@@ -35,10 +35,17 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"ouf.operations.summary",
 		"ouf.system.status",
 		"semantic.approval.request",
+		"semantic.get",
 		"semantic.proposal.read",
 		"semantic.propose",
 		"semantic.review.prepare",
+		"semantic.search",
+		"source.file.preview",
+		"source.file.profile",
+		"source.file.upload",
+		"source.onboarding.create",
 		"urban.object.related_search",
+		"urban.object.search",
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected tool registry names=%v want=%v", names, want)
