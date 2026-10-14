@@ -1,0 +1,25 @@
+name: Chatbot dispatch Gateway schemas
+on:
+  push:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/semantic-gateway-schema.yml']
+  pull_request:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/semantic-gateway-schema.yml']
+permissions: {contents: read}
+jobs:
+  semantic-envelope:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: 4b0017fa3c507ae9a549f9274a41e8a7e9f9a25e
+          path: .pairwise/semantic-gateway
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - run: pip install -r .pairwise/semantic-gateway/requirements-dev.txt
+      - run: |
+          export GATEWAY_SEMANTIC_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway"
+          export GATEWAY_SEMANTIC_PROPOSAL_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway"
+          export GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT="$PWD/.pairwise/semantic-gateway"
+          go test ./internal/kernel -run 'TestSemantic(Search|Get|ProposalTools)|TestSourceReview' -v

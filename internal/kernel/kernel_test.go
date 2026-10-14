@@ -67,10 +67,18 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"ouf.operations.summary",
 		"ouf.system.status",
 		"semantic.approval.request",
+		"semantic.get",
 		"semantic.proposal.read",
 		"semantic.propose",
 		"semantic.review.prepare",
+		"semantic.search",
+		"source.file.preview",
+		"source.file.profile",
+		"source.onboarding.create",
+		"source.onboarding.read",
+		"source.onboarding.review.prepare",
 		"urban.object.related_search",
+		"urban.object.search",
 	}
 	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
 		t.Fatalf("tools/list names=%v want=%v", gotNames, wantNames)
