@@ -26,10 +26,10 @@ func (a *reprocessingAuth) Authorize(context.Context, orchestration.Authorizatio
 }
 
 type reprocessingGateway struct {
-	calls   atomic.Int32
-	lastKey string
-	mu      sync.Mutex
-	fail    bool
+	calls     atomic.Int32
+	lastKey   string
+	mu        sync.Mutex
+	fail      bool
 	ambiguous bool
 }
 
@@ -326,18 +326,34 @@ func TestSemanticReprocessingGuardRevokedAfterAdmissionDoesNotReachOwner(t *test
 }
 
 func TestSemanticReprocessingLostResponsePreservesUnknownAndNeverRedispatches(t *testing.T) {
- f:=newReprocessingFixture(t);before:=f.snapshot(t)
- f.service.Reprocessing=f.permit(t,nil);f.gateway.ambiguous=true
- result,e:=f.service.Call(context.Background(),f.in)
- if e==nil || result.AttemptID==uuid.Nil || f.gateway.calls.Load()!=2 {t.Fatalf("lost response not preserved: %+v %v",result,e)}
- var state,dispatch,reservation string
- query:=`select a.state,a.dispatch_state,b.state from ouf_mcp.tool_attempt a join ouf_mcp.budget_reservation b using(attempt_id) where a.attempt_id=$1`
- if e=f.store.Pool().QueryRow(context.Background(),query,result.AttemptID).Scan(&state,&dispatch,&reservation);e!=nil || state!="RUNNING" || dispatch!="DISPATCHED" || reservation!="RESERVED" {t.Fatalf("uncertain dispatch became terminal: %s %s %s %v",state,dispatch,reservation,e)}
- if !bytes.Equal(before,f.snapshot(t)){t.Fatal("lost response changed predecessor")}
- // Exercise the existing maintenance transition rather than manufacture UNKNOWN.
- now:=time.Now().Add(10*time.Second)
- if _,e=f.store.MarkStaleAndClaim(context.Background(),now,now.Add(-time.Hour),"fixture-recovery",time.Minute,100);e!=nil {t.Fatal(e)}
- if e=f.store.Pool().QueryRow(context.Background(),query,result.AttemptID).Scan(&state,&dispatch,&reservation);e!=nil || state!="UNKNOWN" || dispatch!="UNKNOWN" {t.Fatalf("native recovery did not preserve uncertainty: %s %s %v",state,dispatch,e)}
- if _,e=f.service.Call(context.Background(),f.in);e==nil {t.Fatal("unknown result admitted again")}
- if f.gateway.calls.Load()!=2 || !bytes.Equal(before,f.snapshot(t)){t.Fatal("uncertain session redispatched or reset history")}
+	f := newReprocessingFixture(t)
+	before := f.snapshot(t)
+	f.service.Reprocessing = f.permit(t, nil)
+	f.gateway.ambiguous = true
+	result, e := f.service.Call(context.Background(), f.in)
+	if e == nil || result.AttemptID == uuid.Nil || f.gateway.calls.Load() != 2 {
+		t.Fatalf("lost response not preserved: %+v %v", result, e)
+	}
+	var state, dispatch, reservation string
+	query := `select a.state,a.dispatch_state,b.state from ouf_mcp.tool_attempt a join ouf_mcp.budget_reservation b using(attempt_id) where a.attempt_id=$1`
+	if e = f.store.Pool().QueryRow(context.Background(), query, result.AttemptID).Scan(&state, &dispatch, &reservation); e != nil || state != "RUNNING" || dispatch != "DISPATCHED" || reservation != "RESERVED" {
+		t.Fatalf("uncertain dispatch became terminal: %s %s %s %v", state, dispatch, reservation, e)
+	}
+	if !bytes.Equal(before, f.snapshot(t)) {
+		t.Fatal("lost response changed predecessor")
+	}
+	// Exercise the existing maintenance transition rather than manufacture UNKNOWN.
+	now := time.Now().Add(10 * time.Second)
+	if _, e = f.store.MarkStaleAndClaim(context.Background(), now, now.Add(-time.Hour), "fixture-recovery", time.Minute, 100); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.store.Pool().QueryRow(context.Background(), query, result.AttemptID).Scan(&state, &dispatch, &reservation); e != nil || state != "UNKNOWN" || dispatch != "UNKNOWN" {
+		t.Fatalf("native recovery did not preserve uncertainty: %s %s %v", state, dispatch, e)
+	}
+	if _, e = f.service.Call(context.Background(), f.in); e == nil {
+		t.Fatal("unknown result admitted again")
+	}
+	if f.gateway.calls.Load() != 2 || !bytes.Equal(before, f.snapshot(t)) {
+		t.Fatal("uncertain session redispatched or reset history")
+	}
 }
