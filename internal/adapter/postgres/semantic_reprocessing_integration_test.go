@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
- "encoding/hex"
 	"errors"
 	"os"
 	"sync"
@@ -30,6 +30,7 @@ type reprocessingGateway struct {
 	lastKey string
 	mu      sync.Mutex
 	fail    bool
+	ambiguous bool
 }
 
 func (g *reprocessingGateway) Execute(_ context.Context, in orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
@@ -37,6 +38,9 @@ func (g *reprocessingGateway) Execute(_ context.Context, in orchestration.Gatewa
 	g.mu.Lock()
 	g.lastKey = in.IdempotencyKey
 	g.mu.Unlock()
+	if n > 1 && g.ambiguous {
+		return orchestration.GatewayResponse{}, errors.New("fixture-owner-response-lost")
+	}
 	if n == 1 || g.fail {
 		return orchestration.GatewayResponse{Status: 403, Problem: &orchestration.Problem{Status: 403, Code: "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose"}}, nil
 	}
@@ -90,18 +94,34 @@ func newReprocessingFixture(t *testing.T, tenant ...string) *reprocessingFixture
 	}
 	return &reprocessingFixture{s, service, in, result.AttemptID, g, auth}
 }
-func (f *reprocessingFixture)permit(t *testing.T,change func(*reprocessing.Permit),caps ...int64)*reprocessing.VerifiedPermit{
- t.Helper();now:=time.Now().Unix();pub1,key1,_:=ed25519.GenerateKey(rand.Reader)
- policy,_:=json.Marshal(reprocessing.TrustPolicy{Schema:"ouf.semantic-deployment-trust-policy.v1",InstallationRef:"fixture",EntityRef:"fixture-entity",Keys:[]reprocessing.TrustKey{{KeyRef:"existing-fixture-installer",IssuerRef:"fixture-installer-issuer",Roles:[]string{"DEPLOYMENT_INTENT","FINAL_DEPLOYMENT_APPROVAL"},PublicKey:hex.EncodeToString(pub1),NotBefore:now-3600,ExpiresAt:now+3600,State:"ACTIVE"}}})
- capacity:=int64(64);if len(caps)>0{capacity=caps[0]}
- configured:=reprocessing.KeyProfile{Schema:"ouf.mcp-reprocessing-key-profile.v1",MaxSessionsPerTenant:capacity,InstallationRef:"fixture",EntityRef:"fixture-entity",InstallerKeyRef:"existing-fixture-installer",IntentIssuerRef:"fixture-installer-issuer",ApprovalIssuerRef:"fixture-installer-issuer",TrustPolicyHash:reprocessing.Hash(policy)}
- profile,_:=json.Marshal(configured)
- p := reprocessing.Permit{Schema: "ouf.mcp-semantic-reprocessing-session.v1", SessionID: uuid.NewString(), DecisionRef: "fixture-human-one-call-consent", Reason: "FIXTURE_EXPLICIT_REPROCESSING", InstallationRef: "fixture", KeyProfileHash: reprocessing.Hash(profile), ManifestChecksum: f.in.ManifestChecksum, ServicePrincipalID: f.in.Identity.ServicePrincipalID, HumanSubject: f.in.Identity.PrincipalID, TenantID: f.in.Identity.TenantID, Owner: "semantic", CapabilityID: f.in.CapabilityID, OperationClass: "COMMAND", CommandKey: f.in.IdempotencyKey, RequestHash: reprocessing.Hash(f.in.Arguments), PredecessorAttemptID: f.prior.String(), PredecessorLockVersion: 2, PredecessorOutcomeCode: "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose", PriorToolCalls: 1, MaximumNewToolCalls: 1, MaximumCumulativeToolCalls: 2, OwnerReceiptAbsentAt: now - 1, IssuedAt: now, ExpiresAt: now + 600}
- if change!=nil{change(&p)};raw,_:=json.Marshal(p)
- intent:=reprocessing.SignatureHeader(configured,raw,"DEPLOYMENT_INTENT");frame,_:=reprocessing.SigningBytes(raw,intent);intent.Signature=hex.EncodeToString(ed25519.Sign(key1,frame))
- approval:=reprocessing.SignatureHeader(configured,raw,"FINAL_DEPLOYMENT_APPROVAL");frame,_=reprocessing.SigningBytes(raw,approval);approval.Signature=hex.EncodeToString(ed25519.Sign(key1,frame))
- env,_:=json.Marshal(reprocessing.Envelope{Payload:raw,Intent:intent,Approval:approval})
- v,e:=reprocessing.Verify(profile,policy,env,reprocessing.Hash(profile),f.in.ManifestChecksum,time.Now());if e!=nil{t.Fatal(e)};return v
+func (f *reprocessingFixture) permit(t *testing.T, change func(*reprocessing.Permit), caps ...int64) *reprocessing.VerifiedPermit {
+	t.Helper()
+	now := time.Now().Unix()
+	pub1, key1, _ := ed25519.GenerateKey(rand.Reader)
+	policy, _ := json.Marshal(reprocessing.TrustPolicy{Schema: "ouf.semantic-deployment-trust-policy.v1", InstallationRef: "fixture", EntityRef: "fixture-entity", Keys: []reprocessing.TrustKey{{KeyRef: "existing-fixture-installer", IssuerRef: "fixture-installer-issuer", Roles: []string{"DEPLOYMENT_INTENT", "FINAL_DEPLOYMENT_APPROVAL"}, PublicKey: hex.EncodeToString(pub1), NotBefore: now - 3600, ExpiresAt: now + 3600, State: "ACTIVE"}}})
+	capacity := int64(64)
+	if len(caps) > 0 {
+		capacity = caps[0]
+	}
+	configured := reprocessing.KeyProfile{Schema: "ouf.mcp-reprocessing-key-profile.v1", MaxSessionsPerTenant: capacity, InstallationRef: "fixture", EntityRef: "fixture-entity", InstallerKeyRef: "existing-fixture-installer", IntentIssuerRef: "fixture-installer-issuer", ApprovalIssuerRef: "fixture-installer-issuer", TrustPolicyHash: reprocessing.Hash(policy)}
+	profile, _ := json.Marshal(configured)
+	p := reprocessing.Permit{Schema: "ouf.mcp-semantic-reprocessing-session.v1", SessionID: uuid.NewString(), DecisionRef: "fixture-human-one-call-consent", Reason: "FIXTURE_EXPLICIT_REPROCESSING", InstallationRef: "fixture", KeyProfileHash: reprocessing.Hash(profile), ManifestChecksum: f.in.ManifestChecksum, ServicePrincipalID: f.in.Identity.ServicePrincipalID, HumanSubject: f.in.Identity.PrincipalID, TenantID: f.in.Identity.TenantID, Owner: "semantic", CapabilityID: f.in.CapabilityID, OperationClass: "COMMAND", CommandKey: f.in.IdempotencyKey, RequestHash: reprocessing.Hash(f.in.Arguments), PredecessorAttemptID: f.prior.String(), PredecessorLockVersion: 2, PredecessorOutcomeCode: "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose", PriorToolCalls: 1, MaximumNewToolCalls: 1, MaximumCumulativeToolCalls: 2, OwnerReceiptAbsentAt: now - 1, IssuedAt: now, ExpiresAt: now + 600}
+	if change != nil {
+		change(&p)
+	}
+	raw, _ := json.Marshal(p)
+	intent := reprocessing.SignatureHeader(configured, raw, "DEPLOYMENT_INTENT")
+	frame, _ := reprocessing.SigningBytes(raw, intent)
+	intent.Signature = hex.EncodeToString(ed25519.Sign(key1, frame))
+	approval := reprocessing.SignatureHeader(configured, raw, "FINAL_DEPLOYMENT_APPROVAL")
+	frame, _ = reprocessing.SigningBytes(raw, approval)
+	approval.Signature = hex.EncodeToString(ed25519.Sign(key1, frame))
+	env, _ := json.Marshal(reprocessing.Envelope{Payload: raw, Intent: intent, Approval: approval})
+	v, e := reprocessing.Verify(profile, policy, env, reprocessing.Hash(profile), f.in.ManifestChecksum, time.Now())
+	if e != nil {
+		t.Fatal(e)
+	}
+	return v
 }
 func (f *reprocessingFixture) snapshot(t *testing.T) []byte {
 	t.Helper()
@@ -303,4 +323,21 @@ func TestSemanticReprocessingGuardRevokedAfterAdmissionDoesNotReachOwner(t *test
 	if e != nil || !result.Replay || f.gateway.calls.Load() != 1 {
 		t.Fatal("revoked admission replayed")
 	}
+}
+
+func TestSemanticReprocessingLostResponsePreservesUnknownAndNeverRedispatches(t *testing.T) {
+ f:=newReprocessingFixture(t);before:=f.snapshot(t)
+ f.service.Reprocessing=f.permit(t,nil);f.gateway.ambiguous=true
+ result,e:=f.service.Call(context.Background(),f.in)
+ if e==nil || result.AttemptID==uuid.Nil || f.gateway.calls.Load()!=2 {t.Fatalf("lost response not preserved: %+v %v",result,e)}
+ var state,dispatch,reservation string
+ query:=`select a.state,a.dispatch_state,b.state from ouf_mcp.tool_attempt a join ouf_mcp.budget_reservation b using(attempt_id) where a.attempt_id=$1`
+ if e=f.store.Pool().QueryRow(context.Background(),query,result.AttemptID).Scan(&state,&dispatch,&reservation);e!=nil || state!="RUNNING" || dispatch!="DISPATCHED" || reservation!="RESERVED" {t.Fatalf("uncertain dispatch became terminal: %s %s %s %v",state,dispatch,reservation,e)}
+ if !bytes.Equal(before,f.snapshot(t)){t.Fatal("lost response changed predecessor")}
+ // Exercise the existing maintenance transition rather than manufacture UNKNOWN.
+ now:=time.Now().Add(10*time.Second)
+ if _,e=f.store.MarkStaleAndClaim(context.Background(),now,now.Add(-time.Hour),"fixture-recovery",time.Minute,100);e!=nil {t.Fatal(e)}
+ if e=f.store.Pool().QueryRow(context.Background(),query,result.AttemptID).Scan(&state,&dispatch,&reservation);e!=nil || state!="UNKNOWN" || dispatch!="UNKNOWN" {t.Fatalf("native recovery did not preserve uncertainty: %s %s %v",state,dispatch,e)}
+ if _,e=f.service.Call(context.Background(),f.in);e==nil {t.Fatal("unknown result admitted again")}
+ if f.gateway.calls.Load()!=2 || !bytes.Equal(before,f.snapshot(t)){t.Fatal("uncertain session redispatched or reset history")}
 }

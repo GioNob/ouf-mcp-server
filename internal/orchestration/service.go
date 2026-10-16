@@ -161,7 +161,7 @@ type Result struct {
 }
 
 type Service struct {
- ReprocessingGuard func() error
+	ReprocessingGuard func() error
 	Reprocessing      *reprocessing.VerifiedPermit
 	RequireDelegation bool
 	Auth              AuthorizationPort
@@ -259,8 +259,12 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	var permit *reprocessing.VerifiedPermit
 	if s.Reprocessing.Matches(in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.CapabilityID, in.Owner, in.OperationClass, in.IdempotencyKey) {
 		permit = s.Reprocessing
-  if s.ReprocessingGuard==nil{return Result{},reprocessing.ErrPermit}
-  if err:=s.ReprocessingGuard();err!=nil{return Result{},err}
+		if s.ReprocessingGuard == nil {
+			return Result{}, reprocessing.ErrPermit
+		}
+		if err := s.ReprocessingGuard(); err != nil {
+			return Result{}, err
+		}
 	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
 		Reprocessing: permit, AttemptTimeout: in.Timeout,
@@ -277,7 +281,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{AttemptID: admitted.AttemptID, Replay: true}, nil
 	}
 	if permit != nil {
- if err:=s.ReprocessingGuard();err!=nil{return Result{},err}
+		if err := s.ReprocessingGuard(); err != nil {
+			return Result{}, err
+		}
 		if err := permit.CheckTime(time.Now(), in.Timeout+time.Second); err != nil {
 			return Result{}, err
 		}
@@ -294,6 +300,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		MaxResultBytes: in.Maximum.ResultBytes,
 		Upload:         in.Upload,
 	}, in.Timeout)
+	if permit != nil && callErr != nil {
+		// Dispatch may have reached the owner. Preserve the finite lease and
+		// reservation for native UNKNOWN recovery; never infer a known failure
+		// or make this one-use session available for another dispatch.
+		if s.Audit != nil {
+			_ = s.Audit.Audit(ctx, AuditEvent{EventType: "SEMANTIC_REPROCESSING_OUTCOME_UNCERTAIN", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: "OWNER_OUTCOME_UNCERTAIN", AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel})
+		}
+		return Result{AttemptID: admitted.AttemptID}, callErr
+	}
 	outcome := AttemptOutcome{Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {
 		outcome.BackendRequestID = backendRequestID
