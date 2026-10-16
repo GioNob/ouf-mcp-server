@@ -365,13 +365,13 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 }
 
 // This deployment-only input does not add a tool argument or trust an agent's
-// self-asserted approval. Disabled unless all three pinned inputs are supplied.
+// self-asserted approval. Disabled unless all four pinned inputs are supplied.
 func configureReprocessing(service *orchestration.Service, manifest string) error {
-	profileFile, profileHash, permitFile := os.Getenv("MCP_REPROCESSING_KEY_PROFILE_FILE"), os.Getenv("MCP_REPROCESSING_KEY_PROFILE_SHA256"), os.Getenv("MCP_REPROCESSING_PERMIT_FILE")
-	if profileFile == "" && profileHash == "" && permitFile == "" {
+	profileFile, profileHash, permitFile,policyFile := os.Getenv("MCP_REPROCESSING_KEY_PROFILE_FILE"), os.Getenv("MCP_REPROCESSING_KEY_PROFILE_SHA256"), os.Getenv("MCP_REPROCESSING_PERMIT_FILE"),os.Getenv("MCP_REPROCESSING_EXISTING_POLICY_FILE")
+	if profileFile == "" && profileHash == "" && permitFile == "" && policyFile=="" {
 		return nil
 	}
-	if profileFile == "" || profileHash == "" || permitFile == "" {
+	if profileFile == "" || profileHash == "" || permitFile == "" || policyFile=="" {
 		return reprocessing.ErrPermit
 	}
 	profile, err := reprocessing.ReadDeploymentFile(profileFile)
@@ -382,17 +382,31 @@ func configureReprocessing(service *orchestration.Service, manifest string) erro
 	if err != nil {
 		return err
 	}
-	verified, err := reprocessing.Verify(profile, envelope, profileHash, manifest, time.Now())
+	policy,err:=reprocessing.ReadDeploymentFile(policyFile);if err!=nil{return err}
+ verified, err := reprocessing.Verify(profile,policy, envelope, profileHash, manifest, time.Now())
 	// Expiry blocks only matching new work, not unrelated MCP capabilities.
 	if err != nil && !errors.Is(err, reprocessing.ErrExpired) {
 		return err
 	}
 	service.Reprocessing = verified
- service.ReprocessingGuard=func()error{
-  currentProfile,e:=reprocessing.ReadDeploymentFile(profileFile);if e!=nil{return e}
-  currentEnvelope,e:=reprocessing.ReadDeploymentFile(permitFile);if e!=nil{return e}
-  current,e:=reprocessing.Verify(currentProfile,currentEnvelope,profileHash,manifest,time.Now());if e!=nil{return e}
-  if current.Hash()!=verified.Hash(){return reprocessing.ErrPermit};return nil
- }
+	service.ReprocessingGuard = func() error {
+		currentProfile, e := reprocessing.ReadDeploymentFile(profileFile)
+		if e != nil {
+			return e
+		}
+		currentEnvelope, e := reprocessing.ReadDeploymentFile(permitFile)
+		if e != nil {
+			return e
+		}
+		currentPolicy,e:=reprocessing.ReadDeploymentFile(policyFile);if e!=nil{return e}
+ current, e := reprocessing.Verify(currentProfile,currentPolicy, currentEnvelope, profileHash, manifest, time.Now())
+		if e != nil {
+			return e
+		}
+		if current.Hash() != verified.Hash() {
+			return reprocessing.ErrPermit
+		}
+		return nil
+	}
 	return nil
 }

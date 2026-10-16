@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+ "encoding/binary"
+ "regexp"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,15 +27,29 @@ var ErrExpired = errors.New("SEMANTIC_REPROCESSING_SESSION_EXPIRED")
 // KeyProfile is trusted deployment configuration, hash-bound separately from
 // the untrusted permit. Keys must be the existing installation role keys.
 type KeyProfile struct {
+ Schema string `json:"schema"`
  MaxSessionsPerTenant int64 `json:"maxSessionsPerTenant"`
-	Schema             string `json:"schema"`
-	InstallationRef    string `json:"installationRef"`
-	InstallerKeyRef    string `json:"installerKeyRef"`
-	AttestorKeyRef     string `json:"attestorKeyRef"`
-	InstallerPublicKey []byte `json:"installerPublicKey"`
-	AttestorPublicKey  []byte `json:"attestorPublicKey"`
-	NotBefore          int64  `json:"notBefore"`
-	ExpiresAt          int64  `json:"expiresAt"`
+ InstallationRef string `json:"installationRef"`
+ EntityRef string `json:"entityRef"`
+ InstallerKeyRef string `json:"installerKeyRef"`
+ IntentIssuerRef string `json:"intentIssuerRef"`
+ ApprovalIssuerRef string `json:"approvalIssuerRef"`
+ TrustPolicyHash string `json:"trustPolicyHash"`
+}
+// These are the existing installation trust-policy and detached-signature
+// schemas. This consumer neither creates keys nor widens an issuer's roles.
+type TrustKey struct {
+ KeyRef string `json:"keyRef"`;IssuerRef string `json:"issuerRef"`
+ Roles []string `json:"roles"`;PublicKey string `json:"publicKey"`
+ NotBefore int64 `json:"notBefore"`;ExpiresAt int64 `json:"expiresAt"`;State string `json:"state"`
+}
+type TrustPolicy struct {
+ Schema string `json:"schema"`;InstallationRef string `json:"installationRef"`;EntityRef string `json:"entityRef"`;Keys []TrustKey `json:"keys"`
+}
+type DetachedSignature struct {
+ Schema string `json:"schema"`;Algorithm string `json:"algorithm"`;KeyRef string `json:"keyRef"`
+ Role string `json:"role"`;IssuerRef string `json:"issuerRef"`;InstallationRef string `json:"installationRef"`
+ EntityRef string `json:"entityRef"`;PayloadHash string `json:"payloadHash"`;Signature string `json:"signature"`
 }
 
 type Permit struct {
@@ -64,21 +80,21 @@ type Permit struct {
 }
 
 type Envelope struct {
-	Payload            []byte `json:"payload"`
-	InstallerSignature []byte `json:"installerSignature"`
-	AttestorSignature  []byte `json:"attestorSignature"`
+ Payload []byte `json:"payload"`
+ Intent DetachedSignature `json:"intent"`
+ Approval DetachedSignature `json:"approval"`
 }
 
 type VerifiedPermit struct {
- maxSessions int64
-	value Permit
-	hash  string
+	maxSessions int64
+	value       Permit
+	hash        string
 }
 
 func (v *VerifiedPermit) Capacity() int64 { return v.maxSessions }
-func (v *VerifiedPermit) Value() Permit { return v.value }
-func (v *VerifiedPermit) Hash() string  { return v.hash }
-func Hash(raw []byte) string            { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
+func (v *VerifiedPermit) Value() Permit   { return v.value }
+func (v *VerifiedPermit) Hash() string    { return v.hash }
+func Hash(raw []byte) string              { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
 func hash(s string) bool {
 	_, e := hex.DecodeString(s)
 	return len(s) == 64 && e == nil && strings.ToLower(s) == s
@@ -144,37 +160,39 @@ func uniqueValue(d *json.Decoder) error {
 	return e
 }
 
-// RoleFrame is domain-separated from every other use of the existing keys.
-func RoleFrame(role string, payload []byte) []byte {
-	return append([]byte("ouf.mcp-admission-reprocessing.v1\n"+role+"\n"), payload...)
+func identity(s string)bool{return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`).MatchString(s)}
+// SigningBytes exactly implements the existing public Python producer frame:
+// DOMAIN + big-endian header length + ASCII canonical header + payload length + exact payload.
+func SigningBytes(payload []byte,h DetachedSignature)([]byte,error){
+ if h.Schema!="ouf.semantic-deployment-detached-signature.v1"||h.Algorithm!="Ed25519"||!identity(h.KeyRef)||!identity(h.IssuerRef)||!identity(h.InstallationRef)||!identity(h.EntityRef)||h.PayloadHash!=Hash(payload)||(h.Role!="DEPLOYMENT_INTENT"&&h.Role!="FINAL_DEPLOYMENT_APPROVAL"){return nil,ErrPermit}
+ header,_:=json.Marshal(map[string]string{"schema":h.Schema,"algorithm":h.Algorithm,"keyRef":h.KeyRef,"role":h.Role,"issuerRef":h.IssuerRef,"installationRef":h.InstallationRef,"entityRef":h.EntityRef,"payloadHash":h.PayloadHash})
+ var frame bytes.Buffer;frame.WriteString("OUF-DEPLOYMENT-EVIDENCE\x00V1\x00")
+ _=binary.Write(&frame,binary.BigEndian,uint32(len(header)));frame.Write(header)
+ _=binary.Write(&frame,binary.BigEndian,uint32(len(payload)));frame.Write(payload);return frame.Bytes(),nil
 }
-func Verify(profileRaw, envelopeRaw []byte, expectedProfileHash, manifest string, now time.Time) (*VerifiedPermit, error) {
-	if !hash(expectedProfileHash) || Hash(profileRaw) != expectedProfileHash || !hash(manifest) {
-		return nil, ErrPermit
-	}
-	var profile KeyProfile
-	var env Envelope
-	var p Permit
-	if decode(profileRaw, &profile) != nil || decode(envelopeRaw, &env) != nil || decode(env.Payload, &p) != nil {
-		return nil, ErrPermit
-	}
-	if profile.MaxSessionsPerTenant<1||profile.MaxSessionsPerTenant>10000{return nil,ErrPermit}
- if profile.Schema != "ouf.mcp-reprocessing-key-profile.v1" || !bounded(profile.InstallationRef, 128) || !bounded(profile.InstallerKeyRef, 256) || !bounded(profile.AttestorKeyRef, 256) || profile.InstallerKeyRef == profile.AttestorKeyRef || len(profile.InstallerPublicKey) != ed25519.PublicKeySize || len(profile.AttestorPublicKey) != ed25519.PublicKeySize || bytes.Equal(profile.InstallerPublicKey, profile.AttestorPublicKey) {
-		return nil, ErrPermit
-	}
-	if !ed25519.Verify(profile.InstallerPublicKey, RoleFrame("DEPLOYMENT_INTENT", env.Payload), env.InstallerSignature) || !ed25519.Verify(profile.AttestorPublicKey, RoleFrame("FINAL_DEPLOYMENT_APPROVAL", env.Payload), env.AttestorSignature) {
-		return nil, ErrPermit
-	}
-	id, err := uuid.Parse(p.SessionID)
-	prior, e := uuid.Parse(p.PredecessorAttemptID)
-	if err != nil || e != nil || id == uuid.Nil || prior == uuid.Nil || p.Schema != "ouf.mcp-semantic-reprocessing-session.v1" || !bounded(p.DecisionRef, 256) || !bounded(p.Reason, 512) || p.InstallationRef != profile.InstallationRef || p.KeyProfileHash != expectedProfileHash || p.ManifestChecksum != manifest || !bounded(p.ServicePrincipalID, 128) || !bounded(p.HumanSubject, 128) || !bounded(p.TenantID, 128) || p.Owner != "semantic" || p.CapabilityID != "ouf.semantic.propose" || p.OperationClass != "COMMAND" || !bounded(p.CommandKey, 128) || !hash(p.RequestHash) || p.PredecessorLockVersion < 0 || p.PredecessorOutcomeCode != "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose" || p.PriorToolCalls != 1 || p.MaximumNewToolCalls != 1 || p.MaximumCumulativeToolCalls != 2 || p.ExpiresAt-p.IssuedAt <= 0 || p.ExpiresAt-p.IssuedAt > 900 || p.OwnerReceiptAbsentAt > p.IssuedAt || p.OwnerReceiptAbsentAt < p.IssuedAt-300 || p.IssuedAt < profile.NotBefore || p.ExpiresAt > profile.ExpiresAt {
-		return nil, ErrPermit
-	}
-	verified := &VerifiedPermit{value: p, hash: Hash(env.Payload),maxSessions:profile.MaxSessionsPerTenant}
-	if err = verified.CheckTime(now, 0); err != nil {
-		return verified, err
-	}
-	return verified, nil
+func SignatureHeader(profile KeyProfile,payload []byte,role string)DetachedSignature{
+ issuer:=profile.IntentIssuerRef;if role=="FINAL_DEPLOYMENT_APPROVAL"{issuer=profile.ApprovalIssuerRef}
+ return DetachedSignature{Schema:"ouf.semantic-deployment-detached-signature.v1",Algorithm:"Ed25519",KeyRef:profile.InstallerKeyRef,Role:role,IssuerRef:issuer,InstallationRef:profile.InstallationRef,EntityRef:profile.EntityRef,PayloadHash:Hash(payload)}
+}
+func Verify(profileRaw,policyRaw,envelopeRaw []byte,expectedProfileHash,manifest string,now time.Time)(*VerifiedPermit,error){
+ if !hash(expectedProfileHash)||Hash(profileRaw)!=expectedProfileHash||!hash(manifest){return nil,ErrPermit}
+ var profile KeyProfile;var policy TrustPolicy;var env Envelope;var p Permit
+ if decode(profileRaw,&profile)!=nil||decode(policyRaw,&policy)!=nil||decode(envelopeRaw,&env)!=nil||decode(env.Payload,&p)!=nil{return nil,ErrPermit}
+ if profile.Schema!="ouf.mcp-reprocessing-key-profile.v1"||profile.MaxSessionsPerTenant<1||profile.MaxSessionsPerTenant>10000||!identity(profile.InstallationRef)||!identity(profile.EntityRef)||!identity(profile.InstallerKeyRef)||!identity(profile.IntentIssuerRef)||!identity(profile.ApprovalIssuerRef)||profile.TrustPolicyHash!=Hash(policyRaw)||policy.Schema!="ouf.semantic-deployment-trust-policy.v1"||policy.InstallationRef!=profile.InstallationRef||policy.EntityRef!=profile.EntityRef||len(policy.Keys)<1||len(policy.Keys)>16{return nil,ErrPermit}
+ var key TrustKey;found:=0;seen:=map[string]bool{}
+ for _,k:=range policy.Keys{if seen[k.KeyRef]{return nil,ErrPermit};seen[k.KeyRef]=true;if k.KeyRef==profile.InstallerKeyRef{key=k;found++}}
+ if found!=1||key.State!="ACTIVE"||key.IssuerRef!=profile.IntentIssuerRef||key.IssuerRef!=profile.ApprovalIssuerRef||len(key.Roles)!=2||key.Roles[0]==key.Roles[1]{return nil,ErrPermit}
+ roles:=map[string]bool{};for _,r:=range key.Roles{roles[r]=true};if !roles["DEPLOYMENT_INTENT"]||!roles["FINAL_DEPLOYMENT_APPROVAL"]{return nil,ErrPermit}
+ public,err:=hex.DecodeString(key.PublicKey);if err!=nil||len(public)!=ed25519.PublicKeySize{return nil,ErrPermit}
+ for _,item:=range []struct{role string;signature DetachedSignature}{{"DEPLOYMENT_INTENT",env.Intent},{"FINAL_DEPLOYMENT_APPROVAL",env.Approval}}{
+  want:=SignatureHeader(profile,env.Payload,item.role);actual:=item.signature;sig,e:=hex.DecodeString(actual.Signature);actual.Signature=""
+  frame,e2:=SigningBytes(env.Payload,actual)
+  if e!=nil||e2!=nil||actual!=want||len(sig)!=ed25519.SignatureSize||!ed25519.Verify(public,frame,sig){return nil,ErrPermit}
+ }
+ id,err:=uuid.Parse(p.SessionID);prior,e:=uuid.Parse(p.PredecessorAttemptID)
+ if err!=nil||e!=nil||id==uuid.Nil||prior==uuid.Nil||p.Schema!="ouf.mcp-semantic-reprocessing-session.v1"||!bounded(p.DecisionRef,256)||!bounded(p.Reason,512)||p.InstallationRef!=profile.InstallationRef||p.KeyProfileHash!=expectedProfileHash||p.ManifestChecksum!=manifest||!bounded(p.ServicePrincipalID,128)||!bounded(p.HumanSubject,128)||!bounded(p.TenantID,128)||p.Owner!="semantic"||p.CapabilityID!="ouf.semantic.propose"||p.OperationClass!="COMMAND"||!bounded(p.CommandKey,128)||!hash(p.RequestHash)||p.PredecessorLockVersion<0||p.PredecessorOutcomeCode!="SEM_CAPABILITY_REQUIRED:ouf.semantic.propose"||p.PriorToolCalls!=1||p.MaximumNewToolCalls!=1||p.MaximumCumulativeToolCalls!=2||p.ExpiresAt-p.IssuedAt<=0||p.ExpiresAt-p.IssuedAt>900||p.OwnerReceiptAbsentAt>p.IssuedAt||p.OwnerReceiptAbsentAt<p.IssuedAt-300||p.IssuedAt<key.NotBefore||p.ExpiresAt>key.ExpiresAt{return nil,ErrPermit}
+ verified:=&VerifiedPermit{value:p,hash:Hash(env.Payload),maxSessions:profile.MaxSessionsPerTenant}
+ if err=verified.CheckTime(now,0);err!=nil{return verified,err};return verified,nil
 }
 func (v *VerifiedPermit) CheckTime(now time.Time, remaining time.Duration) error {
 	if v == nil {
@@ -230,11 +248,15 @@ func ReadDeploymentFile(name string) ([]byte, error) {
 	raw, e := io.ReadAll(io.LimitReader(f, 65537))
 	after, e2 := f.Stat()
 	path, e3 := os.Lstat(name)
-	same:=func(a,b os.FileInfo)bool{
-  if a==nil||b==nil{return false};x,ok:=a.Sys().(*syscall.Stat_t);y,ok2:=b.Sys().(*syscall.Stat_t)
-  return ok&&ok2&&os.SameFile(a,b)&&x.Uid==y.Uid&&x.Gid==y.Gid&&x.Nlink==y.Nlink&&x.Mode==y.Mode&&x.Size==y.Size&&x.Mtim==y.Mtim&&x.Ctim==y.Ctim
- }
- if e != nil || e2 != nil || e3 != nil || !same(before, after) || !same(before, path) || before.Size() != int64(len(raw)) {
+	same := func(a, b os.FileInfo) bool {
+		if a == nil || b == nil {
+			return false
+		}
+		x, ok := a.Sys().(*syscall.Stat_t)
+		y, ok2 := b.Sys().(*syscall.Stat_t)
+		return ok && ok2 && os.SameFile(a, b) && x.Uid == y.Uid && x.Gid == y.Gid && x.Nlink == y.Nlink && x.Mode == y.Mode && x.Size == y.Size && x.Mtim == y.Mtim && x.Ctim == y.Ctim
+	}
+	if e != nil || e2 != nil || e3 != nil || !same(before, after) || !same(before, path) || before.Size() != int64(len(raw)) {
 		return nil, ErrPermit
 	}
 	return raw, nil
