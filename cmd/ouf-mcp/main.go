@@ -388,5 +388,11 @@ func configureReprocessing(service *orchestration.Service, manifest string) erro
 		return err
 	}
 	service.Reprocessing = verified
+ service.ReprocessingGuard=func()error{
+  currentProfile,e:=reprocessing.ReadDeploymentFile(profileFile);if e!=nil{return e}
+  currentEnvelope,e:=reprocessing.ReadDeploymentFile(permitFile);if e!=nil{return e}
+  current,e:=reprocessing.Verify(currentProfile,currentEnvelope,profileHash,manifest,time.Now());if e!=nil{return e}
+  if current.Hash()!=verified.Hash(){return reprocessing.ErrPermit};return nil
+ }
 	return nil
 }

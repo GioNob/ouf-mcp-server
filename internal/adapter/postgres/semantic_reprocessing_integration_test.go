@@ -75,7 +75,7 @@ func newReprocessingFixture(t *testing.T,tenant ...string) *reprocessingFixture 
  if len(tenant)>0{id=tenant[0]}
 	g := &reprocessingGateway{}
 	auth := &reprocessingAuth{allowed: true}
-	service := &orchestration.Service{RequireDelegation: true, Auth: auth, Admission: s, Gateway: g, Audit: s, FingerprintKey: make([]byte, 32)}
+	service := &orchestration.Service{RequireDelegation: true, Auth: auth, Admission: s, Gateway: g, Audit: s, FingerprintKey: make([]byte, 32),ReprocessingGuard:func()error{return nil}}
 	in := orchestration.Invocation{Identity: orchestration.Identity{ServicePrincipalID: "workload-fixture", PrincipalID: "human-fixture", TenantID: id, ActorType: "HUMAN", AuthenticationContextRef: "authn-fixture", Delegation: "synthetic-gateway-delegation"}, CapabilityID: "ouf.semantic.propose", Owner: "semantic", OperationClass: "COMMAND", GatewayBindingRef: "fixture.semantic.create", ManifestChecksum: manifest, Arguments: json.RawMessage(`{"commandKey":"stable-draft","artifactType":"ONTOLOGY"}`), IdempotencyKey: "stable-draft", CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 4096}}
 	if len(tenant)>0{in.IdempotencyKey="draft-"+uuid.NewString();in.Arguments,_=json.Marshal(map[string]any{"commandKey":in.IdempotencyKey,"artifactType":"ONTOLOGY"})}
  result, e := service.Call(ctx, in)
@@ -249,4 +249,16 @@ func TestSemanticReprocessingCapacityAndRetentionDoNotDiscardHistoryOrBlockIndep
  if protected!=2{t.Fatal("cumulative history was purged")}
  if e=f.store.Pool().QueryRow(ctx,`select count(*) from ouf_mcp.tool_attempt where attempt_id=$1`,other.prior).Scan(&independent);e!=nil{t.Fatal(e)}
  if independent!=0{t.Fatal("independent eligible graph was blocked by retained session")}
+}
+
+func TestSemanticReprocessingGuardRevokedAfterAdmissionDoesNotReachOwner(t *testing.T){
+ f:=newReprocessingFixture(t);f.service.Reprocessing=f.permit(t,nil);var checks int
+ f.service.ReprocessingGuard=func()error{checks++;if checks>1{return reprocessing.ErrPermit};return nil}
+ if _,e:=f.service.Call(context.Background(),f.in);e==nil{t.Fatal("revoked guard allowed dispatch")}
+ if f.gateway.calls.Load()!=1{t.Fatal("late revocation reached owner")}
+ var state string
+ if e:=f.store.Pool().QueryRow(context.Background(),`select a.state from ouf_mcp.semantic_reprocessing_session r join ouf_mcp.tool_attempt a on a.attempt_id=r.new_attempt_id where r.predecessor_attempt_id=$1`,f.prior).Scan(&state);e!=nil||state!="ADMITTED"{t.Fatalf("ambiguous pre-dispatch stage lost: %s %v",state,e)}
+ // No second reservation or owner call is allowed after the one-use claim.
+ f.service.ReprocessingGuard=func()error{return nil}
+ result,e:=f.service.Call(context.Background(),f.in);if e!=nil||!result.Replay||f.gateway.calls.Load()!=1{t.Fatal("revoked admission replayed")}
 }

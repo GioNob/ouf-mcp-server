@@ -230,7 +230,11 @@ func ReadDeploymentFile(name string) ([]byte, error) {
 	raw, e := io.ReadAll(io.LimitReader(f, 65537))
 	after, e2 := f.Stat()
 	path, e3 := os.Lstat(name)
-	if e != nil || e2 != nil || e3 != nil || !os.SameFile(before, after) || !os.SameFile(before, path) || before.Size() != int64(len(raw)) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+	same:=func(a,b os.FileInfo)bool{
+  if a==nil||b==nil{return false};x,ok:=a.Sys().(*syscall.Stat_t);y,ok2:=b.Sys().(*syscall.Stat_t)
+  return ok&&ok2&&os.SameFile(a,b)&&x.Uid==y.Uid&&x.Gid==y.Gid&&x.Nlink==y.Nlink&&x.Mode==y.Mode&&x.Size==y.Size&&x.Mtim==y.Mtim&&x.Ctim==y.Ctim
+ }
+ if e != nil || e2 != nil || e3 != nil || !same(before, after) || !same(before, path) || before.Size() != int64(len(raw)) {
 		return nil, ErrPermit
 	}
 	return raw, nil

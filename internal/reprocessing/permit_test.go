@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+ "os"
+ "path/filepath"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -91,4 +93,18 @@ func TestSemanticReprocessingPermitNeverAcceptsUnsignedOperatorAssertion(t *test
 	if _, e := Verify(profile, raw, pin, manifest, time.Now()); e == nil {
 		t.Fatal("roles collapsed")
 	}
+}
+
+func TestSemanticReprocessingDeploymentFileCustody(t *testing.T){
+ if os.Geteuid()!=0{t.Skip("native root fixture required; explicit CI step runs this test")}
+ dir,e:=os.MkdirTemp("/var/lib","ouf-mcp-reprocessing-custody-");if e!=nil{t.Fatal(e)};t.Cleanup(func(){_ = os.RemoveAll(dir)})
+ path:=filepath.Join(dir,"public-profile.json");raw:=[]byte(`{"public":"metadata-only"}`)
+ if e=os.WriteFile(path,raw,0440);e!=nil{t.Fatal(e)}
+ if got,e:=ReadDeploymentFile(path);e!=nil||string(got)!=string(raw){t.Fatalf("private public metadata failed: %v",e)}
+ link:=filepath.Join(dir,"link");if e=os.Symlink(path,link);e!=nil{t.Fatal(e)}
+ if _,e=ReadDeploymentFile(link);e==nil{t.Fatal("symlink accepted")}
+ hard:=filepath.Join(dir,"hard");if e=os.Link(path,hard);e!=nil{t.Fatal(e)}
+ if _,e=ReadDeploymentFile(path);e==nil{t.Fatal("multiple links accepted")};_=os.Remove(hard)
+ _=os.Chmod(path,0660);if _,e=ReadDeploymentFile(path);e==nil{t.Fatal("writable profile accepted")};_=os.Chmod(path,0440)
+ _=os.Chmod(dir,0770);if _,e=ReadDeploymentFile(path);e==nil{t.Fatal("writable ancestry accepted")};_=os.Chmod(dir,0700)
 }

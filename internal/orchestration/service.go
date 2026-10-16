@@ -161,6 +161,7 @@ type Result struct {
 }
 
 type Service struct {
+ ReprocessingGuard func() error
 	Reprocessing      *reprocessing.VerifiedPermit
 	RequireDelegation bool
 	Auth              AuthorizationPort
@@ -258,6 +259,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	var permit *reprocessing.VerifiedPermit
 	if s.Reprocessing.Matches(in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.CapabilityID, in.Owner, in.OperationClass, in.IdempotencyKey) {
 		permit = s.Reprocessing
+  if s.ReprocessingGuard==nil{return Result{},reprocessing.ErrPermit}
+  if err:=s.ReprocessingGuard();err!=nil{return Result{},err}
 	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
 		Reprocessing: permit, AttemptTimeout: in.Timeout,
@@ -274,6 +277,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{AttemptID: admitted.AttemptID, Replay: true}, nil
 	}
 	if permit != nil {
+ if err:=s.ReprocessingGuard();err!=nil{return Result{},err}
 		if err := permit.CheckTime(time.Now(), in.Timeout+time.Second); err != nil {
 			return Result{}, err
 		}

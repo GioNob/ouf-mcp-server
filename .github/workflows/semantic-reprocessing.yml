@@ -49,3 +49,7 @@ jobs:
       - run: go test ./cmd/ouf-mcp -run '^$'
       - name: Race detection on signed permits and concurrent native admission
         run: go test -race ./internal/reprocessing ./internal/adapter/postgres -run SemanticReprocessing -count=1 -v
+      - name: Root-owned no-follow deployment metadata custody
+        run: |
+          go test -c ./internal/reprocessing -o /tmp/ouf-reprocessing-custody.test
+          sudo /tmp/ouf-reprocessing-custody.test -test.run '^TestSemanticReprocessingDeploymentFileCustody$' -test.v
