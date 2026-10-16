@@ -80,7 +80,10 @@ func (s *Store) reserveSemanticReprocessing(ctx context.Context, tx pgx.Tx, in o
 	if debt != 0 {
 		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
-	windowID, groupID, attemptID := uuid.New(), uuid.New(), uuid.New()
+	var retained int64
+ if err=tx.QueryRow(ctx,`select count(*) from ouf_mcp.semantic_reprocessing_session where tenant_id=$1`,in.Identity.TenantID).Scan(&retained);err!=nil{return orchestration.AdmissionDecision{},err}
+ if retained>=v.Capacity(){return orchestration.AdmissionDecision{},errors.New("SEMANTIC_REPROCESSING_CAPACITY_EXHAUSTED")}
+ windowID, groupID, attemptID := uuid.New(), uuid.New(), uuid.New()
 	admissionKey := "reprocess:" + p.SessionID
 	_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_window(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end,reserved_tool_calls,reserved_result_bytes,reserved_distinct_objects,limit_tool_calls,limit_result_bytes,limit_distinct_objects) values($1,$2,$3,$4,$5,$6,$7,1,$8,$9,1,$8,$9)`, windowID, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, "ouf.semantic-reprocessing-one-call.v1:"+p.SessionID, time.Unix(p.IssuedAt, 0), time.Unix(p.ExpiresAt, 0), in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	if err == nil {
@@ -102,7 +105,7 @@ func (s *Store) reserveSemanticReprocessing(ctx context.Context, tx pgx.Tx, in o
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation(reservation_id,attempt_id,budget_window_id,reserved_tool_calls,reserved_result_bytes,reserved_distinct_objects_max,state) values($1,$2,$3,1,$4,$5,'RESERVED')`, uuid.New(), attemptID, windowID, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `insert into ouf_mcp.semantic_reprocessing_session(session_id,permit_hash,predecessor_attempt_id,new_attempt_id,budget_window_id,decision_ref,human_subject,reason,prior_tool_calls,maximum_new_tool_calls,maximum_cumulative_tool_calls,owner_receipt_absent_at,issued_at,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8,1,1,2,$9,$10,$11)`, sessionID, v.Hash(), oldID, attemptID, windowID, p.DecisionRef, p.HumanSubject, p.Reason, time.Unix(p.OwnerReceiptAbsentAt, 0), time.Unix(p.IssuedAt, 0), time.Unix(p.ExpiresAt, 0))
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.semantic_reprocessing_session(session_id,permit_hash,predecessor_attempt_id,new_attempt_id,budget_window_id,tenant_id,decision_ref,human_subject,reason,prior_tool_calls,maximum_new_tool_calls,maximum_cumulative_tool_calls,owner_receipt_absent_at,issued_at,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,2,$10,$11,$12)`, sessionID, v.Hash(), oldID, attemptID, windowID, in.Identity.TenantID,p.DecisionRef, p.HumanSubject, p.Reason, time.Unix(p.OwnerReceiptAbsentAt, 0), time.Unix(p.IssuedAt, 0), time.Unix(p.ExpiresAt, 0))
 	}
 	detail, _ := json.Marshal(map[string]any{"sessionId": p.SessionID, "predecessorAttemptId": p.PredecessorAttemptID, "permitHash": v.Hash(), "decisionRef": p.DecisionRef, "priorToolCalls": 1, "maximumNewToolCalls": 1, "maximumCumulativeToolCalls": 2})
 	if err == nil {

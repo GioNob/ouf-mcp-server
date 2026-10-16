@@ -51,7 +51,7 @@ type reprocessingFixture struct {
 	auth    *reprocessingAuth
 }
 
-func newReprocessingFixture(t *testing.T) *reprocessingFixture {
+func newReprocessingFixture(t *testing.T,tenant ...string) *reprocessingFixture {
 	t.Helper()
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -72,22 +72,25 @@ func newReprocessingFixture(t *testing.T) *reprocessingFixture {
 		t.Fatal(e)
 	}
 	id := uuid.NewString()
+ if len(tenant)>0{id=tenant[0]}
 	g := &reprocessingGateway{}
 	auth := &reprocessingAuth{allowed: true}
 	service := &orchestration.Service{RequireDelegation: true, Auth: auth, Admission: s, Gateway: g, Audit: s, FingerprintKey: make([]byte, 32)}
 	in := orchestration.Invocation{Identity: orchestration.Identity{ServicePrincipalID: "workload-fixture", PrincipalID: "human-fixture", TenantID: id, ActorType: "HUMAN", AuthenticationContextRef: "authn-fixture", Delegation: "synthetic-gateway-delegation"}, CapabilityID: "ouf.semantic.propose", Owner: "semantic", OperationClass: "COMMAND", GatewayBindingRef: "fixture.semantic.create", ManifestChecksum: manifest, Arguments: json.RawMessage(`{"commandKey":"stable-draft","artifactType":"ONTOLOGY"}`), IdempotencyKey: "stable-draft", CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 4096}}
-	result, e := service.Call(ctx, in)
+	if len(tenant)>0{in.IdempotencyKey="draft-"+uuid.NewString();in.Arguments,_=json.Marshal(map[string]any{"commandKey":in.IdempotencyKey,"artifactType":"ONTOLOGY"})}
+ result, e := service.Call(ctx, in)
 	if e != nil || result.Problem == nil || g.calls.Load() != 1 {
 		t.Fatalf("initial failure missing: %+v %v", result, e)
 	}
 	return &reprocessingFixture{s, service, in, result.AttemptID, g, auth}
 }
-func (f *reprocessingFixture) permit(t *testing.T, change func(*reprocessing.Permit)) *reprocessing.VerifiedPermit {
+func (f *reprocessingFixture) permit(t *testing.T, change func(*reprocessing.Permit),caps ...int64) *reprocessing.VerifiedPermit {
 	t.Helper()
 	now := time.Now().Unix()
 	pub1, key1, _ := ed25519.GenerateKey(rand.Reader)
 	pub2, key2, _ := ed25519.GenerateKey(rand.Reader)
-	profile, _ := json.Marshal(reprocessing.KeyProfile{Schema: "ouf.mcp-reprocessing-key-profile.v1", InstallationRef: "fixture", InstallerKeyRef: "existing-fixture-installer", AttestorKeyRef: "existing-fixture-attestor", InstallerPublicKey: pub1, AttestorPublicKey: pub2, NotBefore: now - 3600, ExpiresAt: now + 3600})
+	capacity:=int64(64);if len(caps)>0{capacity=caps[0]}
+ profile, _ := json.Marshal(reprocessing.KeyProfile{MaxSessionsPerTenant:capacity,Schema: "ouf.mcp-reprocessing-key-profile.v1", InstallationRef: "fixture", InstallerKeyRef: "existing-fixture-installer", AttestorKeyRef: "existing-fixture-attestor", InstallerPublicKey: pub1, AttestorPublicKey: pub2, NotBefore: now - 3600, ExpiresAt: now + 3600})
 	p := reprocessing.Permit{Schema: "ouf.mcp-semantic-reprocessing-session.v1", SessionID: uuid.NewString(), DecisionRef: "fixture-human-one-call-consent", Reason: "FIXTURE_EXPLICIT_REPROCESSING", InstallationRef: "fixture", KeyProfileHash: reprocessing.Hash(profile), ManifestChecksum: f.in.ManifestChecksum, ServicePrincipalID: f.in.Identity.ServicePrincipalID, HumanSubject: f.in.Identity.PrincipalID, TenantID: f.in.Identity.TenantID, Owner: "semantic", CapabilityID: f.in.CapabilityID, OperationClass: "COMMAND", CommandKey: f.in.IdempotencyKey, RequestHash: reprocessing.Hash(f.in.Arguments), PredecessorAttemptID: f.prior.String(), PredecessorLockVersion: 2, PredecessorOutcomeCode: "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose", PriorToolCalls: 1, MaximumNewToolCalls: 1, MaximumCumulativeToolCalls: 2, OwnerReceiptAbsentAt: now - 1, IssuedAt: now, ExpiresAt: now + 600}
 	if change != nil {
 		change(&p)
@@ -228,4 +231,22 @@ func TestSemanticReprocessingUnknownDebtAndExpiredTimeRemainBlocked(t *testing.T
 			}
 		})
 	}
+}
+
+func TestSemanticReprocessingCapacityAndRetentionDoNotDiscardHistoryOrBlockIndependentGraphs(t *testing.T){
+ tenant:=uuid.NewString();f:=newReprocessingFixture(t,tenant);f.service.Reprocessing=f.permit(t,nil,1)
+ result,e:=f.service.Call(context.Background(),f.in);if e!=nil||result.Problem!=nil{t.Fatalf("first bounded session: %+v %v",result,e)}
+ other:=newReprocessingFixture(t,tenant);other.service.Reprocessing=other.permit(t,nil,1)
+ if _,e=other.service.Call(context.Background(),other.in);e==nil{t.Fatal("capacity ignored")}
+ if other.gateway.calls.Load()!=1{t.Fatal("exhausted session dispatched")}
+ ctx:=context.Background();var cutoff time.Time
+ if e=f.store.Pool().QueryRow(ctx,`select clock_timestamp()`).Scan(&cutoff);e!=nil{t.Fatal(e)}
+ var count int
+ if e=f.store.Pool().QueryRow(ctx,`select ouf_mcp.purge_audit_events($1,10000)`,cutoff).Scan(&count);e!=nil{t.Fatal(e)}
+ if e=f.store.Pool().QueryRow(ctx,`select ouf_mcp.purge_terminal_attempt_graph($1,1000)`,cutoff).Scan(&count);e!=nil{t.Fatal(e)}
+ var protected,independent int
+ if e=f.store.Pool().QueryRow(ctx,`select count(*) from ouf_mcp.tool_attempt where attempt_id=$1 or attempt_id=$2`,f.prior,result.AttemptID).Scan(&protected);e!=nil{t.Fatal(e)}
+ if protected!=2{t.Fatal("cumulative history was purged")}
+ if e=f.store.Pool().QueryRow(ctx,`select count(*) from ouf_mcp.tool_attempt where attempt_id=$1`,other.prior).Scan(&independent);e!=nil{t.Fatal(e)}
+ if independent!=0{t.Fatal("independent eligible graph was blocked by retained session")}
 }

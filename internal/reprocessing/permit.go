@@ -25,6 +25,7 @@ var ErrExpired = errors.New("SEMANTIC_REPROCESSING_SESSION_EXPIRED")
 // KeyProfile is trusted deployment configuration, hash-bound separately from
 // the untrusted permit. Keys must be the existing installation role keys.
 type KeyProfile struct {
+ MaxSessionsPerTenant int64 `json:"maxSessionsPerTenant"`
 	Schema             string `json:"schema"`
 	InstallationRef    string `json:"installationRef"`
 	InstallerKeyRef    string `json:"installerKeyRef"`
@@ -69,10 +70,12 @@ type Envelope struct {
 }
 
 type VerifiedPermit struct {
+ maxSessions int64
 	value Permit
 	hash  string
 }
 
+func (v *VerifiedPermit) Capacity() int64 { return v.maxSessions }
 func (v *VerifiedPermit) Value() Permit { return v.value }
 func (v *VerifiedPermit) Hash() string  { return v.hash }
 func Hash(raw []byte) string            { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
@@ -155,7 +158,8 @@ func Verify(profileRaw, envelopeRaw []byte, expectedProfileHash, manifest string
 	if decode(profileRaw, &profile) != nil || decode(envelopeRaw, &env) != nil || decode(env.Payload, &p) != nil {
 		return nil, ErrPermit
 	}
-	if profile.Schema != "ouf.mcp-reprocessing-key-profile.v1" || !bounded(profile.InstallationRef, 128) || !bounded(profile.InstallerKeyRef, 256) || !bounded(profile.AttestorKeyRef, 256) || profile.InstallerKeyRef == profile.AttestorKeyRef || len(profile.InstallerPublicKey) != ed25519.PublicKeySize || len(profile.AttestorPublicKey) != ed25519.PublicKeySize || bytes.Equal(profile.InstallerPublicKey, profile.AttestorPublicKey) {
+	if profile.MaxSessionsPerTenant<1||profile.MaxSessionsPerTenant>10000{return nil,ErrPermit}
+ if profile.Schema != "ouf.mcp-reprocessing-key-profile.v1" || !bounded(profile.InstallationRef, 128) || !bounded(profile.InstallerKeyRef, 256) || !bounded(profile.AttestorKeyRef, 256) || profile.InstallerKeyRef == profile.AttestorKeyRef || len(profile.InstallerPublicKey) != ed25519.PublicKeySize || len(profile.AttestorPublicKey) != ed25519.PublicKeySize || bytes.Equal(profile.InstallerPublicKey, profile.AttestorPublicKey) {
 		return nil, ErrPermit
 	}
 	if !ed25519.Verify(profile.InstallerPublicKey, RoleFrame("DEPLOYMENT_INTENT", env.Payload), env.InstallerSignature) || !ed25519.Verify(profile.AttestorPublicKey, RoleFrame("FINAL_DEPLOYMENT_APPROVAL", env.Payload), env.AttestorSignature) {
@@ -166,7 +170,7 @@ func Verify(profileRaw, envelopeRaw []byte, expectedProfileHash, manifest string
 	if err != nil || e != nil || id == uuid.Nil || prior == uuid.Nil || p.Schema != "ouf.mcp-semantic-reprocessing-session.v1" || !bounded(p.DecisionRef, 256) || !bounded(p.Reason, 512) || p.InstallationRef != profile.InstallationRef || p.KeyProfileHash != expectedProfileHash || p.ManifestChecksum != manifest || !bounded(p.ServicePrincipalID, 128) || !bounded(p.HumanSubject, 128) || !bounded(p.TenantID, 128) || p.Owner != "semantic" || p.CapabilityID != "ouf.semantic.propose" || p.OperationClass != "COMMAND" || !bounded(p.CommandKey, 128) || !hash(p.RequestHash) || p.PredecessorLockVersion < 0 || p.PredecessorOutcomeCode != "SEM_CAPABILITY_REQUIRED:ouf.semantic.propose" || p.PriorToolCalls != 1 || p.MaximumNewToolCalls != 1 || p.MaximumCumulativeToolCalls != 2 || p.ExpiresAt-p.IssuedAt <= 0 || p.ExpiresAt-p.IssuedAt > 900 || p.OwnerReceiptAbsentAt > p.IssuedAt || p.OwnerReceiptAbsentAt < p.IssuedAt-300 || p.IssuedAt < profile.NotBefore || p.ExpiresAt > profile.ExpiresAt {
 		return nil, ErrPermit
 	}
-	verified := &VerifiedPermit{value: p, hash: Hash(env.Payload)}
+	verified := &VerifiedPermit{value: p, hash: Hash(env.Payload),maxSessions:profile.MaxSessionsPerTenant}
 	if err = verified.CheckTime(now, 0); err != nil {
 		return verified, err
 	}
