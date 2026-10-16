@@ -1,0 +1,57 @@
+name: Explicit semantic reprocessing session
+on:
+  push:
+    branches: [fix/semantic-governed-reprocessing-20261016]
+  pull_request:
+    paths:
+      - internal/reprocessing/**
+      - internal/adapter/postgres/semantic_reprocessing*
+      - internal/adapter/postgres/migrations/013_semantic_reprocessing_session.sql
+      - internal/adapter/postgres/store.go
+      - internal/orchestration/service.go
+      - cmd/ouf-mcp/main.go
+      - .github/workflows/semantic-reprocessing.yml
+permissions: {contents: read}
+jobs:
+  postgres-and-signed-session:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: reprocessing_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d reprocessing_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/reprocessing_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - name: Format qualified sources and return changed public source bytes
+        run: |
+          python3 - <<'PY'
+          import base64,subprocess
+          from pathlib import Path
+          files=['internal/reprocessing/permit.go','internal/reprocessing/permit_test.go',
+            'internal/adapter/postgres/semantic_reprocessing.go',
+            'internal/adapter/postgres/semantic_reprocessing_integration_test.go',
+            'internal/adapter/postgres/semantic_reprocessing_migration.go',
+            'internal/adapter/postgres/semantic_reprocessing_migration_integration_test.go',
+            'internal/adapter/postgres/store.go','internal/orchestration/service.go','cmd/ouf-mcp/main.go']
+          for name in files:
+            p=Path(name);before=p.read_bytes()
+            subprocess.run(['gofmt','-w',name],check=True)
+            if before!=p.read_bytes():print('FORMATTED_PUBLIC_SOURCE '+name+' '+base64.b64encode(p.read_bytes()).decode())
+          PY
+      - run: go test ./internal/reprocessing ./internal/orchestration ./internal/adapter/postgres -run SemanticReprocessing -count=1 -v
+      - run: go test ./cmd/ouf-mcp -run '^$'
+      - name: Race detection on signed permits and concurrent native admission
+        run: go test -race ./internal/reprocessing ./internal/adapter/postgres -run SemanticReprocessing -count=1 -v
+      - name: Root-owned no-follow deployment metadata custody
+        run: |
+          go test -c ./internal/reprocessing -o /tmp/ouf-reprocessing-custody.test
+          sudo /tmp/ouf-reprocessing-custody.test -test.run '^TestSemanticReprocessingDeploymentFileCustody$' -test.v
