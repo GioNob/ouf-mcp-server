@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/statusview"
+ "github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 	"github.com/google/uuid"
 )
 
@@ -67,6 +68,8 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
+ Reprocessing *reprocessing.VerifiedPermit
+ AttemptTimeout time.Duration
 	BudgetProfile                                                                   string
 	AttemptID                                                                       uuid.UUID
 	Identity                                                                        Identity
@@ -158,6 +161,7 @@ type Result struct {
 }
 
 type Service struct {
+ Reprocessing *reprocessing.VerifiedPermit
 	RequireDelegation bool
 	Auth              AuthorizationPort
 	Admission         AdmissionPort
@@ -251,7 +255,10 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
+	var permit *reprocessing.VerifiedPermit
+ if s.Reprocessing.Matches(in.Identity.ServicePrincipalID,in.Identity.PrincipalID,in.Identity.TenantID,in.CapabilityID,in.Owner,in.OperationClass,in.IdempotencyKey) { permit=s.Reprocessing }
+ admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
+  Reprocessing:permit,AttemptTimeout:in.Timeout,
 		BudgetProfile: in.BudgetProfile,
 		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
@@ -264,7 +271,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if admitted.Replay {
 		return Result{AttemptID: admitted.AttemptID, Replay: true}, nil
 	}
-	backendRequestID := uuid.NewString()
+	if permit!=nil { if err:=permit.CheckTime(time.Now(),in.Timeout+time.Second);err!=nil{return Result{},err} }
+ backendRequestID := uuid.NewString()
 	err = s.Admission.Dispatch(ctx, admitted.AttemptID, backendRequestID, in.Timeout+time.Second, admitted.LockVersion)
 	if err != nil {
 		return Result{}, err

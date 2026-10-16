@@ -24,6 +24,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/operational"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
+ "github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 )
 
 func main() {
@@ -290,6 +291,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+ if err:=configureReprocessing(service,checksum);err!=nil{logger.Error("invalid semantic reprocessing configuration");os.Exit(1)}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	var handler http.Handler
 	switch os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") {
@@ -357,4 +359,18 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("HTTP server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// This deployment-only input does not add a tool argument or trust an agent's
+// self-asserted approval. Disabled unless all three pinned inputs are supplied.
+func configureReprocessing(service *orchestration.Service,manifest string)error{
+ profileFile,profileHash,permitFile:=os.Getenv("MCP_REPROCESSING_KEY_PROFILE_FILE"),os.Getenv("MCP_REPROCESSING_KEY_PROFILE_SHA256"),os.Getenv("MCP_REPROCESSING_PERMIT_FILE")
+ if profileFile==""&&profileHash==""&&permitFile==""{return nil}
+ if profileFile==""||profileHash==""||permitFile==""{return reprocessing.ErrPermit}
+ profile,err:=reprocessing.ReadDeploymentFile(profileFile);if err!=nil{return err}
+ envelope,err:=reprocessing.ReadDeploymentFile(permitFile);if err!=nil{return err}
+ verified,err:=reprocessing.Verify(profile,envelope,profileHash,manifest,time.Now())
+ // Expiry blocks only matching new work, not unrelated MCP capabilities.
+ if err!=nil&&!errors.Is(err,reprocessing.ErrExpired){return err}
+ service.Reprocessing=verified;return nil
 }
