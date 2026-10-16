@@ -97,3 +97,39 @@ Grant HUMAN specifico `urban.object.search` proposto e approvato via THS; decisi
 L'operatore ha eseguito il comando `--apply` dal commit script `07a3ac562779009a2e11d0707a6f27cd6fa0e482`. Esito: `MCP_R4A_STAGED=true`, candidato `ouf-mcp:r4a-fbd0e8c` Up e originale `ouf-mcp:2ea473c` fermo, conservato come `ouf-mcp-r4a-original`. La prova locale `GET /health/ready` nel nuovo container ha restituito successo (`MCP_R4A_READY`). La chiamata HUMAN tramite connettore OUF `ouf.system.status` dopo lo staging ha restituito `{"module":"MCP","status":"HEALTHY","actionRequired":false,"partial":false,"visibilityClass":"PUBLIC_OPERATIONAL","redacted":true}`. Lo snapshot e il file rollback rimangono privati sul server. Questo non prova un grant di ricerca o un token con delega valido. `urban.object.search` resta INACTIVE; conservare l'originale finché le prove residue non sono chiuse.
 
 **Lettura policy dopo staging:** con identità amministrativa, `authorization.permissions.read` per il subject HUMAN `177fd705-b57f-4f9e-a23c-af9d1f3f1f75` restituisce `policyRef=ouf-lab-authorization:14` e `meaning=CONFIGURED_GRANTS_NOT_EFFECTIVE_PERMISSIONS`. Nessuno dei grant configurati riguarda `urban.object.search`; quelli elencati per altri moduli hanno scadenze passate. Questo risultato è sola lettura e non prova un permesso effettivo. Il test positivo richiede proposta circoscritta, conferma nella THS e successiva verifica owner; un grant di ammissione per `resourceType=capability` non sostituisce gli eventuali grant per oggetti serviti da UDP.
+
+
+## Evidenza acceptance end-to-end del 24 settembre 2026
+
+Dopo il retrofit Authorization del UDP e la pubblicazione governata del PolicyBundle
+`ouf-lab-authorization:17`, il probe owner diretto `urban.object.search` con il
+subject HUMAN destinato al grant ha restituito HTTP 200 e pagina vuota
+`{"items":[],"nextCursor":null,"partial":false}`, coerente con il database UDP
+senza Urban Object.
+
+Il primo tentativo reale ChatGPT successivo ha ancora restituito
+`authorization denied`. La diagnostica pre-admission MCP ha registrato:
+
+- `AUTHORIZATION_DENIED_PRE_ADMISSION`;
+- `outcomeCode=NO_APPLICABLE_GRANT`;
+- `authorizationDecisionRef=ouf-lab-authorization:17:urban.object.search`.
+
+Questa evidenza prova che il MCP aveva già caricato la policy v17 e quindi esclude
+una cache policy stale come causa di quel deny. Dopo la riconnessione OAuth
+dell'account ChatGPT, la stessa ricerca DEHOR con `pageSize=2` è riuscita e ha
+restituito zero risultati. Il relativo `tool_attempt` MCP registra il principal
+`177fd705-b57f-4f9e-a23c-af9d1f3f1f75`, capability `urban.object.search`,
+`state=SUCCEEDED` e `dispatch_state=ACKNOWLEDGED`.
+
+Il grant temporaneo era valido durante entrambe le prove e non imponeva ACR, AMR,
+organization o service-principal. Pertanto il contesto OAuth precedente non
+corrispondeva al subject cui era applicabile il grant. L'UUID del principal del
+deny non è ricostruibile retroattivamente dall'audit pre-admission disponibile:
+non attribuirgli un'identità specifica senza evidenza. La riconnessione OAuth ha
+ristabilito il subject atteso e chiuso il percorso
+ChatGPT -> MCP -> Gateway -> UDP per il caso positivo a pagina vuota.
+
+Questa prova non chiude ancora pagination/cursor/partial su risultati reali:
+il database UDP osservato è vuoto. Tali gate richiedono dati rappresentativi
+caricati attraverso il percorso di ingestion/onboarding governato, non INSERT
+diretti di collaudo.
