@@ -39,6 +39,8 @@ jobs:
           files=['internal/reprocessing/permit.go','internal/reprocessing/permit_test.go',
             'internal/adapter/postgres/semantic_reprocessing.go',
             'internal/adapter/postgres/semantic_reprocessing_integration_test.go',
+            'internal/adapter/postgres/semantic_reprocessing_migration.go',
+            'internal/adapter/postgres/semantic_reprocessing_migration_integration_test.go',
             'internal/adapter/postgres/store.go','internal/orchestration/service.go','cmd/ouf-mcp/main.go']
           for name in files:
             p=Path(name);before=p.read_bytes()

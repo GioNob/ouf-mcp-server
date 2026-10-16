@@ -52,6 +52,12 @@ func main() {
 		interval := flags.Duration("interval", 30*time.Second, "maintenance interval")
 		_ = flags.Parse(os.Args[2:])
 		runMaintenance(ctx, logger, databaseURL, *interval, *once)
+	case "migrate-semantic-reprocessing":
+        if err := runSemanticReprocessingMigration(ctx,databaseURL);err!=nil {
+            logger.Error("semantic migration not proven", "code", "MCP_REPROCESSING_MIGRATION_UNPROVEN")
+            os.Exit(1)
+        }
+        logger.Info("semantic migration applied with no committed role membership")
 	case "migrate":
 		runMigrate(ctx, logger, databaseURL)
 	default:
@@ -77,6 +83,15 @@ func runMigrate(ctx context.Context, logger *slog.Logger, databaseURL string) {
 		os.Exit(1)
 	}
 	logger.Info("database migrations applied")
+}
+
+// This administrative mode is selected only by the separately authenticated
+// infrastructure installer. It never runs during server startup.
+func runSemanticReprocessingMigration(ctx context.Context, databaseURL string) error {
+ oid,e:=strconv.ParseUint(os.Getenv("MCP_MIGRATION_DATABASE_OID"),10,32)
+ if e!=nil || oid==0{return pg.ErrReprocessingMigrationUnproven}
+ store,e:=pg.Open(ctx,databaseURL);if e!=nil{return pg.ErrReprocessingMigrationUnproven};defer store.Close()
+ return pg.MigrateSemanticReprocessing(ctx,store.Pool(),os.Getenv("MCP_MIGRATION_APPLICATION_ROLE"),uint32(oid),os.Getenv("MCP_MIGRATION_RETENTION_FUNCTION_SHA256"))
 }
 
 func positiveIntEnv(name string, fallback int) (int, error) {
