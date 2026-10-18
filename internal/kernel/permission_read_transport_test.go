@@ -73,19 +73,19 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 				t.Fatal("read mislabelled")
 			}
 		}
-		for _, args := range []map[string]any{{"subjectId":"user-a"},{"view":"GRANTS","subjectId":"user-a","limit":200},{"externalRoleRef":"reviewers"},{"view":"ROLES"}} {
-		before := calls.Load()
-		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: capID, Arguments: args})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if scope == capID {
-			if result.IsError || calls.Load() != before+1 {
-				t.Fatalf("read selector failed: %+v", result)
+		for _, args := range []map[string]any{{"subjectId": "user-a"}, {"view": "GRANTS", "subjectId": "user-a", "limit": 200}, {"externalRoleRef": "reviewers"}, {"view": "ROLES"}} {
+			before := calls.Load()
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: capID, Arguments: args})
+			if err != nil {
+				t.Fatal(err)
 			}
-		} else if !result.IsError || calls.Load() != before {
-			t.Fatal("unauthorized proposal reached Gateway")
-		}
+			if scope == capID {
+				if result.IsError || calls.Load() != before+1 {
+					t.Fatalf("read selector failed: %+v", result)
+				}
+			} else if !result.IsError || calls.Load() != before {
+				t.Fatal("unauthorized read reached Gateway")
+			}
 		}
 		session.Close()
 		server.Close()
