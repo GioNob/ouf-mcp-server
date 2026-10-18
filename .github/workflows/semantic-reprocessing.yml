@@ -9,7 +9,7 @@ on:
       - internal/adapter/postgres/migrations/013_semantic_reprocessing_session.sql
       - internal/adapter/postgres/store.go
       - internal/orchestration/service.go
-      - cmd/ouf-mcp/main.go
+      - cmd/ouf-mcp/**
       - .github/workflows/semantic-reprocessing.yml
 permissions: {contents: read}
 jobs:
@@ -36,7 +36,8 @@ jobs:
           python3 - <<'PY'
           import base64,subprocess
           from pathlib import Path
-          files=['internal/reprocessing/permit.go','internal/reprocessing/permit_test.go',
+          files=['internal/reprocessing/permit.go','internal/reprocessing/permit_test.go','internal/reprocessing/deployment_test.go',
+            'cmd/ouf-mcp/reprocessing_upgrade_test.go',
             'internal/adapter/postgres/semantic_reprocessing.go',
             'internal/adapter/postgres/semantic_reprocessing_integration_test.go',
             'internal/adapter/postgres/semantic_reprocessing_migration.go',
@@ -55,3 +56,5 @@ jobs:
         run: |
           go test -c ./internal/reprocessing -o /tmp/ouf-reprocessing-custody.test
           sudo /tmp/ouf-reprocessing-custody.test -test.run '^TestSemanticReprocessingDeploymentFileCustody$' -test.v
+          go test -c ./cmd/ouf-mcp -o /tmp/ouf-mcp-upgrade.test
+          sudo /tmp/ouf-mcp-upgrade.test -test.run '^TestSemanticReprocessingDeploymentManifestUpgrade$' -test.v

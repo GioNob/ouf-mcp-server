@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestDeploymentRetainsExpiredOldManifestWithoutDispatchAuthority(t *testing.T) {
+func TestSemanticReprocessingDeploymentRetainsExpiredOldManifestWithoutDispatchAuthority(t *testing.T) {
 	profile, policy, envelope, pin, oldManifest := fixture(t, nil)
 	newManifest := Hash([]byte("upgraded-manifest"))
 	now := time.Now().Add(time.Hour)
@@ -23,7 +23,7 @@ func TestDeploymentRetainsExpiredOldManifestWithoutDispatchAuthority(t *testing.
 	}
 }
 
-func TestDeploymentNeverCarriesActiveOrFuturePermitAcrossManifests(t *testing.T) {
+func TestSemanticReprocessingDeploymentNeverCarriesActiveOrFuturePermitAcrossManifests(t *testing.T) {
 	for _, future := range []bool{false, true} {
 		profile, policy, envelope, pin, _ := fixture(t, func(p *Permit) {
 			if future {
@@ -39,7 +39,7 @@ func TestDeploymentNeverCarriesActiveOrFuturePermitAcrossManifests(t *testing.T)
 	}
 }
 
-func TestDeploymentExpiredCompatibilityStillChecksSignaturesAndLimits(t *testing.T) {
+func TestSemanticReprocessingDeploymentExpiredCompatibilityStillChecksSignaturesAndLimits(t *testing.T) {
 	profile, policy, raw, pin, _ := fixture(t, nil)
 	var envelope Envelope
 	_ = json.Unmarshal(raw, &envelope)
@@ -62,7 +62,7 @@ func TestDeploymentExpiredCompatibilityStillChecksSignaturesAndLimits(t *testing
 	}
 }
 
-func TestDeploymentCurrentManifestBehaviorIsUnchanged(t *testing.T) {
+func TestSemanticReprocessingDeploymentCurrentManifestBehaviorIsUnchanged(t *testing.T) {
 	profile, policy, raw, pin, manifest := fixture(t, nil)
 	for _, now := range []time.Time{time.Now(), time.Now().Add(time.Hour)} {
 		expected, expectedErr := Verify(profile, policy, raw, pin, manifest, now)
