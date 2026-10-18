@@ -40,7 +40,7 @@ func TestDurableLifecycle(t *testing.T) {
 	if err = Migrate(ctx, store.Pool()); err != nil {
 		t.Fatal(err)
 	}
-	payload := []byte(`{"capabilities":[]}`)
+	payload := []byte(`{"capabilities":[],"lifecycleFixture":"` + runID + `"}`)
 	manifestHash := fmt.Sprintf("%x", sha256.Sum256(payload))
 	if err = store.EnsureManifest(ctx, manifestHash, "integration-v1", "mcp-manifest-v1", payload); err != nil {
 		t.Fatal(err)

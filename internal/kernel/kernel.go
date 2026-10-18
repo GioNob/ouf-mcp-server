@@ -294,7 +294,7 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -309,7 +309,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 					maxObjects = 100
 				}
 			}
-			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
+			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
 				maxObjects, maxBytes = 1, 65536
 			}
 			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
@@ -392,7 +392,7 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isSourceReviewCapability(c.CapabilityID) {
 		authorizationCapability, resource, err = sourceReviewAuthorization(c, args, identity.TenantID)
 	}
-	if c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+	if isSourcePreparationCapability(c.CapabilityID) {
 		var command struct {
 			CommandKey string `json:"commandKey"`
 		}
@@ -412,14 +412,14 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult(code, false), nil, nil
 	}
 	timeout := 3 * time.Second
-	if c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+	if isSourcePreparationCapability(c.CapabilityID) {
 		timeout = 10 * time.Second
 	}
 	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
 		return errorResult(err.Error(), false), nil, nil
 	}
-	if result.Replay && len(result.Body) == 0 && c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+	if result.Replay && len(result.Body) == 0 && isSourcePreparationCapability(c.CapabilityID) {
 		return errorResult("SOURCE_REVIEW_READ_REQUIRED", false), nil, nil
 	}
 	if result.Replay && len(result.Body) == 0 && isSemanticProposalCapability(c.CapabilityID) {

@@ -77,6 +77,8 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"source.onboarding.create",
 		"source.onboarding.read",
 		"source.onboarding.review.prepare",
+		"source.onboarding.revision.prepare",
+		"source.onboarding.revision.read",
 		"urban.object.related_search",
 		"urban.object.search",
 	}

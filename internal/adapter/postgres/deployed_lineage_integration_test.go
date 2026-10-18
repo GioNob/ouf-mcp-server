@@ -112,8 +112,9 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer appPool.Close()
-	if err = Migrate(ctx, appPool); err != nil {
-		t.Fatal(err)
+	// Ordinary application startup must stop at the administrative 12->13 gate.
+	if err = Migrate(ctx, appPool); err == nil {
+		t.Fatal("application startup bypassed the governed migration gate")
 	}
 	for _, statement := range []string{
 		"revoke ouf_mcp_operational_audit_owner from " + applicationRole,
@@ -136,6 +137,26 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 		(select not rolcanlogin from pg_roles where rolname='ouf_mcp_operational_audit_owner'),
 		(select count(*)=2 from pg_proc where oid in (to_regprocedure('ouf_mcp.capture_operational_attempt_audit()'),to_regprocedure('ouf_mcp.capture_operational_security_audit()')) and proowner='ouf_mcp_operational_audit_owner'::regrole)`, applicationRole).Scan(&membership, &schemaCreate, &noLogin, &functionOwner); err != nil || membership || schemaCreate || !noLogin || !functionOwner {
 		t.Fatalf("retained audit role privilege drift: %v", err)
+	}
+	// The production transition uses the bounded administrative primitive.
+	// Only REFERENCES is needed on the fixture table still owned by its creator.
+	if _, err = pool.Exec(ctx, "grant references on ouf_mcp.budget_window to "+applicationRole); err != nil {
+		t.Fatal(err)
+	}
+	var databaseOID uint32
+	var functionHash string
+	if err = pool.QueryRow(ctx, `select d.oid,encode(sha256(convert_to(pg_get_functiondef(to_regprocedure('ouf_mcp.purge_terminal_attempt_graph(timestamp with time zone,integer)')),'UTF8')),'hex') from pg_database d where d.datname=current_database()`).Scan(&databaseOID, &functionHash); err != nil {
+		t.Fatal(err)
+	}
+	if err = MigrateSemanticReprocessing(ctx, pool, applicationRole, databaseOID, functionHash); err != nil {
+		t.Fatal(err)
+	}
+	var retentionMembers int
+	if err = pool.QueryRow(ctx, "select count(*) from pg_auth_members where roleid='ouf_mcp_retention_owner'::regrole").Scan(&retentionMembers); err != nil || retentionMembers != 0 {
+		t.Fatalf("temporary retention authority survived: %d %v", retentionMembers, err)
+	}
+	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != 13 {
+		t.Fatalf("governed migration count %d: %v", count, err)
 	}
 	if err = Migrate(ctx, appPool); err != nil {
 		t.Fatalf("idempotent restart: %v", err)

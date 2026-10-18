@@ -10,6 +10,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
+	"github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -181,10 +182,16 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		if state == "UNKNOWN" || state == "UNRESOLVED" {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
 		}
+		if in.Reprocessing != nil {
+			return s.reserveSemanticReprocessing(ctx, tx, in, existingID)
+		}
 		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true}, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return orchestration.AdmissionDecision{}, err
+	}
+	if in.Reprocessing != nil {
+		return orchestration.AdmissionDecision{}, reprocessing.ErrPermit
 	}
 	var now time.Time
 	if err = tx.QueryRow(ctx, "select transaction_timestamp()").Scan(&now); err != nil {

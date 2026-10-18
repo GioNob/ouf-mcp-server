@@ -24,6 +24,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/operational"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
+	"github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 )
 
 func main() {
@@ -51,6 +52,12 @@ func main() {
 		interval := flags.Duration("interval", 30*time.Second, "maintenance interval")
 		_ = flags.Parse(os.Args[2:])
 		runMaintenance(ctx, logger, databaseURL, *interval, *once)
+	case "migrate-semantic-reprocessing":
+		if err := runSemanticReprocessingMigration(ctx, databaseURL); err != nil {
+			logger.Error("semantic migration not proven", "code", "MCP_REPROCESSING_MIGRATION_UNPROVEN")
+			os.Exit(1)
+		}
+		logger.Info("semantic migration applied with no committed role membership")
 	case "migrate":
 		runMigrate(ctx, logger, databaseURL)
 	default:
@@ -76,6 +83,21 @@ func runMigrate(ctx context.Context, logger *slog.Logger, databaseURL string) {
 		os.Exit(1)
 	}
 	logger.Info("database migrations applied")
+}
+
+// This administrative mode is selected only by the separately authenticated
+// infrastructure installer. It never runs during server startup.
+func runSemanticReprocessingMigration(ctx context.Context, databaseURL string) error {
+	oid, e := strconv.ParseUint(os.Getenv("MCP_MIGRATION_DATABASE_OID"), 10, 32)
+	if e != nil || oid == 0 {
+		return pg.ErrReprocessingMigrationUnproven
+	}
+	store, e := pg.Open(ctx, databaseURL)
+	if e != nil {
+		return pg.ErrReprocessingMigrationUnproven
+	}
+	defer store.Close()
+	return pg.MigrateSemanticReprocessing(ctx, store.Pool(), os.Getenv("MCP_MIGRATION_APPLICATION_ROLE"), uint32(oid), os.Getenv("MCP_MIGRATION_RETENTION_FUNCTION_SHA256"))
 }
 
 func positiveIntEnv(name string, fallback int) (int, error) {
@@ -290,6 +312,10 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	if err := configureReprocessing(service, checksum); err != nil {
+		logger.Error("invalid semantic reprocessing configuration")
+		os.Exit(1)
+	}
 	aggregator := &operational.Aggregator{Caller: service, Self: store, ManifestChecksum: checksum}
 	var handler http.Handler
 	switch os.Getenv("MCP_MANAGED_UPLOAD_ENABLED") {
@@ -357,4 +383,59 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("HTTP server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// This deployment-only input does not add a tool argument or trust an agent's
+// self-asserted approval. Disabled unless all four pinned inputs are supplied.
+func configureReprocessing(service *orchestration.Service, manifest string) error {
+	profileFile, profileHash, permitFile, policyFile := os.Getenv("MCP_REPROCESSING_KEY_PROFILE_FILE"), os.Getenv("MCP_REPROCESSING_KEY_PROFILE_SHA256"), os.Getenv("MCP_REPROCESSING_PERMIT_FILE"), os.Getenv("MCP_REPROCESSING_EXISTING_POLICY_FILE")
+	if profileFile == "" && profileHash == "" && permitFile == "" && policyFile == "" {
+		return nil
+	}
+	if profileFile == "" || profileHash == "" || permitFile == "" || policyFile == "" {
+		return reprocessing.ErrPermit
+	}
+	profile, err := reprocessing.ReadDeploymentFile(profileFile)
+	if err != nil {
+		return err
+	}
+	envelope, err := reprocessing.ReadDeploymentFile(permitFile)
+	if err != nil {
+		return err
+	}
+	policy, err := reprocessing.ReadDeploymentFile(policyFile)
+	if err != nil {
+		return err
+	}
+	verified, err := reprocessing.VerifyDeployment(profile, policy, envelope, profileHash, manifest, time.Now())
+	// Expiry blocks only matching new work, not unrelated MCP capabilities.
+	// Retained expired metadata also survives a catalog upgrade; the guard
+	// below keeps strict current-manifest verification for every operation.
+	if err != nil && !errors.Is(err, reprocessing.ErrExpired) {
+		return err
+	}
+	service.Reprocessing = verified
+	service.ReprocessingGuard = func() error {
+		currentProfile, e := reprocessing.ReadDeploymentFile(profileFile)
+		if e != nil {
+			return e
+		}
+		currentEnvelope, e := reprocessing.ReadDeploymentFile(permitFile)
+		if e != nil {
+			return e
+		}
+		currentPolicy, e := reprocessing.ReadDeploymentFile(policyFile)
+		if e != nil {
+			return e
+		}
+		current, e := reprocessing.Verify(currentProfile, currentPolicy, currentEnvelope, profileHash, manifest, time.Now())
+		if e != nil {
+			return e
+		}
+		if current.Hash() != verified.Hash() {
+			return reprocessing.ErrPermit
+		}
+		return nil
+	}
+	return nil
 }
