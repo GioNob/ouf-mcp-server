@@ -29,8 +29,8 @@ func TestSourceRevisionUsesExactParentScopeAndStableCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ tool, capability, operation, mode string }{
-		{"source.onboarding.revision.prepare", "ouf.managed-source.onboarding.revision.prepare", "COMMAND", "prepare"},
-		{"source.onboarding.revision.read", "ouf.managed-source.onboarding.revision.read", "READ", "read"},
+		{"source.onboarding.revision.prepare", "ouf.onboarding.revision.prepare", "COMMAND", "prepare"},
+		{"source.onboarding.revision.read", "ouf.onboarding.revision.read", "READ", "read"},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			now := time.Now().UTC()
