@@ -54,7 +54,7 @@ func TestSemanticReprocessingDeploymentManifestUpgrade(t *testing.T) {
 			trust := reprocessing.TrustPolicy{Schema: "ouf.semantic-deployment-trust-policy.v1",
 				InstallationRef: "fixture", EntityRef: "fixture",
 				Keys: []reprocessing.TrustKey{{KeyRef: "installer", IssuerRef: "issuer",
-					Roles: []string{"DEPLOYMENT_INTENT", "FINAL_DEPLOYMENT_APPROVAL"},
+					Roles:     []string{"DEPLOYMENT_INTENT", "FINAL_DEPLOYMENT_APPROVAL"},
 					PublicKey: hex.EncodeToString(pub), NotBefore: now - 7200, ExpiresAt: now + 7200, State: "ACTIVE"}}}
 			policy := encode(trust)
 			profile := reprocessing.KeyProfile{Schema: "ouf.mcp-reprocessing-key-profile.v1", MaxSessionsPerTenant: 1,
