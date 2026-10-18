@@ -332,3 +332,27 @@ func ReadDeploymentFile(name string) ([]byte, error) {
 	}
 	return raw, nil
 }
+
+// VerifyDeployment preserves a cryptographically valid expired deployment
+// session across a manifest upgrade. It is only a bootstrap compatibility
+// check: an old manifest never receives new dispatch authority. Verify remains
+// strict and must still guard every matching operation.
+func VerifyDeployment(profileRaw, policyRaw, envelopeRaw []byte, expectedProfileHash, manifest string, now time.Time) (*VerifiedPermit, error) {
+	verified, err := Verify(profileRaw, policyRaw, envelopeRaw, expectedProfileHash, manifest, now)
+	if !errors.Is(err, ErrPermit) {
+		return verified, err
+	}
+	var envelope Envelope
+	var permit Permit
+	if !hash(manifest) || decode(envelopeRaw, &envelope) != nil || decode(envelope.Payload, &permit) != nil ||
+		permit.ManifestChecksum == manifest || now.Unix() < permit.ExpiresAt {
+		return nil, ErrPermit
+	}
+	// Treat the payload as untrusted until both existing role signatures and
+	// every original scope/limit/trust binding pass under its signed manifest.
+	historical, historicalErr := Verify(profileRaw, policyRaw, envelopeRaw, expectedProfileHash, permit.ManifestChecksum, now)
+	if historical == nil || !errors.Is(historicalErr, ErrExpired) {
+		return nil, ErrPermit
+	}
+	return historical, ErrExpired
+}

@@ -407,8 +407,10 @@ func configureReprocessing(service *orchestration.Service, manifest string) erro
 	if err != nil {
 		return err
 	}
-	verified, err := reprocessing.Verify(profile, policy, envelope, profileHash, manifest, time.Now())
+	verified, err := reprocessing.VerifyDeployment(profile, policy, envelope, profileHash, manifest, time.Now())
 	// Expiry blocks only matching new work, not unrelated MCP capabilities.
+	// Retained expired metadata also survives a catalog upgrade; the guard
+	// below keeps strict current-manifest verification for every operation.
 	if err != nil && !errors.Is(err, reprocessing.ErrExpired) {
 		return err
 	}
