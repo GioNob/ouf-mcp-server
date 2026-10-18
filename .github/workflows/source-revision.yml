@@ -1,0 +1,23 @@
+name: Generic source revision MCP qualification
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  sdk-gateway:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: 7b20f80ee47ae3855f9a500e234d85f4b9a7e2c0
+          path: .pairwise/source-revision-gateway
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: true}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install jsonschema
+      - run: test -z "$(gofmt -l internal/kernel/source_revision_test.go internal/kernel/source_review_authorization.go internal/kernel/kernel.go internal/adapter/httpclient/clients.go)"
+      - run: go test ./internal/kernel -run 'TestSourceRevisionUsesExactParentScopeAndStableCommand' -count=1 -v
+        env:
+          GATEWAY_SOURCE_REVISION_PAIRWISE_ROOT: ${{ github.workspace }}/.pairwise/source-revision-gateway
