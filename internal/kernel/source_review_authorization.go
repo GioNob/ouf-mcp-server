@@ -9,7 +9,7 @@ import (
 )
 
 func isSourceReviewCapability(id string) bool {
-	return id == "ouf.managed-source.onboarding.review.prepare" || id == "ouf.managed-source.onboarding.read"
+	return id == "ouf.managed-source.onboarding.review.prepare" || id == "ouf.managed-source.onboarding.read" || id == "ouf.onboarding.revision.prepare" || id == "ouf.onboarding.revision.read"
 }
 
 func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string) (string, orchestration.ResourceContext, error) {
@@ -17,7 +17,7 @@ func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid source review manifest binding")
 	}
 	expectedOperation := "READ"
-	if c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+	if isSourcePreparationCapability(c.CapabilityID) {
 		expectedOperation = "COMMAND"
 	}
 	if c.OperationClass != expectedOperation {
@@ -26,9 +26,20 @@ func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string
 	var input struct {
 		SourceID  string `json:"sourceId"`
 		VersionID string `json:"onboardingVersionId"`
+		ParentID  string `json:"parentVersionId"`
 	}
-	if err := json.Unmarshal(args, &input); err != nil || input.SourceID == "" || input.VersionID == "" {
+	if err := json.Unmarshal(args, &input); err != nil {
+		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid source review context")
+	}
+	if input.VersionID == "" && (c.CapabilityID == "ouf.onboarding.revision.prepare" || c.CapabilityID == "ouf.onboarding.revision.read") {
+		input.VersionID = input.ParentID
+	}
+	if input.SourceID == "" || input.VersionID == "" {
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid source review context")
 	}
 	return c.RequiredAuthorization, orchestration.ResourceContext{ResourceType: "source", ResourceID: input.SourceID, TenantID: tenant, Attributes: map[string]string{"onboardingVersionId": input.VersionID}}, nil
+}
+
+func isSourcePreparationCapability(id string) bool {
+	return id == "ouf.managed-source.onboarding.review.prepare" || id == "ouf.onboarding.revision.prepare"
 }
