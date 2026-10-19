@@ -137,6 +137,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
+	case "ouf.ingestion.status", "ouf.ingestion.history":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.operations.summary", "ouf.operations.incidents",
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
