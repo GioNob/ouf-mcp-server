@@ -1,0 +1,40 @@
+name: Ingestion exact Gateway route qualification
+on:
+  push:
+    branches: [fix/ingestion-read-gateway-binding-20261019]
+    paths: ['internal/adapter/httpclient/**', '.github/workflows/ingestion-read-transport.yml']
+permissions: {contents: read}
+jobs:
+  exact-owner-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {persist-credentials: false, fetch-depth: 2}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: dd8553da90d7a6cfc1083e1cf4d9075c09ee389b
+          path: .pairwise/gateway
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.9', cache: false}
+      - name: Match the actual pinned Gateway route contracts
+        run: |
+          cmp internal/adapter/httpclient/testdata/gateway-mcp-ingestion-status.yaml .pairwise/gateway/ouf-config/routes/northbound/mcp-ingestion-status.yaml
+          cmp internal/adapter/httpclient/testdata/gateway-mcp-ingestion-history.yaml .pairwise/gateway/ouf-config/routes/northbound/mcp-ingestion-history.yaml
+          test -z "$(gofmt -l internal/adapter/httpclient)"
+      - name: Reproduce the installed adapter failure before checking the correction
+        run: |
+          set -euo pipefail
+          fixed="$(mktemp)"
+          cp internal/adapter/httpclient/clients.go "$fixed"
+          trap 'cp "$fixed" internal/adapter/httpclient/clients.go' EXIT
+          git show a79b139c7a26d64a584b0a432ebb8df8c32a52ed:internal/adapter/httpclient/clients.go > internal/adapter/httpclient/clients.go
+          if go test ./internal/adapter/httpclient -run '^TestIngestionReadUsesReviewedGatewayBinding$' -count=1 > legacy-routing.log 2>&1; then
+            echo 'Unexpected legacy route acceptance'; exit 1
+          fi
+          grep -q 'status=400' legacy-routing.log
+          echo 'EXPECTED_LEGACY_ROUTING_DENIAL_CONFIRMED'
+      - name: Corrected HTTP transport and source-scoped official SDK authorization
+        run: go test -race ./internal/adapter/httpclient ./internal/kernel -run 'Test(Ingestion|OperationalDelegation|ObjectSearch)' -v -count=1
