@@ -1,3 +1,5 @@
+//go:build performance && !race
+
 package postgres
 
 import (
@@ -24,6 +26,7 @@ func TestBudgetReserveP95Under25msLANProfileFixture(t *testing.T) {
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	p95 := durations[(n*95)/100-1]
+	t.Logf("budget Reserve LAN profile: samples=%d p95=%s target<25ms instrumentation=none", n, p95)
 	if p95 >= 25*time.Millisecond {
 		t.Fatalf("budget Reserve p95=%s target<25ms in local PostgreSQL LAN-profile fixture", p95)
 	}
