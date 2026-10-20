@@ -27,7 +27,7 @@ func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string
 		SourceID  string `json:"sourceId"`
 		VersionID string `json:"onboardingVersionId"`
 		ParentID  string `json:"parentVersionId"`
-		View string `json:"view"`
+		View      string `json:"view"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid source review context")
