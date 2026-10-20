@@ -27,9 +27,18 @@ func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string
 		SourceID  string `json:"sourceId"`
 		VersionID string `json:"onboardingVersionId"`
 		ParentID  string `json:"parentVersionId"`
+		View      string `json:"view"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid source review context")
+	}
+	if input.View != "" {
+		if c.CapabilityID != "ouf.managed-source.onboarding.read" || input.View != "LATEST" || input.SourceID == "" || input.VersionID != "" || input.ParentID != "" {
+			return "", orchestration.ResourceContext{}, fmt.Errorf("invalid latest source review context")
+		}
+		// Coarse source authorization only. Onboarding selects the durable version
+		// and rechecks its current exact-version policy and tenant/subject ownership.
+		return c.RequiredAuthorization, orchestration.ResourceContext{ResourceType: "source", ResourceID: input.SourceID, TenantID: tenant}, nil
 	}
 	if input.VersionID == "" && (c.CapabilityID == "ouf.onboarding.revision.prepare" || c.CapabilityID == "ouf.onboarding.revision.read") {
 		input.VersionID = input.ParentID

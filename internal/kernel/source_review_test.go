@@ -24,22 +24,36 @@ import (
 func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	const version = "11111111-1111-4111-8111-111111111111"
 	const executionJSON = `{"semanticBindings":[{"semanticId":"urn:test:theatres","semanticVersion":"1.0.0","revisionId":"11111111-1111-4111-8111-111111111111","publicationSetId":"22222222-2222-4222-8222-222222222222"}],"semanticPublicationSetRef":"22222222-2222-4222-8222-222222222222","udp":{"resolution":{"strategyId":"GOVERNED_IDENTITY","strategyVersion":"1","policyRef":"urn:test:identity","governedIdentity":{"ref":"urn:test:identity","version":"1","tenantId":"tenant-a","canonicalClass":"https://schema.org/PerformingArtsTheater","sourceId":"theatres","maxCandidates":10,"allowAutoNew":true,"signals":[{"id":"name","semanticRef":"https://schema.org/name@22222222-2222-4222-8222-222222222222","comparator":"TEXT_V1","excludesOnDisagreement":false,"uniqueWithinScope":false,"assertionRef":"urn:test:human-review"}],"sufficientRules":[{"id":"name-rule","signalIds":["name"],"assertionRef":"urn:test:human-review"}]}},"materialization":{"policyRef":"urn:test:materialization","properties":[{"sourceField":"https://schema.org/name","propertyIri":"https://schema.org/name","datatype":"http://www.w3.org/2001/XMLSchema#string","accessLabel":"RESTRICTED","authorityOrder":["theatres"]}],"bitemporalProperties":[],"checkpointInterval":1}},"limits":{"maxRows":100,"maxColumns":20,"maxCellChars":1000}}`
-	var execution map[string]any
-	if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ tool, capability, operation, mode string }{
-		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare"},
-		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read"},
+	for _, tc := range []struct {
+		tool, capability, operation, mode, datatype string
+		latest                                      bool
+	}{
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "string", false},
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "decimal", false},
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "date", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", "string", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", "string", true},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
+			var execution map[string]any
+			if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
+				t.Fatal(err)
+			}
+			udp := execution["udp"].(map[string]any)
+			materialization := udp["materialization"].(map[string]any)
+			property := materialization["properties"].([]any)[0].(map[string]any)
+			property["datatype"] = "http://www.w3.org/2001/XMLSchema#" + tc.datatype
 			now := time.Now().UTC()
+			attrs := map[string]string{"onboardingVersionId": version}
+			if tc.latest {
+				attrs = nil
+			}
 			cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{
 				BundleID: "source-review", BundleVersion: 1, ActivatedAt: now,
 				Bundle: authorization.PolicyBundle{BundleID: "source-review", Version: 1, PublishedAt: now,
 					Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.capability, Operation: tc.operation, RequiredScope: tc.capability, AllowedActors: []string{"HUMAN"}}},
 					Grants: []authorization.Grant{{GrantID: "source-review", CapabilityID: tc.capability, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
-						Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "source", ResourceID: "theatres", ResourceAttributes: map[string]string{"onboardingVersionId": version}}}},
+						Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "source", ResourceID: "theatres", ResourceAttributes: attrs}}},
 				},
 			}})
 			if err := cache.Refresh(context.Background()); err != nil {
@@ -69,7 +83,7 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				if tc.operation == "COMMAND" && !reflect.DeepEqual(args["executionProposal"], execution) {
 					t.Error("typed execution proposal changed")
 				}
-				if args["sourceId"] != "theatres" || args["onboardingVersionId"] != version {
+				if args["sourceId"] != "theatres" || (!tc.latest && args["onboardingVersionId"] != version) || (tc.latest && (args["view"] != "LATEST" || args["onboardingVersionId"] != nil)) {
 					t.Error("source/version binding lost")
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -97,6 +111,10 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				}
 				for _, source := range []string{"theatres", "other-source"} {
 					args := map[string]any{"sourceId": source, "onboardingVersionId": version}
+					if tc.latest {
+						delete(args, "onboardingVersionId")
+						args["view"] = "LATEST"
+					}
 					if tc.operation == "COMMAND" {
 						args["expectedVersion"] = 0
 						args["commandKey"] = "review-theatres-1"
