@@ -28,18 +28,21 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ tool, capability, operation, mode string }{
-		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare"},
-		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read"},
+	for _, tc := range []struct{ tool, capability, operation, mode string; latest bool }{
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", true},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			now := time.Now().UTC()
+			attrs := map[string]string{"onboardingVersionId": version}
+			if tc.latest { attrs = nil }
 			cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{
 				BundleID: "source-review", BundleVersion: 1, ActivatedAt: now,
 				Bundle: authorization.PolicyBundle{BundleID: "source-review", Version: 1, PublishedAt: now,
 					Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.capability, Operation: tc.operation, RequiredScope: tc.capability, AllowedActors: []string{"HUMAN"}}},
 					Grants: []authorization.Grant{{GrantID: "source-review", CapabilityID: tc.capability, TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
-						Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "source", ResourceID: "theatres", ResourceAttributes: map[string]string{"onboardingVersionId": version}}}},
+						Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "source", ResourceID: "theatres", ResourceAttributes: attrs}}},
 				},
 			}})
 			if err := cache.Refresh(context.Background()); err != nil {
@@ -55,7 +58,9 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 					t.Fatal(err)
 				}
-				assertGatewayDispatchSchema(t, "GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT", "mcp-gateway-onboarding-"+tc.mode+"-dispatch-v1.json", in)
+				if !tc.latest {
+					assertGatewayDispatchSchema(t, "GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT", "mcp-gateway-onboarding-"+tc.mode+"-dispatch-v1.json", in)
+				}
 				if in.CapabilityID != tc.capability || in.Owner != "onboarding" || in.OperationClass != tc.operation || in.MaxResultBytes != 65536 {
 					t.Error("owner or result bound changed")
 				}
@@ -69,7 +74,7 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				if tc.operation == "COMMAND" && !reflect.DeepEqual(args["executionProposal"], execution) {
 					t.Error("typed execution proposal changed")
 				}
-				if args["sourceId"] != "theatres" || args["onboardingVersionId"] != version {
+				if args["sourceId"] != "theatres" || (!tc.latest && args["onboardingVersionId"] != version) || (tc.latest && (args["view"] != "LATEST" || args["onboardingVersionId"] != nil)) {
 					t.Error("source/version binding lost")
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -97,6 +102,7 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				}
 				for _, source := range []string{"theatres", "other-source"} {
 					args := map[string]any{"sourceId": source, "onboardingVersionId": version}
+					if tc.latest { delete(args, "onboardingVersionId"); args["view"] = "LATEST" }
 					if tc.operation == "COMMAND" {
 						args["expectedVersion"] = 0
 						args["commandKey"] = "review-theatres-1"
