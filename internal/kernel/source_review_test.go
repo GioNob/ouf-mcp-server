@@ -28,7 +28,10 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ tool, capability, operation, mode string; latest bool }{
+	for _, tc := range []struct {
+		tool, capability, operation, mode string
+		latest                            bool
+	}{
 		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", false},
 		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", false},
 		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", true},
@@ -36,7 +39,9 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 		t.Run(tc.tool, func(t *testing.T) {
 			now := time.Now().UTC()
 			attrs := map[string]string{"onboardingVersionId": version}
-			if tc.latest { attrs = nil }
+			if tc.latest {
+				attrs = nil
+			}
 			cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{
 				BundleID: "source-review", BundleVersion: 1, ActivatedAt: now,
 				Bundle: authorization.PolicyBundle{BundleID: "source-review", Version: 1, PublishedAt: now,
@@ -102,7 +107,10 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				}
 				for _, source := range []string{"theatres", "other-source"} {
 					args := map[string]any{"sourceId": source, "onboardingVersionId": version}
-					if tc.latest { delete(args, "onboardingVersionId"); args["view"] = "LATEST" }
+					if tc.latest {
+						delete(args, "onboardingVersionId")
+						args["view"] = "LATEST"
+					}
 					if tc.operation == "COMMAND" {
 						args["expectedVersion"] = 0
 						args["commandKey"] = "review-theatres-1"
