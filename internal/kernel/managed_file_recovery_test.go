@@ -43,6 +43,7 @@ func TestOwnedAssetRecoveryAcrossIndependentSDKClients(t *testing.T) {
 			t.Error(err)
 			return
 		}
+		assertGatewayDispatchSchema(t, "GATEWAY_CSV_RECOVERY_PAIRWISE_ROOT", "mcp-gateway-managed-file-dispatch-v1.json", in)
 		var args map[string]any
 		if err := json.Unmarshal(in.Arguments, &args); err != nil {
 			t.Error(err)

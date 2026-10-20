@@ -63,9 +63,7 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 					t.Fatal(err)
 				}
-				if !tc.latest {
-					assertGatewayDispatchSchema(t, "GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT", "mcp-gateway-onboarding-"+tc.mode+"-dispatch-v1.json", in)
-				}
+				assertGatewayDispatchSchema(t, "GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT", "mcp-gateway-onboarding-"+tc.mode+"-dispatch-v1.json", in)
 				if in.CapabilityID != tc.capability || in.Owner != "onboarding" || in.OperationClass != tc.operation || in.MaxResultBytes != 65536 {
 					t.Error("owner or result bound changed")
 				}
