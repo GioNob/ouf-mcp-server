@@ -24,19 +24,25 @@ import (
 func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	const version = "11111111-1111-4111-8111-111111111111"
 	const executionJSON = `{"semanticBindings":[{"semanticId":"urn:test:theatres","semanticVersion":"1.0.0","revisionId":"11111111-1111-4111-8111-111111111111","publicationSetId":"22222222-2222-4222-8222-222222222222"}],"semanticPublicationSetRef":"22222222-2222-4222-8222-222222222222","udp":{"resolution":{"strategyId":"GOVERNED_IDENTITY","strategyVersion":"1","policyRef":"urn:test:identity","governedIdentity":{"ref":"urn:test:identity","version":"1","tenantId":"tenant-a","canonicalClass":"https://schema.org/PerformingArtsTheater","sourceId":"theatres","maxCandidates":10,"allowAutoNew":true,"signals":[{"id":"name","semanticRef":"https://schema.org/name@22222222-2222-4222-8222-222222222222","comparator":"TEXT_V1","excludesOnDisagreement":false,"uniqueWithinScope":false,"assertionRef":"urn:test:human-review"}],"sufficientRules":[{"id":"name-rule","signalIds":["name"],"assertionRef":"urn:test:human-review"}]}},"materialization":{"policyRef":"urn:test:materialization","properties":[{"sourceField":"https://schema.org/name","propertyIri":"https://schema.org/name","datatype":"http://www.w3.org/2001/XMLSchema#string","accessLabel":"RESTRICTED","authorityOrder":["theatres"]}],"bitemporalProperties":[],"checkpointInterval":1}},"limits":{"maxRows":100,"maxColumns":20,"maxCellChars":1000}}`
-	var execution map[string]any
-	if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
-		tool, capability, operation, mode string
-		latest                            bool
+		tool, capability, operation, mode, datatype string
+		latest                                      bool
 	}{
-		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", false},
-		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", false},
-		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", true},
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "string", false},
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "decimal", false},
+		{"source.onboarding.review.prepare", "ouf.managed-source.onboarding.review.prepare", "COMMAND", "review-prepare", "date", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", "string", false},
+		{"source.onboarding.read", "ouf.managed-source.onboarding.read", "READ", "review-read", "string", true},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
+			var execution map[string]any
+			if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
+				t.Fatal(err)
+			}
+			udp := execution["udp"].(map[string]any)
+			materialization := udp["materialization"].(map[string]any)
+			property := materialization["properties"].([]any)[0].(map[string]any)
+			property["datatype"] = "http://www.w3.org/2001/XMLSchema#" + tc.datatype
 			now := time.Now().UTC()
 			attrs := map[string]string{"onboardingVersionId": version}
 			if tc.latest {

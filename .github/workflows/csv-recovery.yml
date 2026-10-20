@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: GioNob/ouf-api-gateway
-          ref: e0eda7e281b548ae27553ac06055825808dbbf19
+          ref: c22fbf7f5593f612aba7e318797c9459d0b871a7
           path: .pairwise/csv-recovery-gateway
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.9', cache: true}
