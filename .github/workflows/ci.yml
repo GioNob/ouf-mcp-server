@@ -56,6 +56,17 @@ jobs:
       - run: ./build/ouf-mcp maintenance-worker --once
       - run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: Retain qualified MCP image without target activation
+        run: |
+          mkdir -p build/acquisition-release
+          docker image inspect --format '{{.Id}}' ouf-mcp:ci > build/acquisition-release/image-id.txt
+          docker image inspect ouf-mcp:ci > build/acquisition-release/image-config.json
+          docker save ouf-mcp:ci | gzip -1 > build/acquisition-release/image.tar.gz
+          printf '%s\n' "$GITHUB_SHA" > build/acquisition-release/source-commit.txt
+          cp internal/manifest/capabilities.json build/acquisition-release/
+          cd build/acquisition-release && sha256sum image.tar.gz image-id.txt image-config.json source-commit.txt capabilities.json > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with: {name: 'acquisition-mcp-image-${{ github.run_id }}', path: build/acquisition-release/, retention-days: 30}
       - if: always()
         uses: actions/upload-artifact@v4
         with:
