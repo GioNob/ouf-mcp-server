@@ -24,7 +24,7 @@ func TestPermissionUnionBranchesAreCompleteClientContracts(t *testing.T) {
 		}
 		var cases []string
 		if c.CapabilityID == "authorization.permissions.read" {
-			cases = []string{`{"view":"ROLES"}`, `{"subjectId":"operator","limit":10}`, `{"externalRoleRef":"reviewers"}`}
+			cases = []string{`{"view":"ROLES"}`, `{"view":"CAPABILITIES"}`, `{"subjectId":"operator","limit":10}`, `{"externalRoleRef":"reviewers"}`}
 		} else {
 			cases = []string{`{"operation":"REVOKE","grantId":"old","reason":"review"}`, `{"operation":"REPLACE_ROLES","reason":"review","roleCatalogue":{"issuer":"https://iam.example","roles":[],"assignments":[]}}`}
 		}

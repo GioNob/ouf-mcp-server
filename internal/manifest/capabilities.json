@@ -697,7 +697,7 @@
     {
       "toolName": "authorization.permissions.read",
       "capabilityId": "authorization.permissions.read",
-      "purpose": "Inspect configured grants or the OUF application-role catalogue in the caller tenant; view ROLES returns roles and nominal/organizational assignments, not an IAM directory",
+      "purpose": "Inspect configured grants, the tenant role catalogue, or active HUMAN-compatible capability descriptors; view CAPABILITIES supports complete role proposals",
       "useWhen": [
         "an authorized user requests permission administration"
       ],
@@ -766,7 +766,8 @@
             "type": "string",
             "enum": [
               "GRANTS",
-              "ROLES"
+              "ROLES",
+              "CAPABILITIES"
             ]
           }
         },
@@ -804,7 +805,8 @@
                 "type": "string",
                 "enum": [
                   "GRANTS",
-                  "ROLES"
+                  "ROLES",
+                  "CAPABILITIES"
                 ],
                 "const": "ROLES"
               }
@@ -875,7 +877,80 @@
                 "type": "string",
                 "enum": [
                   "GRANTS",
-                  "ROLES"
+                  "ROLES",
+                  "CAPABILITIES"
+                ],
+                "const": "CAPABILITIES"
+              }
+            },
+            "required": [
+              "view"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "subjectId"
+                  ]
+                },
+                {
+                  "required": [
+                    "externalRoleRef"
+                  ]
+                },
+                {
+                  "required": [
+                    "limit"
+                  ]
+                },
+                {
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "required": [
+                    "policyRef"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "subjectId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "externalRoleRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              },
+              "after": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "policyRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "view": {
+                "type": "string",
+                "enum": [
+                  "GRANTS",
+                  "ROLES",
+                  "CAPABILITIES"
                 ],
                 "const": "GRANTS"
               }
@@ -914,7 +989,8 @@
                     "type": "string",
                     "enum": [
                       "GRANTS",
-                      "ROLES"
+                      "ROLES",
+                      "CAPABILITIES"
                     ],
                     "const": "GRANTS"
                   }
@@ -961,7 +1037,8 @@
                     "type": "string",
                     "enum": [
                       "GRANTS",
-                      "ROLES"
+                      "ROLES",
+                      "CAPABILITIES"
                     ],
                     "const": "GRANTS"
                   }
@@ -2822,7 +2899,7 @@
     {
       "toolName": "semantic.proposal.read",
       "capabilityId": "ouf.semantic.proposal.read",
-      "purpose": "Read this caller\u2019s durable semantic command receipt after interruption",
+      "purpose": "Read this caller’s durable semantic command receipt after interruption",
       "useWhen": [
         "preparing authorized native semantic proposals for human review"
       ],
@@ -3027,7 +3104,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user\u2019s file"
+        "the user has no asset ID or wants to read a different user’s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -3081,7 +3158,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user\u2019s file"
+        "the user has no asset ID or wants to read a different user’s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"

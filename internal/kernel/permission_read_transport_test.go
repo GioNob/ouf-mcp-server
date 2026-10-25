@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,11 +37,15 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 		}
 		var args map[string]any
 		json.Unmarshal(in.Arguments, &args)
-		if (args["subjectId"] != "user-a" && args["externalRoleRef"] != "reviewers" && args["view"] != "ROLES") || in.OperationClass != "READ" || in.Owner != "authorization" || in.Identity.Delegation != "" {
+		if (args["subjectId"] != "user-a" && args["externalRoleRef"] != "reviewers" && args["view"] != "ROLES" && args["view"] != "CAPABILITIES") || in.OperationClass != "READ" || in.Owner != "authorization" || in.Identity.Delegation != "" {
 			t.Error("proposal arguments or owner changed")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"grants":[],"nextAfter":""}`)
+		if args["view"] == "CAPABILITIES" {
+			io.WriteString(w, `[{"capabilityId":"ingestion.run.read","operation":"READ","requiredScope":"ingestion.run.read","allowedActors":["HUMAN"]}]`)
+		} else {
+			io.WriteString(w, `{"grants":[],"nextAfter":""}`)
+		}
 	}))
 	defer gateway.Close()
 	u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
@@ -73,7 +78,7 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 				t.Fatal("read mislabelled")
 			}
 		}
-		for _, args := range []map[string]any{{"subjectId": "user-a"}, {"view": "GRANTS", "subjectId": "user-a", "limit": 200}, {"externalRoleRef": "reviewers"}, {"view": "ROLES"}} {
+		for _, args := range []map[string]any{{"subjectId": "user-a"}, {"view": "GRANTS", "subjectId": "user-a", "limit": 200}, {"externalRoleRef": "reviewers"}, {"view": "ROLES"}, {"view": "CAPABILITIES"}} {
 			before := calls.Load()
 			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: capID, Arguments: args})
 			if err != nil {
@@ -82,6 +87,12 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 			if scope == capID {
 				if result.IsError || calls.Load() != before+1 {
 					t.Fatalf("read selector failed: %+v", result)
+				}
+				if args["view"] == "CAPABILITIES" {
+					raw, _ := json.Marshal(result)
+					if !strings.Contains(string(raw), "ingestion.run.read") {
+						t.Fatal("capability descriptor response lost in MCP transport")
+					}
 				}
 			} else if !result.IsError || calls.Load() != before {
 				t.Fatal("unauthorized read reached Gateway")
