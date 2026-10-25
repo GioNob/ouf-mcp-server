@@ -28,6 +28,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"authorization.permissions.propose",
 		"authorization.permissions.read",
 		"authorization.proposal.read",
+		"ouf.ingestion.acquisition.read",
 		"ouf.ingestion.history",
 		"ouf.ingestion.status",
 		"ouf.operations.explain",
@@ -48,6 +49,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"source.onboarding.review.prepare",
 		"source.onboarding.revision.prepare",
 		"source.onboarding.revision.read",
+		"urban.acquisition.read",
 		"urban.object.related_search",
 		"urban.object.search",
 	}

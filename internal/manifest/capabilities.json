@@ -2822,7 +2822,7 @@
     {
       "toolName": "semantic.proposal.read",
       "capabilityId": "ouf.semantic.proposal.read",
-      "purpose": "Read this caller’s durable semantic command receipt after interruption",
+      "purpose": "Read this caller\u2019s durable semantic command receipt after interruption",
       "useWhen": [
         "preparing authorized native semantic proposals for human review"
       ],
@@ -3027,7 +3027,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user’s file"
+        "the user has no asset ID or wants to read a different user\u2019s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -3081,7 +3081,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user’s file"
+        "the user has no asset ID or wants to read a different user\u2019s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -4205,6 +4205,150 @@
             }
           }
         ]
+      }
+    },
+    {
+      "toolName": "ouf.ingestion.acquisition.read",
+      "capabilityId": "ouf.ingestion.acquisition.read",
+      "purpose": "Read minimized acquisition evidence for one exact existing source and run",
+      "useWhen": [
+        "verify pinned contracts, ACK and watermark"
+      ],
+      "doNotUseWhen": [
+        "raw payloads, credentials, unbounded history or execution of an acquisition are requested"
+      ],
+      "preferredAlternatives": [
+        "ouf.ingestion.status",
+        "ouf.ingestion.history"
+      ],
+      "operationalLimits": {
+        "maxLimit": 100,
+        "maxPropertiesPerHandoff": 200
+      },
+      "resultSemantics": "Bounded owner snapshot with explicit redaction/truncation; not E2E acceptance",
+      "securityNotes": [
+        "Exact tenant/source/run policy checks; every contributing read permission is required by owner",
+        "No raw CSV, raw paths, credentials or source-object keys; permanent denial is not automatically retried",
+        "ACK, durable intake and materialization are separate facts"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "ingestion",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ingestion.lineage.read",
+      "gatewayBindingRef": "capability://ouf.ingestion.acquisition.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 12000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceId",
+          "runId"
+        ],
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "runId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "afterLineageId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "urban.acquisition.read",
+      "capabilityId": "urban.acquisition.read",
+      "purpose": "Read minimized acquisition evidence for one exact existing source and run",
+      "useWhen": [
+        "verify retained intake, materialization and property provenance"
+      ],
+      "doNotUseWhen": [
+        "raw payloads, credentials, unbounded history or execution of an acquisition are requested"
+      ],
+      "preferredAlternatives": [
+        "urban.object.search"
+      ],
+      "operationalLimits": {
+        "maxLimit": 100,
+        "maxPropertiesPerHandoff": 200
+      },
+      "resultSemantics": "Bounded owner snapshot with explicit redaction/truncation; not E2E acceptance",
+      "securityNotes": [
+        "Exact tenant/source/run policy checks; every contributing read permission is required by owner",
+        "No raw CSV, raw paths, credentials or source-object keys; permanent denial is not automatically retried",
+        "ACK, durable intake and materialization are separate facts"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "udp",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "lineage.object.read",
+      "gatewayBindingRef": "capability://urban.acquisition.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 12000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceId",
+          "runId"
+        ],
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "runId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "afterHandoffId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
       }
     }
   ]
