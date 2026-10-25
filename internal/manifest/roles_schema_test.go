@@ -34,6 +34,13 @@ func TestApplicationRoleInputsRemainClosedAndProposalOnly(t *testing.T) {
 		valid      bool
 	}{
 		{"read", `{"view":"ROLES"}`, true},
+		{"read", `{"view":"CAPABILITIES"}`, true},
+		{"read", `{"view":"CAPABILITIES","subjectId":"person"}`, false},
+		{"read", `{"view":"CAPABILITIES","externalRoleRef":"person"}`, false},
+		{"read", `{"view":"CAPABILITIES","limit":10}`, false},
+		{"read", `{"view":"CAPABILITIES","after":"person"}`, false},
+		{"read", `{"view":"CAPABILITIES","policyRef":"person"}`, false},
+		{"read", `{"view":"CAPABILITIES","tenantId":"person"}`, false},
 		{"read", `{"subjectId":"person"}`, true},
 		{"read", `{"view":"ROLES","subjectId":"person"}`, false},
 		{"read", `{"view":"ROLES","tenantId":"other"}`, false},

@@ -294,6 +294,10 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	if isAcquisitionRead(c.CapabilityID) {
+		registerAcquisitionReadTool(server, c, snapshot, service)
+		return
+	}
 	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
@@ -377,6 +381,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
+	if isAcquisitionRead(c.CapabilityID) {
+		authorizationCapability, resource, err = acquisitionReadAuthorization(c, args, identity.TenantID)
+	}
 	if isSemanticProposalCapability(c.CapabilityID) {
 		authorizationCapability, resource, err = semanticProposalAuthorization(c, args, identity.TenantID)
 		if c.OperationClass == "COMMAND" {
@@ -403,6 +410,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	if err != nil {
 		code := "INVALID_INGESTION_READ_CONTEXT"
+		if isAcquisitionRead(c.CapabilityID) {
+			code = "INVALID_ACQUISITION_READ_CONTEXT"
+		}
 		if isSemanticProposalCapability(c.CapabilityID) {
 			code = "INVALID_SEMANTIC_PROPOSAL_CONTEXT"
 		}
@@ -412,6 +422,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult(code, false), nil, nil
 	}
 	timeout := 3 * time.Second
+	if isAcquisitionRead(c.CapabilityID) {
+		timeout = 12 * time.Second
+	}
 	if isSourcePreparationCapability(c.CapabilityID) {
 		timeout = 10 * time.Second
 	}

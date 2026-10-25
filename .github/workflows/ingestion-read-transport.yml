@@ -18,7 +18,7 @@ jobs:
           path: .pairwise/gateway
           persist-credentials: false
       - uses: actions/setup-go@v6
-        with: {go-version: '1.26.9', cache: false}
+        with: {go-version: '1.26.10', cache: false}
       - name: Match the actual pinned Gateway route contracts
         run: |
           cmp internal/adapter/httpclient/testdata/gateway-mcp-ingestion-status.yaml .pairwise/gateway/ouf-config/routes/northbound/mcp-ingestion-status.yaml
