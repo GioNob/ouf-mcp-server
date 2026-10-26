@@ -1,0 +1,29 @@
+name: Acquisition denial safe diagnostics
+on:
+  push:
+    branches: [fix/acquisition-denial-diagnostics-20261026]
+  pull_request:
+    paths: ['internal/kernel/**', 'internal/orchestration/**', '.github/workflows/acquisition-denial-diagnostics.yml']
+permissions: {contents: read}
+jobs:
+  formatting:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.10', cache: true}
+      - run: |
+          gofmt -d internal/kernel/acquisition_denial.go internal/kernel/acquisition_denial_test.go internal/orchestration/service.go internal/orchestration/authorization_denial_test.go
+          test -z "$(gofmt -l internal/kernel/acquisition_denial.go internal/kernel/acquisition_denial_test.go internal/orchestration/service.go internal/orchestration/authorization_denial_test.go)"
+  actual-sdk-policy-and-pre-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.10', cache: true}
+      - name: Actual SDK, cache and TLS transport; synthetic authorities and owner
+        run: go test -race ./internal/kernel ./internal/orchestration -run 'TestAcquisitionDenial|TestDenialKeepsCurrentDecision|TestMissingDelegationCannot' -v -count=1
+      - name: Existing denial and acquisition regressions
+        run: go test -race ./internal/kernel ./internal/orchestration ./internal/authorization -run 'TestAcquisition|TestAuthorizationDenialPrecedes|TestCache|TestAdmissionDenial' -v -count=1
