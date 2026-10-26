@@ -24,6 +24,17 @@ var (
 	ErrToolSelectionStall = errors.New("tool selection stalled")
 )
 
+// AuthorizationDeniedError preserves the local decision without making it an
+// authority, a retry instruction, or a container for principal/credential data.
+// Error and Unwrap preserve existing errors.Is and generic-tool contracts.
+type AuthorizationDeniedError struct {
+	ReasonCode    string
+	PolicyVersion int64
+}
+
+func (e *AuthorizationDeniedError) Error() string { return ErrUnauthorized.Error() }
+func (e *AuthorizationDeniedError) Unwrap() error { return ErrUnauthorized }
+
 type IdentityClaims struct {
 	ExternalRoleRefs []string  `json:"externalRoleRefs"`
 	Acr              string    `json:"acr"`
@@ -183,7 +194,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, fmt.Errorf("invalid governed invocation")
 	}
 	if s.RequireDelegation && in.Identity.Delegation == "" {
-		return Result{}, ErrUnauthorized
+		return Result{}, &AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
 	}
 	if in.Upload != nil && (in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Reader == nil || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024) {
 		return Result{}, fmt.Errorf("invalid governed upload")
@@ -232,7 +243,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 				AuthorizationDecisionRef: decision.DecisionRef,
 			})
 		}
-		return Result{}, ErrUnauthorized
+		return Result{}, &AuthorizationDeniedError{ReasonCode: decision.DecisionCode, PolicyVersion: decision.BundleVersion}
 	}
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
