@@ -1,0 +1,23 @@
+name: CSV durable recovery owner contracts
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  sdk-owner-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: c22fbf7f5593f612aba7e318797c9459d0b871a7
+          path: .pairwise/csv-recovery-gateway
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.10', cache: true}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install jsonschema
+      - run: go test ./internal/kernel -run 'TestSourceReviewUsesExactVersionScopeAndStableCommand|TestOwnedAssetRecoveryAcrossIndependentSDKClients|TestLatestReviewAuthorizationDoesNotInventVersionAuthority' -count=1 -v
+        env:
+          GATEWAY_SOURCE_REVIEW_PAIRWISE_ROOT: ${{ github.workspace }}/.pairwise/csv-recovery-gateway
+          GATEWAY_CSV_RECOVERY_PAIRWISE_ROOT: ${{ github.workspace }}/.pairwise/csv-recovery-gateway
