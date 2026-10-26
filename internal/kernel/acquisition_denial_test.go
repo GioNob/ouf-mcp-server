@@ -51,7 +51,7 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 					TenantID: "tenant-a", SubjectID: "user-a", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(time.Hour),
 					Constraints: &authorization.GrantConstraints{Effect: "ALLOW",
 						ResourceAttributes: map[string]string{"module": module, "sourceRef": "source-a", "jobRef": "11111111-1111-4111-8111-111111111111", "detailLevel": "TENANT_OPERATIONAL"},
-						AllowedDataLabels: []string{"ANONYMOUS", "OPEN"}, AllowedDetailLevels: []string{"TENANT_OPERATIONAL"}}}
+						AllowedDataLabels:  []string{"ANONYMOUS", "OPEN"}, AllowedDetailLevels: []string{"TENANT_OPERATIONAL"}}}
 				if scenario.name == "expired-grant" {
 					grant.ValidUntil = now.Add(-time.Second)
 				}
