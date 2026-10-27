@@ -59,7 +59,7 @@ func TestManagedProfileJobSDKUsesRealPolicyBeforeDispatch(t *testing.T) {
 				GrantID: "one-job", CapabilityID: capID, TenantID: "tenant-a", SubjectID: "user-a",
 				ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
 				Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "managed-profile-job", ResourceID: profileJob,
-					ResourceAttributes: map[string]string{"module": "ONBOARDING", "assetRef": profileAsset, "jobRef": profileJob},
+					ResourceAttributes:  map[string]string{"module": "ONBOARDING", "assetRef": profileAsset, "jobRef": profileJob},
 					AllowedDetailLevels: []string{"TENANT_OPERATIONAL"}},
 			}},
 		},
@@ -86,7 +86,7 @@ func TestManagedProfileJobSDKUsesRealPolicyBeforeDispatch(t *testing.T) {
 	endpoint, _ := url.Parse(gateway.URL)
 	admission := &statusAdmission{}
 	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: admission,
-		Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")},
+		Gateway:        &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")},
 		FingerprintKey: make([]byte, 32)}
 	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
 	if err != nil {
@@ -94,8 +94,8 @@ func TestManagedProfileJobSDKUsesRealPolicyBeforeDispatch(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, subject, tenant, scope string
-		args                        map[string]any
-		allowed                     bool
+		args                         map[string]any
+		allowed                      bool
 	}{
 		{"exact-job", "user-a", "tenant-a", capID, map[string]any{"assetId": profileAsset, "jobId": profileJob}, true},
 		{"other-job", "user-a", "tenant-a", capID, map[string]any{"assetId": profileAsset, "jobId": otherProfileJob}, false},
