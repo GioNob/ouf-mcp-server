@@ -381,6 +381,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
+	if c.CapabilityID == "ouf.managed-source.preview" {
+		authorizationCapability, resource, err = managedProfileJobAuthorization(c, args, identity.TenantID)
+	}
 	if isAcquisitionRead(c.CapabilityID) {
 		authorizationCapability, resource, err = acquisitionReadAuthorization(c, args, identity.TenantID)
 	}
@@ -410,6 +413,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	if err != nil {
 		code := "INVALID_INGESTION_READ_CONTEXT"
+		if c.CapabilityID == "ouf.managed-source.preview" {
+			code = "INVALID_MANAGED_PROFILE_JOB_CONTEXT"
+		}
 		if isAcquisitionRead(c.CapabilityID) {
 			code = "INVALID_ACQUISITION_READ_CONTEXT"
 		}
@@ -430,7 +436,7 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
-		if isAcquisitionRead(c.CapabilityID) {
+		if isAcquisitionRead(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" {
 			return acquisitionErrorResult(err), nil, nil
 		}
 		return errorResult(err.Error(), false), nil, nil
