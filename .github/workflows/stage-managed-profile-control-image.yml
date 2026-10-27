@@ -1,0 +1,61 @@
+name: Stage retained managed CSV control image
+on:
+  push:
+    branches: [delivery/managed-profile-control-image-20261027-v1]
+    paths: ['.github/workflows/stage-managed-profile-control-image.yml']
+permissions: {contents: write, actions: read}
+concurrency: {group: managed-profile-control-image-12761775539, cancel-in-progress: false}
+jobs:
+  stage-original-ci-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DELIVERY_BRANCH: artifact/managed-profile-control-image-20261027-v1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {persist-credentials: false}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: GioNob/ouf-deploy
+          ref: a91c95c668432f0e82e31b3f716becf9a1ef857f
+          path: .pairwise/deploy
+          persist-credentials: false
+      - name: Reused custody regressions
+        run: python3 -m unittest discover -s .pairwise/deploy/tests -p test_managed_profile_control_image.py -v
+      - name: Refuse an existing immutable delivery branch
+        run: |
+          set +e
+          git ls-remote --exit-code --heads https://github.com/GioNob/ouf-mcp-server.git "refs/heads/$DELIVERY_BRANCH"
+          lookup_exit=$?
+          set -e
+          test "$lookup_exit" = 2
+      - name: Verify original artifact and successful source run
+        run: |
+          gh api repos/GioNob/ouf-mcp-server/actions/artifacts/12761775539 > "$RUNNER_TEMP/artifact.json"
+          gh api repos/GioNob/ouf-mcp-server/actions/runs/40560685583 > "$RUNNER_TEMP/run.json"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          case=json.loads(Path('.pairwise/deploy/releases/managed-profile-control-mcp-image-case-20261027.json').read_bytes())
+          root=Path(os.environ['RUNNER_TEMP']);artifact=json.loads((root/'artifact.json').read_bytes());run=json.loads((root/'run.json').read_bytes())
+          assert artifact['id']==case['artifactId'] and artifact['size_in_bytes']==case['artifactZipBytes']
+          assert artifact['digest']=='sha256:'+case['artifactZipSha256'] and artifact['expired'] is False
+          assert artifact['workflow_run']['id']==run['id']==case['workflowRunId']
+          assert run['status']=='completed' and run['conclusion']=='success' and run['head_sha']==case['sourceCommit']
+          PY
+      - name: Download exact original ZIP within a finite window
+        run: timeout --signal=TERM --kill-after=10s 600s gh api repos/GioNob/ouf-mcp-server/actions/artifacts/12761775539/zip > "$RUNNER_TEMP/candidate.zip"
+      - name: Verify original layers and derive native identity without import or rebuild
+        run: python3 .pairwise/deploy/scripts/stage_managed_profile_control_image.py "$RUNNER_TEMP/candidate.zip" "$RUNNER_TEMP/image-delivery" "$GITHUB_WORKSPACE/.pairwise/deploy" .pairwise/deploy/releases/managed-profile-control-mcp-image-case-20261027.json
+      - name: Retain bounded immutable artifact parts; no target effects or release
+        run: |
+          gh auth setup-git --hostname github.com
+          git -C "$RUNNER_TEMP/image-delivery" init --initial-branch="$DELIVERY_BRANCH"
+          git -C "$RUNNER_TEMP/image-delivery" config user.name 'github-actions[bot]'
+          git -C "$RUNNER_TEMP/image-delivery" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$RUNNER_TEMP/image-delivery" add image
+          git -C "$RUNNER_TEMP/image-delivery" commit -m 'Retain qualified managed CSV control image, no target authority'
+          git -C "$RUNNER_TEMP/image-delivery" remote add origin https://github.com/GioNob/ouf-mcp-server.git
+          git -C "$RUNNER_TEMP/image-delivery" push origin "HEAD:refs/heads/$DELIVERY_BRANCH"
+          git -C "$RUNNER_TEMP/image-delivery" rev-parse HEAD
