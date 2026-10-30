@@ -36,5 +36,27 @@
   "runtimeAuthorityIssued": false,
   "targetApplyAuthorized": false,
   "applicationE2EProven": false,
-  "releaseAcceptance": false
+  "releaseAcceptance": false,
+  "intermediateSource": "5b4dc238d026d021d2d6d1600b38172c5afed708",
+  "intermediatePush": {
+    "run": 41087570122,
+    "job": 124172647864,
+    "conclusion": "failure"
+  },
+  "intermediatePr": {
+    "run": 41087579520,
+    "job": 124172681960,
+    "conclusion": "failure"
+  },
+  "staticcheckAndNilnessPassed": true,
+  "intermediateFailure": "GOVULNCHECK_V1_1_4_OLD_X_TOOLS_SSA_PANIC_ON_GO_1_27_STDLIB",
+  "successorGovulncheck": {
+    "officialRepository": "golang/vuln",
+    "commit": "e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5",
+    "goDirective": "1.26.0",
+    "toolsDependency": "v0.52.0",
+    "taggedV114RemainsHistorical": true,
+    "moduleChecksumsVerifiedByGo": true,
+    "applicationGoModAndGoSumChangedForScanner": false
+  }
 }
