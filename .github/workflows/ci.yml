@@ -35,7 +35,39 @@ jobs:
           ref: fb2dd51dfc204577a47c1e702f17531dd0709b3c
           path: .pairwise/authorization
       - uses: actions/setup-go@v6
-        with: {go-version: '1.26.10', cache: true}
+        with: {go-version: '1.27.3', cache: true}
+      - name: Verify official Go distribution and retain checksum
+        run: |
+          mkdir -p build
+          python3 - <<'PYGO'
+          import hashlib,json,os,pathlib,subprocess,tarfile,tempfile,urllib.request
+          version='go1.27.3'
+          assert subprocess.check_output(['go','env','GOVERSION'],text=True).strip()==version
+          assert subprocess.check_output(['go','env','GOHOSTOS'],text=True).strip()=='linux'
+          assert subprocess.check_output(['go','env','GOHOSTARCH'],text=True).strip()=='amd64'
+          with urllib.request.urlopen('https://go.dev/dl/?mode=json',timeout=60) as response:
+              releases=json.load(response)
+          release=next(r for r in releases if r['version']==version and r['stable'] is True)
+          row=next(f for f in release['files'] if f['filename']==version+'.linux-amd64.tar.gz')
+          assert row['os']=='linux' and row['arch']=='amd64' and row['kind']=='archive'
+          with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP']) as temporary:
+              archive=pathlib.Path(temporary)/row['filename'];sha=hashlib.sha256();size=0
+              with urllib.request.urlopen('https://dl.google.com/go/'+row['filename'],timeout=180) as response,archive.open('xb') as output:
+                  while chunk:=response.read(1048576):
+                      size+=len(chunk);assert size<=row['size'];sha.update(chunk);output.write(chunk)
+              assert size==row['size'] and sha.hexdigest()==row['sha256']
+              with tarfile.open(archive,'r:gz') as distribution:
+                  officialGo=hashlib.sha256(distribution.extractfile('go/bin/go').read()).hexdigest()
+              goroot=pathlib.Path(subprocess.check_output(['go','env','GOROOT'],text=True).strip())
+              assert hashlib.sha256((goroot/'bin/go').read_bytes()).hexdigest()==officialGo
+          record={'schema':'ouf.mcp-official-go-distribution.v1','version':version,
+              'filename':row['filename'],'archiveSha256':row['sha256'],'archiveBytes':size,
+              'officialGoExecutableSha256':officialGo,'officialArchiveChecksumVerified':True,
+              'installedGoExecutableMatchesOfficialArchive':True,'sourceCommit':os.environ['GITHUB_SHA'],
+              'runtimeAuthorityIssued':False,'targetApplyAuthorized':False}
+          pathlib.Path('build/go-official-distribution.json').write_text(json.dumps(record,indent=2)+'\n')
+          print(json.dumps(record,sort_keys=True))
+          PYGO
       - run: go mod download
       - run: node scripts/test_picker_portability.mjs
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
@@ -72,6 +104,7 @@ jobs:
         with:
           name: mcp-release-evidence-${{ github.run_id }}
           path: |
+            build/go-official-distribution.json
             docs/
             deploy/
             observability/

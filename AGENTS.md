@@ -1,3 +1,20 @@
+# Current MCP Go baseline — owner decision 2026-10-30
+
+Use the current stable supported Go release, pinned exactly per candidate with
+checksum and all existing security/compatibility/conformance gates. Owner:
+“Va benissimo usare l'ultima versione di go. Anzi, direi che è auspicabile.”
+Initial resolved release: Go1.27.3, official release commit
+2aae1000ea1d4b28923b96db28acf4e3b99d6aff. This controlled addendum supersedes
+the Go1.25-only baseline in Matrix1.7/MCP1.4 Part II §65; the original DOCX remain
+unchanged. Do not ask again for routine Go version updates under this decision.
+SDK1.7.0, protocol2026-07-28, ownership and all release/M2 gates remain unchanged.
+Central decision:
+https://github.com/GioNob/ouf-deploy/blob/fix/registry-bound-owner-lineage-20261023/docs/decisions/OUF_MCP_GO_BASELINE_ALIGNMENT_DECISION_20261030.md
+A new source/build/package is required; old Go1.26.10 artifacts remain historical.
+Source CI does not prove official conformance, two real clients or target E2E.
+CSV loading ends at UDP/all row outcomes; UDP capabilities operate separately
+on loaded objects. No target authority/grant/budget/reset/replay is implied.
+
 # OUF project instructions
 
 ## Default resilience requirement
