@@ -1,0 +1,62 @@
+{
+  "schema": "ouf.mcp-go-toolchain-qualification-progress.v1",
+  "date": "2026-10-30",
+  "timezone": "Europe/Rome",
+  "ownerDecision": "APPROVE_CURRENT_STABLE_SUPPORTED_MCP_GO",
+  "go": "1.27.3",
+  "officialReleaseCommit": "2aae1000ea1d4b28923b96db28acf4e3b99d6aff",
+  "officialDistribution": {
+    "filename": "go1.27.3.linux-amd64.tar.gz",
+    "archiveSha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40",
+    "archiveBytes": 70588678,
+    "goExecutableSha256": "5f5eb6d0b2fb6aa0bb5d5f8c5f1c944e0de955c925f0111af92a9d8f79680b5b",
+    "downloadedArchiveMatchesOfficialChecksum": true,
+    "installedGoExecutableMatchesArchive": true,
+    "ciPinNowFrozen": true
+  },
+  "initialSource": "48e48532ed5298bd3aae110f0d2a78e8393e5a30",
+  "initialPush": {
+    "run": 41086605357,
+    "job": 124169292642,
+    "conclusion": "failure"
+  },
+  "initialPr": {
+    "run": 41086616627,
+    "job": 124169329193,
+    "conclusion": "failure"
+  },
+  "retainedFailure": "STATICCHECK_2026_1_CANNOT_READ_GO_1_27_EXPORT_DATA_VERSION_5",
+  "initialBuildRaceDatabaseAndPairwiseSteps": "PASS_BEFORE_LINT_FAILURE",
+  "fullCiAccepted": false,
+  "successorStaticcheck": "2026.2.2",
+  "reason": "Official stable Staticcheck release supports updated Go1.27.2 export data format. Retain nilness as separate pinned official analyzer because SA5011 was removed upstream.",
+  "nilness": "golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@v0.51.0",
+  "noChecksSuppressed": true,
+  "mcpSdk": "1.7.0",
+  "runtimeAuthorityIssued": false,
+  "targetApplyAuthorized": false,
+  "applicationE2EProven": false,
+  "releaseAcceptance": false,
+  "intermediateSource": "5b4dc238d026d021d2d6d1600b38172c5afed708",
+  "intermediatePush": {
+    "run": 41087570122,
+    "job": 124172647864,
+    "conclusion": "failure"
+  },
+  "intermediatePr": {
+    "run": 41087579520,
+    "job": 124172681960,
+    "conclusion": "failure"
+  },
+  "staticcheckAndNilnessPassed": true,
+  "intermediateFailure": "GOVULNCHECK_V1_1_4_OLD_X_TOOLS_SSA_PANIC_ON_GO_1_27_STDLIB",
+  "successorGovulncheck": {
+    "officialRepository": "golang/vuln",
+    "commit": "e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5",
+    "goDirective": "1.26.0",
+    "toolsDependency": "v0.52.0",
+    "taggedV114RemainsHistorical": true,
+    "moduleChecksumsVerifiedByGo": true,
+    "applicationGoModAndGoSumChangedForScanner": false
+  }
+}
