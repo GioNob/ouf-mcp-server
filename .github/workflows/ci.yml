@@ -50,6 +50,7 @@ jobs:
           release=next(r for r in releases if r['version']==version and r['stable'] is True)
           row=next(f for f in release['files'] if f['filename']==version+'.linux-amd64.tar.gz')
           assert row['os']=='linux' and row['arch']=='amd64' and row['kind']=='archive'
+          assert row['sha256']=='65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40' and row['size']==70588678
           with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP']) as temporary:
               archive=pathlib.Path(temporary)/row['filename'];sha=hashlib.sha256();size=0
               with urllib.request.urlopen('https://dl.google.com/go/'+row['filename'],timeout=180) as response,archive.open('xb') as output:
@@ -86,7 +87,9 @@ jobs:
       - run: python3 -m py_compile scripts/r4a_snapshot_mcp_runtime.py scripts/r4a_preflight_mcp_runtime.py scripts/r4a_prepare_mcp_candidate.py scripts/r4a_rollout_mcp_runtime.py
       - run: ./build/ouf-mcp migrate
       - run: ./build/ouf-mcp maintenance-worker --once
-      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
+      # Staticcheck2026.2 removed SA5011 upstream; retain a separate nilness gate.
+      - run: go run golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@v0.51.0 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Retain qualified MCP image without target activation
         run: |
