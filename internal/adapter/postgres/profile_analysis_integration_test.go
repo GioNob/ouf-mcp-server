@@ -29,7 +29,7 @@ func analysisFixture(t *testing.T, n int) (context.Context, *Store, analysis.Sco
 	if e = s.EnsureManifest(ctx, checksum, m.Version, "mcp-manifest-v1", payload); e != nil {
 		t.Fatal(e)
 	}
-	return ctx, s, analysis.Scope{"mcp", uuid.NewString(), uuid.NewString()}, analysis.Profile{AssetID: uuid.NewString(), ProfileID: uuid.NewString(), Version: 1, SchemaHash: "sha256:" + strings.Repeat("b", 64), ColumnCount: n}, m
+	return ctx, s, analysis.Scope{Service: "mcp", Principal: uuid.NewString(), Tenant: uuid.NewString()}, analysis.Profile{AssetID: uuid.NewString(), ProfileID: uuid.NewString(), Version: 1, SchemaHash: "sha256:" + strings.Repeat("b", 64), ColumnCount: n}, m
 }
 func searchWork(n int) analysis.Work {
 	b, _ := json.Marshal(map[string]any{"q": fmt.Sprintf("property-%d", n), "type": "PROPERTY"})
