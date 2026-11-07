@@ -105,7 +105,7 @@ type View struct {
 	HasMore  bool    `json:"hasMore"`
 	// Per-column evidence collection, never a semantic correctness decision.
 	CoveredColumns  int `json:"columnsWithPlannedWork"`
-	EvidenceColumns int `json:"columnsWithCompletedEvidence"`
+	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
 type Plan struct {
 	ID               string

@@ -4780,9 +4780,11 @@
         "maxTasks": 16384,
         "maxPlanBatch": 128,
         "maxRetainedBytes": 67108864,
-        "maxResultBytes": 1048576
+        "maxResultBytes": 1048576,
+        "maxRetryAttempts": 128,
+        "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
         "INACTIVE candidate; requires coherent deployment and capability activation",
         "Owned profile is obtained through Onboarding; no caller column count",
@@ -4896,9 +4898,11 @@
         "maxTasks": 16384,
         "maxPlanBatch": 128,
         "maxRetainedBytes": 67108864,
-        "maxResultBytes": 1048576
+        "maxResultBytes": 1048576,
+        "maxRetryAttempts": 128,
+        "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
         "INACTIVE candidate; requires coherent deployment and capability activation",
         "Owned profile is obtained through Onboarding; no caller column count",
@@ -4966,9 +4970,11 @@
         "maxTasks": 16384,
         "maxPlanBatch": 128,
         "maxRetainedBytes": 67108864,
-        "maxResultBytes": 1048576
+        "maxResultBytes": 1048576,
+        "maxRetryAttempts": 128,
+        "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
         "INACTIVE candidate; requires coherent deployment and capability activation",
         "Owned profile is obtained through Onboarding; no caller column count",

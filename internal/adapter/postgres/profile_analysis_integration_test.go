@@ -268,14 +268,107 @@ func TestProfileAnalysisTransientReadAndInactiveDiscovery(t *testing.T) {
 }
 
 func TestProfileAnalysisCoordinatorPlans1024WithOneOwnedProfileRead(t *testing.T) {
- ctx, _, c, i, _, g, p := coordinatorFixture(t, 1024)
- var v analysis.View
- for offset := 0; offset < 1024; offset += 128 {
-  work := []analysis.Work{}
-  for n := offset; n < offset+128; n++ { work = append(work, searchWork(n)) }
-  var e error
-  v, e = c.Plan(ctx, i, p.AssetID, p.ProfileID, v.Revision, work)
-  if e != nil { t.Fatal(offset, e) }
- }
- if v.Budget.PlannedCalls != 1024 || v.CoveredColumns != 1024 || g.calls != 1 { t.Fatal(v.Budget, v.CoveredColumns, g.calls) }
+	ctx, _, c, i, _, g, p := coordinatorFixture(t, 1024)
+	var v analysis.View
+	for offset := 0; offset < 1024; offset += 128 {
+		work := []analysis.Work{}
+		for n := offset; n < offset+128; n++ {
+			work = append(work, searchWork(n))
+		}
+		var e error
+		v, e = c.Plan(ctx, i, p.AssetID, p.ProfileID, v.Revision, work)
+		if e != nil {
+			t.Fatal(offset, e)
+		}
+	}
+	if v.Budget.PlannedCalls != 1024 || v.CoveredColumns != 1024 || g.calls != 1 {
+		t.Fatal(v.Budget, v.CoveredColumns, g.calls)
+	}
+}
+
+func TestProfileAnalysisFiniteRetryHistoryAndInflightCapacity(t *testing.T) {
+	ctx, s, scope, p, m := analysisFixture(t, 20)
+	plan, e := analysis.Build(scope, p, m, 0, []analysis.Work{searchWork(0), searchWork(1), searchWork(2), searchWork(3), searchWork(4)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	v, e := s.PlanAnalysis(ctx, plan)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = s.pool.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(task,'{attempts}','128') where analysis_id=$1 and task_id=$2`, v.ID, plan.Tasks[0].ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = s.pool.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(task,'{firstAttemptAt}',to_jsonb(now()-interval '25 hours')) where analysis_id=$1 and task_id=$2`, v.ID, plan.Tasks[1].ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, index := range []int{0, 1} {
+		held, e := s.ClaimAnalysisTask(ctx, scope, v.ID, plan.Tasks[index].ID, plan.Manifest)
+		if e != nil || held.State != "HELD" || held.Code != "RETRY_BUDGET_EXHAUSTED" {
+			t.Fatal(held, e)
+		}
+	}
+	_, e = s.pool.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(jsonb_set(task,'{state}','"SUCCEEDED"'),'{resultBytes}',to_jsonb($3::bigint)) where analysis_id=$1 and task_id=$2`, v.ID, plan.Tasks[2].ID, analysis.MaxRetainedBytes-analysis.MaxResultBytes)
+	if e != nil {
+		t.Fatal(e)
+	}
+	active, e := s.ClaimAnalysisTask(ctx, scope, v.ID, plan.Tasks[3].ID, plan.Manifest)
+	if e != nil || active.Fence == "" {
+		t.Fatal(active, e)
+	}
+	if _, e = s.ClaimAnalysisTask(ctx, scope, v.ID, plan.Tasks[4].ID, plan.Manifest); !errors.Is(e, analysis.ErrCapacity) {
+		t.Fatal("inflight capacity unreserved", e)
+	}
+	resumed, e := s.PlanAnalysis(ctx, plan)
+	if e != nil || resumed.Budget.Held != 2 || resumed.Tasks[0].Attempts != 128 {
+		t.Fatal("retry history reset", resumed, e)
+	}
+}
+
+func TestProfileAnalysisDiscoveryCandidateExecutionAndPollPacing(t *testing.T) {
+	ctx, s, c, i, _, g, p := coordinatorFixture(t, 20)
+	// Activation is confined to this fixture; the production descriptors stay INACTIVE.
+	for n := range c.Manifest.Capabilities {
+		if strings.HasPrefix(c.Manifest.Capabilities[n].ToolName, "semantic.discovery.") {
+			c.Manifest.Capabilities[n].PublicationState = "ACTIVE"
+		}
+	}
+	checksum, _ := c.Manifest.Checksum()
+	payload, _ := c.Manifest.CanonicalPayload()
+	if e := s.EnsureManifest(ctx, checksum, c.Manifest.Version, "mcp-manifest-v1", payload); e != nil {
+		t.Fatal(e)
+	}
+	discovery := analysis.Work{Tool: "semantic.discovery.request", Arguments: json.RawMessage(`{"requestedArtifactType":"PROPERTY","intent":"Proprietà che indica la tipologia del teatro","preferredLanguages":["it"]}`), Columns: []int{0}}
+	v, e := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{discovery})
+	if e != nil {
+		t.Fatal(e)
+	}
+	request, e := c.Step(ctx, i, v.ID, v.Tasks[0].ID)
+	if e != nil || request.State != "SUCCEEDED" {
+		t.Fatal(request, e)
+	}
+	before := g.calls
+	if _, e = c.Step(ctx, i, v.ID, request.ID); e != nil || g.calls != before {
+		t.Fatal("discovery request replayed", e)
+	}
+	// The requestId is a synthetic owner fixture, not an external candidate.
+	args := json.RawMessage(`{"requestId":"11111111-1111-4111-8111-111111111111"}`)
+	v, e = c.Plan(ctx, i, p.AssetID, p.ProfileID, v.Revision, []analysis.Work{{Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 1}, {Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 2}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	first, e := c.Step(ctx, i, v.ID, v.Tasks[1].ID)
+	if e != nil || first.State != "SUCCEEDED" {
+		t.Fatal(first, e)
+	}
+	before = g.calls
+	second, e := c.Step(ctx, i, v.ID, v.Tasks[2].ID)
+	if e != nil || second.State != "WAITING" || second.Code != "OBSERVATION_INTERVAL" || second.Attempts != 0 || g.calls != before {
+		t.Fatal(second, e)
+	}
+	if second.NotBefore.Sub(first.CompletedAt) != 31*time.Second {
+		t.Fatal("poll pacing changed", second.NotBefore, first.CompletedAt)
+	}
 }

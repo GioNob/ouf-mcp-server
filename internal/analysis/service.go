@@ -166,7 +166,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		}
 	} else if len(r.Body) > 0 && len(r.Body) <= int(task.MaxBytes) && json.Valid(r.Body) {
 		f.State = "SUCCEEDED"
-		f.Code = "EVIDENCE_COLLECTED_NOT_ADOPTED"
+		f.Code = "OWNER_RESPONSE_SAVED_NOT_ADOPTED"
 		f.Calls = 1
 		f.Body = r.Body
 	}

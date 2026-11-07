@@ -255,7 +255,7 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 		}
 	}
 	var retained int64
-	if e = tx.QueryRow(ctx, `select coalesce(sum(coalesce((task->>'resultBytes')::bigint,0)),0) from ouf_mcp.profile_analysis_task where analysis_id=$1`, id).Scan(&retained); e != nil {
+	if e = tx.QueryRow(ctx, `select coalesce(sum(coalesce((task->>'resultBytes')::bigint,0)+case when task->>'state'='RUNNING' then (task->>'maxBytes')::bigint else 0 end),0) from ouf_mcp.profile_analysis_task where analysis_id=$1`, id).Scan(&retained); e != nil {
 		return t, e
 	}
 	if retained+t.MaxBytes > analysis.MaxRetainedBytes {
