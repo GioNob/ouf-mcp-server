@@ -12,4 +12,3 @@ func (e *WindowBudgetExhaustedError) Error() string                    { return 
 func (e *WindowBudgetExhaustedError) Unwrap() error                    { return e.Cause }
 func (e *WindowBudgetExhaustedError) BudgetWindowEnd() time.Time       { return e.WindowEnd }
 func (e *SemanticReadBudgetExhaustedError) BudgetWindowEnd() time.Time { return e.WindowEnd }
-
