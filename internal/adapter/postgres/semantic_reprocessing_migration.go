@@ -29,7 +29,7 @@ func MigrateSemanticReprocessing(ctx context.Context, pool *pgxpool.Pool, applic
 		return deny()
 	}
 	entries, e := fs.ReadDir(migrationFiles, "migrations")
-	if e != nil || len(entries) != 13 {
+	if e != nil || len(entries) < 13 {
 		return deny()
 	}
 	expected := map[int]string{}
@@ -43,8 +43,14 @@ func MigrateSemanticReprocessing(ctx context.Context, pool *pgxpool.Pool, applic
 			return deny()
 		}
 		version, e := strconv.Atoi(parts[0])
-		if e != nil || version < 1 || version > 13 {
+		if e != nil || version < 1 {
 			return deny()
+		}
+		// This privileged primitive owns only the exact historical 12->13
+		// transition. Later ordinary migrations are not executed or granted
+		// authority here; the verified 1..13 prefix and DB-at-12 checks remain.
+		if version > 13 {
+			continue
 		}
 		raw, e := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if e != nil {
