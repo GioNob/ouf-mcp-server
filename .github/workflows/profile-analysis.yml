@@ -28,7 +28,7 @@ jobs:
           python3 - <<'PY'
           import json,pathlib,subprocess
           paths=[str(p) for p in pathlib.Path('internal/analysis').glob('*.go')]
-          paths+=['internal/adapter/postgres/profile_analysis.go','internal/adapter/postgres/profile_analysis_integration_test.go','internal/kernel/profile_analysis.go','internal/orchestration/window_budget_wait.go']
+          paths+=['internal/adapter/postgres/profile_analysis.go','internal/adapter/postgres/profile_analysis_integration_test.go','internal/kernel/profile_analysis.go','internal/kernel/profile_analysis_test.go','internal/orchestration/window_budget_wait.go']
           subprocess.run(['gofmt','-w',*paths],check=True)
           for p in paths:
             print('OUF_ANALYSIS_FORMAT='+json.dumps({'path':p,'content':pathlib.Path(p).read_text()},separators=(',',':')))
