@@ -15,11 +15,11 @@ func semanticReadAdmissionErrorResult(err error) *mcp.CallToolResult {
 		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
-		"code": "SEMANTIC_READ_WINDOW_BUDGET_EXHAUSTED",
-		"retryable": true,
+		"code":              "SEMANTIC_READ_WINDOW_BUDGET_EXHAUSTED",
+		"retryable":         true,
 		"retryAfterSeconds": exhausted.RetryAfterSeconds,
-		"windowEndsAt": exhausted.WindowEnd.UTC().Format(time.RFC3339Nano),
-		"dimension": exhausted.Dimension,
+		"windowEndsAt":      exhausted.WindowEnd.UTC().Format(time.RFC3339Nano),
+		"dimension":         exhausted.Dimension,
 	})
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}
 }

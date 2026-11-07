@@ -26,10 +26,10 @@ func semanticReadWindowBudget(in AdmissionRequest) (string, Cost, error) {
 // Only a refusal before dispatch due to this finite window carries retry timing.
 // It grants no retry/authorization and never describes an ambiguous owner effect.
 type SemanticReadBudgetExhaustedError struct {
-	Dimension string
-	WindowEnd time.Time
+	Dimension         string
+	WindowEnd         time.Time
 	RetryAfterSeconds int64
-	Cause error
+	Cause             error
 }
 
 func (e *SemanticReadBudgetExhaustedError) Error() string { return "orchestration budget exhausted" }

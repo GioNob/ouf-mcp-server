@@ -32,16 +32,16 @@ func TestSemanticReadBudgetProfile(t *testing.T) {
 
 func TestSemanticReadBudgetRejectsUnreviewedProfiles(t *testing.T) {
 	changes := map[string]func(*AdmissionRequest){
-		"command": func(r *AdmissionRequest) { r.OperationClass = "COMMAND" },
+		"command":          func(r *AdmissionRequest) { r.OperationClass = "COMMAND" },
 		"other capability": func(r *AdmissionRequest) { r.CapabilityID = "ouf.managed-source.file.profile" },
-		"control": func(r *AdmissionRequest) { r.CapabilityID = "ouf.operations.incidents" },
-		"empty manifest": func(r *AdmissionRequest) { r.ManifestChecksum = "" },
-		"window": func(r *AdmissionRequest) { r.Window = time.Hour },
-		"retries": func(r *AdmissionRequest) { r.RetryThreshold = 60 },
-		"calls": func(r *AdmissionRequest) { r.Maximum.ToolCalls = 2 },
-		"bytes": func(r *AdmissionRequest) { r.Maximum.ResultBytes = 262145 },
-		"zero bytes": func(r *AdmissionRequest) { r.Maximum.ResultBytes = 0 },
-		"objects": func(r *AdmissionRequest) { r.Maximum.DistinctObjects = 101 },
+		"control":          func(r *AdmissionRequest) { r.CapabilityID = "ouf.operations.incidents" },
+		"empty manifest":   func(r *AdmissionRequest) { r.ManifestChecksum = "" },
+		"window":           func(r *AdmissionRequest) { r.Window = time.Hour },
+		"retries":          func(r *AdmissionRequest) { r.RetryThreshold = 60 },
+		"calls":            func(r *AdmissionRequest) { r.Maximum.ToolCalls = 2 },
+		"bytes":            func(r *AdmissionRequest) { r.Maximum.ResultBytes = 262145 },
+		"zero bytes":       func(r *AdmissionRequest) { r.Maximum.ResultBytes = 0 },
+		"objects":          func(r *AdmissionRequest) { r.Maximum.DistinctObjects = 101 },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
