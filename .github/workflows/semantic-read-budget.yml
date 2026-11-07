@@ -53,6 +53,6 @@ jobs:
       - name: Semantic service, authorization and MCP response regression
         run: go test -race ./internal/orchestration ./internal/kernel -run 'TestSemanticReadBudget|TestSemanticSearch|TestSemanticGet|TestAuthorizationDenial|TestAdmissionDenial|TestOperationalControlBudget' -count=1 -v
       - name: Actual PostgreSQL admission and retained history
-        run: go test ./internal/adapter/postgres -run 'TestSemanticReadBudget|TestOperationalControlBudget' -count=1 -v
+        run: go test ./internal/adapter/postgres -run 'TestSemanticReadBudget|TestManagedSchemaPages|TestOperationalControlBudget' -count=1 -v
       - name: Compile executable
         run: go build -trimpath -o build/ouf-mcp ./cmd/ouf-mcp
