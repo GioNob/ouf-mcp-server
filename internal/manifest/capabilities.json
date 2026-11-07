@@ -2899,7 +2899,7 @@
     {
       "toolName": "semantic.proposal.read",
       "capabilityId": "ouf.semantic.proposal.read",
-      "purpose": "Read this caller\u2019s durable semantic command receipt after interruption",
+      "purpose": "Read this caller’s durable semantic command receipt after interruption",
       "useWhen": [
         "preparing authorized native semantic proposals for human review"
       ],
@@ -3104,7 +3104,7 @@
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
       ],
       "doNotUseWhen": [
-        "the user has no asset ID or wants to read a different user\u2019s file"
+        "the user has no asset ID or wants to read a different user’s file"
       ],
       "preferredAlternatives": [
         "upload via the governed Agent Host attachment bridge"
@@ -3153,7 +3153,7 @@
     {
       "toolName": "source.file.preview",
       "capabilityId": "ouf.managed-source.preview",
-      "purpose": "Read a redacted managed-file profile, bounded job status, or a page of owned assets",
+      "purpose": "Read an owned profile/job or bounded immutable schema pages (up to 1024 columns)",
       "useWhen": [
         "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation"
       ],
@@ -3165,9 +3165,9 @@
       ],
       "operationalLimits": {
         "maxArgumentsBytes": 1024,
-        "maxResultBytes": 65536
+        "maxResultBytes": 1048576
       },
-      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding",
+      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding; COLUMNS view returns immutable schema pages without sample values; follow nextOffset until hasMore=false, preserving profile/version/schemaHash",
       "securityNotes": [
         "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
         "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
@@ -3182,8 +3182,8 @@
         "hardMaxToolCalls": 1,
         "hardMaxGraphCalls": 0,
         "hardMaxDistinctObjects": 50,
-        "hardMaxResultBytes": 65536,
-        "hardMaxElapsedMs": 3000
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 10000
       },
       "conditionalOutcomeCost": {
         "mismatchCalls": 0,
@@ -3207,17 +3207,26 @@
             "format": "uuid"
           },
           "view": {
-            "const": "ASSETS"
+            "type": "string",
+            "enum": [
+              "ASSETS",
+              "COLUMNS"
+            ]
           },
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 50
+            "maximum": 128
           },
           "afterAssetId": {
             "type": "string",
             "format": "uuid",
             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1023
           }
         },
         "oneOf": [
@@ -3284,6 +3293,38 @@
                 "format": "uuid"
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "view",
+              "assetId",
+              "profileId"
+            ],
+            "properties": {
+              "view": {
+                "const": "COLUMNS"
+              },
+              "assetId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "profileId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1023
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              }
+            }
           }
         ]
       }
@@ -3303,7 +3344,7 @@
         "trusted HUMAN approval after a validated draft"
       ],
       "operationalLimits": {
-        "maxArgumentsBytes": 32768,
+        "maxArgumentsBytes": 2097152,
         "maxResultBytes": 65536
       },
       "resultSemantics": "Bounded DRAFT version identity and state; no approval or ACTIVE configuration",
@@ -3322,7 +3363,7 @@
         "hardMaxGraphCalls": 0,
         "hardMaxDistinctObjects": 1,
         "hardMaxResultBytes": 65536,
-        "hardMaxElapsedMs": 3000
+        "hardMaxElapsedMs": 10000
       },
       "conditionalOutcomeCost": {
         "mismatchCalls": 0,
@@ -3399,7 +3440,7 @@
           },
           "fields": {
             "type": "array",
-            "maxItems": 256,
+            "maxItems": 1024,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -3628,7 +3669,7 @@
         "source.onboarding.read"
       ],
       "operationalLimits": {
-        "maxArgumentsBytes": 65536,
+        "maxArgumentsBytes": 2097152,
         "maxResultBytes": 65536
       },
       "resultSemantics": "Bounded version state, configuration hash and owner-issued review link; never human approval or source activation",
@@ -3821,7 +3862,7 @@
                           "signals": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": 32,
+                            "maxItems": 1024,
                             "items": {
                               "type": "object",
                               "additionalProperties": false,
@@ -3926,7 +3967,7 @@
                       "properties": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 32,
+                        "maxItems": 1024,
                         "items": {
                           "type": "object",
                           "additionalProperties": false,

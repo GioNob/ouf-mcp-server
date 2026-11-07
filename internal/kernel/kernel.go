@@ -21,7 +21,7 @@ import (
 
 const (
 	ProtocolVersion = "2026-07-28"
-	maxRequestBytes = 1 << 20
+	maxRequestBytes = 4 << 20
 )
 
 type unavailableResult struct {
@@ -377,7 +377,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
 		maxObjects = 100
 	}
-	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID)) && len(args) > 65536 {
+	argumentLimit := 65536
+	if c.CapabilityID == "ouf.managed-source.onboarding.create" || c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
+		argumentLimit = 2 << 20
+	}
+	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.onboarding.create") && len(args) > argumentLimit {
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
@@ -431,11 +435,16 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isAcquisitionRead(c.CapabilityID) {
 		timeout = 12 * time.Second
 	}
-	if isSourcePreparationCapability(c.CapabilityID) {
+	if isSourcePreparationCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" {
 		timeout = 10 * time.Second
 	}
 	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
 	if err != nil {
+		if orchestration.IsSemanticRead(c.CapabilityID, c.OperationClass) {
+			if result := semanticReadAdmissionErrorResult(err); result != nil {
+				return result, nil, nil
+			}
+		}
 		if isAcquisitionRead(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" {
 			return acquisitionErrorResult(err), nil, nil
 		}
