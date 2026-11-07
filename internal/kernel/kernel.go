@@ -309,7 +309,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {
 				maxObjects, maxBytes = 1, 262144
-				if c.ToolName == "semantic.search" {
+				if c.ToolName == "semantic.search" || strings.HasPrefix(c.ToolName, "semantic.discovery.") {
 					maxObjects = 100
 				}
 			}
