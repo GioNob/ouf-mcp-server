@@ -56,7 +56,9 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
 				t.Error("unsafe onboarding draft arguments")
 			}
-			if len(args["fields"].([]any)) != 1024 { t.Error("wide command lost columns") }
+			if len(args["fields"].([]any)) != 1024 {
+				t.Error("wide command lost columns")
+			}
 			io.WriteString(w, `{"sourceId":"cinema","state":"DRAFT"}`)
 			return
 		}
@@ -109,6 +111,8 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 	}
 	draftArgs["fields"] = append(fields, fields[0])
 	tooWide, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})
-	if err != nil || !tooWide.IsError || calls != 2 { t.Fatalf("1025 columns dispatched: %v %v %d", tooWide, err, calls) }
+	if err != nil || !tooWide.IsError || calls != 2 {
+		t.Fatalf("1025 columns dispatched: %v %v %d", tooWide, err, calls)
+	}
 
 }
