@@ -183,8 +183,12 @@ type Service struct {
 }
 
 func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
-	if in.BudgetProfile == "" && IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
-		in.BudgetProfile = OperationalControlBudgetProfile
+	if in.BudgetProfile == "" {
+		if IsSemanticRead(in.CapabilityID, in.OperationClass) {
+			in.BudgetProfile = SemanticReadBudgetProfile
+		} else if IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
+			in.BudgetProfile = OperationalControlBudgetProfile
+		}
 	}
 	if _, _, err := AdmissionWindowBudget(AdmissionRequest{BudgetProfile: in.BudgetProfile, CapabilityID: in.CapabilityID, OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum}); err != nil {
 		return Result{}, err

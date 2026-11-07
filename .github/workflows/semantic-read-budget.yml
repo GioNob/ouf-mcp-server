@@ -1,0 +1,58 @@
+name: Semantic read window budget
+on:
+  push:
+    paths:
+      - 'internal/orchestration/**'
+      - 'internal/kernel/**'
+      - 'internal/adapter/postgres/**'
+      - '.github/workflows/semantic-read-budget.yml'
+  pull_request:
+    paths:
+      - 'internal/orchestration/**'
+      - 'internal/kernel/**'
+      - 'internal/adapter/postgres/**'
+      - '.github/workflows/semantic-read-budget.yml'
+permissions: {contents: read}
+jobs:
+  semantic-read-budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.10', cache: true}
+      - run: go mod download
+      - name: Native formatting and exact source readback
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          paths=[
+              "internal/orchestration/semantic_read_budget.go",
+              "internal/orchestration/semantic_read_budget_test.go",
+              "internal/orchestration/service.go",
+              "internal/orchestration/operational_budget.go",
+              "internal/adapter/postgres/store.go",
+              "internal/adapter/postgres/semantic_read_budget_integration_test.go",
+              "internal/kernel/kernel.go",
+              "internal/kernel/semantic_read_budget.go",
+              "internal/kernel/semantic_read_budget_test.go",
+          ]
+          subprocess.run(["gofmt","-w",*paths],check=True)
+          for path in paths:
+              print("OUF_SEMANTIC_BUDGET_FORMAT="+json.dumps({"path":path,"content":pathlib.Path(path).read_text()},separators=(",",":")))
+          PY
+      - name: Semantic service, authorization and MCP response regression
+        run: go test -race ./internal/orchestration ./internal/kernel -run 'TestSemanticReadBudget|TestSemanticSearch|TestSemanticGet|TestAuthorizationDenial|TestAdmissionDenial|TestOperationalControlBudget' -count=1 -v
+      - name: Actual PostgreSQL admission and retained history
+        run: go test ./internal/adapter/postgres -run 'TestSemanticReadBudget|TestOperationalControlBudget' -count=1 -v
+      - name: Compile executable
+        run: go build -trimpath -o build/ouf-mcp ./cmd/ouf-mcp

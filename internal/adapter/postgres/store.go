@@ -213,7 +213,18 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, err
 	}
 	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > windowMaximum.DistinctObjects
-	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls || reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes || objectBudgetExceeded {
+	callBudgetExceeded := reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls
+	byteBudgetExceeded := reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes
+	if callBudgetExceeded || byteBudgetExceeded || objectBudgetExceeded {
+		if in.BudgetProfile == orchestration.SemanticReadBudgetProfile {
+			dimension := "DISTINCT_OBJECTS"
+			if callBudgetExceeded {
+				dimension = "TOOL_CALLS"
+			} else if byteBudgetExceeded {
+				dimension = "RESULT_BYTES"
+			}
+			return orchestration.AdmissionDecision{}, orchestration.NewSemanticReadBudgetExhaustedError(ErrBudgetExhausted, dimension, now, windowEnd)
+		}
 		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
 	}
 	groupID := uuid.New()

@@ -36,6 +36,9 @@ func IsOperationalControlRead(capability, operation string) bool {
 // Keeping the window key distinct reserves control capacity without raising
 // an existing business budget or letting a new job/correlation reset either.
 func AdmissionWindowBudget(in AdmissionRequest) (string, Cost, error) {
+	if in.BudgetProfile == SemanticReadBudgetProfile {
+		return semanticReadWindowBudget(in)
+	}
 	if in.BudgetProfile == "" {
 		return in.ManifestChecksum, Cost{ToolCalls: in.Maximum.ToolCalls * int64(in.RetryThreshold), ResultBytes: in.Maximum.ResultBytes * int64(in.RetryThreshold), DistinctObjects: in.Maximum.DistinctObjects * int64(in.RetryThreshold)}, nil
 	}
