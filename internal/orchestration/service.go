@@ -186,6 +186,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.BudgetProfile == "" {
 		if IsSemanticRead(in.CapabilityID, in.OperationClass) {
 			in.BudgetProfile = SemanticReadBudgetProfile
+		} else if isManagedSchemaPage(in) {
+			in.BudgetProfile = ManagedSchemaBudgetProfile
 		} else if IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
 			in.BudgetProfile = OperationalControlBudgetProfile
 		}

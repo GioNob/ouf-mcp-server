@@ -1,0 +1,26 @@
+name: Wide managed schema contracts
+on:
+  push:
+    branches: [fix/semantic-read-window-20261107]
+  pull_request:
+    paths: ['internal/**', 'cmd/**', '.github/workflows/wide-profile-1024.yml']
+permissions: {contents: read}
+jobs:
+  wide-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.10', cache: true}
+      - name: Format changed source and report exact bytes
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          paths=["internal/orchestration/managed_schema_budget.go","internal/orchestration/managed_schema_budget_test.go","internal/orchestration/service.go","internal/orchestration/operational_budget.go","internal/kernel/kernel.go","internal/kernel/managed_file_test.go","cmd/ouf-mcp/main.go"]
+          subprocess.run(["gofmt","-w",*paths],check=True)
+          for path in paths:
+              print("OUF_WIDE_FORMAT="+json.dumps({"path":path,"content":pathlib.Path(path).read_text()},separators=(",",":")))
+          PY
+      - run: go test -race ./internal/orchestration ./internal/kernel ./internal/manifest ./internal/adapter/httpclient -count=1
+      - run: go build ./cmd/ouf-mcp

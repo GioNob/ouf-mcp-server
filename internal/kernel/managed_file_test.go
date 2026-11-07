@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,6 +56,7 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
 				t.Error("unsafe onboarding draft arguments")
 			}
+			if len(args["fields"].([]any)) != 1024 { t.Error("wide command lost columns") }
 			io.WriteString(w, `{"sourceId":"cinema","state":"DRAFT"}`)
 			return
 		}
@@ -94,10 +96,19 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 	if !bad.IsError || calls != 1 {
 		t.Fatal("tool accepted arbitrary file URL")
 	}
-	draft, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: map[string]any{
-		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": []string{"core@1"}, "sourceObjectKeyFields": []string{}, "fields": []any{map[string]any{"fieldName": "cinema", "extractionDecision": "INCLUDE", "dataAccessLabel": "OPEN", "targetPropertyIri": "https://example.org/name"}},
-	}})
+	fields := make([]any, 1024)
+	for i := range fields {
+		fields[i] = map[string]any{"fieldName": fmt.Sprintf("campo_%d", i), "extractionDecision": "INCLUDE", "dataAccessLabel": "RESTRICTED", "targetPropertyIri": fmt.Sprintf("urn:test:property:%d", i)}
+	}
+	draftArgs := map[string]any{
+		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": []string{"core@1"}, "sourceObjectKeyFields": []string{}, "fields": fields,
+	}
+	draft, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})
 	if err != nil || draft.IsError || calls != 2 {
 		t.Fatalf("draft failed: result=%+v err=%v calls=%d", draft, err, calls)
 	}
+	draftArgs["fields"] = append(fields, fields[0])
+	tooWide, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})
+	if err != nil || !tooWide.IsError || calls != 2 { t.Fatalf("1025 columns dispatched: %v %v %d", tooWide, err, calls) }
+
 }
