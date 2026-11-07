@@ -1,0 +1,40 @@
+name: Durable profile analysis budget
+on:
+  push:
+    paths: ['internal/analysis/**', 'internal/adapter/postgres/**', 'internal/kernel/**', 'internal/orchestration/**', 'internal/manifest/**', '.github/workflows/profile-analysis.yml']
+  pull_request:
+    paths: ['internal/analysis/**', 'internal/adapter/postgres/**', 'internal/kernel/**', 'internal/orchestration/**', 'internal/manifest/**', '.github/workflows/profile-analysis.yml']
+permissions: {contents: read}
+jobs:
+  profile-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: mcp, POSTGRES_PASSWORD: mcp, POSTGRES_DB: mcp_test}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: true}
+      - run: go mod download
+      - name: Native formatting and source evidence
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          paths=[str(p) for p in pathlib.Path('internal/analysis').glob('*.go')]
+          paths+=['internal/adapter/postgres/profile_analysis.go','internal/adapter/postgres/profile_analysis_integration_test.go','internal/kernel/profile_analysis.go','internal/orchestration/window_budget_wait.go']
+          subprocess.run(['gofmt','-w',*paths],check=True)
+          for p in paths:
+            print('OUF_ANALYSIS_FORMAT='+json.dumps({'path':p,'content':pathlib.Path(p).read_text()},separators=(',',':')))
+          PY
+      - name: Actual work budget and contract validation
+        run: go test -race ./internal/analysis ./internal/kernel ./internal/manifest -count=1
+      - name: PostgreSQL progress, reconnect, concurrency, authorization and waits
+        run: go test -race ./internal/adapter/postgres -run 'TestProfileAnalysis|TestSemanticReadBudget|TestManagedSchemaPages' -count=1 -v
+      - run: go build -trimpath -o build/ouf-mcp ./cmd/ouf-mcp

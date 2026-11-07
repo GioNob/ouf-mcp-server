@@ -4760,6 +4760,257 @@
           }
         }
       }
+    },
+    {
+      "toolName": "source.analysis.plan",
+      "capabilityId": "ouf.source.analysis.plan",
+      "purpose": "Plan finite semantic evidence work using the authoritative owned profile; budget is the sum of unique planned calls",
+      "useWhen": [
+        "a managed tabular profile requires repeatable column-property analysis"
+      ],
+      "doNotUseWhen": [
+        "publication, approval, arbitrary network queries or unowned profiles are requested"
+      ],
+      "preferredAlternatives": [
+        "source.file.preview",
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxColumns": 1024,
+        "maxTasks": 16384,
+        "maxPlanBatch": 128,
+        "maxRetainedBytes": 67108864,
+        "maxResultBytes": 1048576
+      },
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "securityNotes": [
+        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Owned profile is obtained through Onboarding; no caller column count",
+        "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
+        "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "mcp",
+      "operationClass": "COMMAND",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.source.analysis.plan",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 128,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 10000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 0
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assetId",
+          "profileId",
+          "expectedRevision",
+          "work"
+        ],
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "profileId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "work": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tool",
+                "arguments",
+                "columns"
+              ],
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "enum": [
+                    "semantic.search",
+                    "semantic.get",
+                    "semantic.discovery.request",
+                    "semantic.discovery.status",
+                    "semantic.discovery.candidates"
+                  ]
+                },
+                "arguments": {
+                  "type": "object"
+                },
+                "columns": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1024,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  }
+                },
+                "observation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 128
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "toolName": "source.analysis.read",
+      "capabilityId": "ouf.source.analysis.read",
+      "purpose": "Read durable per-column evidence progress, cumulative consumption and bounded task pages",
+      "useWhen": [
+        "a managed tabular profile requires repeatable column-property analysis"
+      ],
+      "doNotUseWhen": [
+        "publication, approval, arbitrary network queries or unowned profiles are requested"
+      ],
+      "preferredAlternatives": [
+        "source.file.preview",
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxColumns": 1024,
+        "maxTasks": 16384,
+        "maxPlanBatch": 128,
+        "maxRetainedBytes": 67108864,
+        "maxResultBytes": 1048576
+      },
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "securityNotes": [
+        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Owned profile is obtained through Onboarding; no caller column count",
+        "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
+        "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "mcp",
+      "operationClass": "READ",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.source.analysis.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 0,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 128,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 0
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "analysisId"
+        ],
+        "properties": {
+          "analysisId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16384
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128
+          }
+        }
+      }
+    },
+    {
+      "toolName": "source.analysis.step",
+      "capabilityId": "ouf.source.analysis.step",
+      "purpose": "Execute or resume one planned semantic evidence task through existing governed admission",
+      "useWhen": [
+        "a managed tabular profile requires repeatable column-property analysis"
+      ],
+      "doNotUseWhen": [
+        "publication, approval, arbitrary network queries or unowned profiles are requested"
+      ],
+      "preferredAlternatives": [
+        "source.file.preview",
+        "semantic.search"
+      ],
+      "operationalLimits": {
+        "maxColumns": 1024,
+        "maxTasks": 16384,
+        "maxPlanBatch": 128,
+        "maxRetainedBytes": 67108864,
+        "maxResultBytes": 1048576
+      },
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. EVIDENCE_COLLECTED is not a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "securityNotes": [
+        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Owned profile is obtained through Onboarding; no caller column count",
+        "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
+        "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "mcp",
+      "operationClass": "COMMAND",
+      "publicationState": "INACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.source.analysis.step",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 128,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 0
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "analysisId",
+          "taskId"
+        ],
+        "properties": {
+          "analysisId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "taskId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
     }
   ]
 }

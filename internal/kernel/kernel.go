@@ -294,6 +294,10 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	if strings.HasPrefix(c.ToolName, "source.analysis.") {
+		registerAnalysisTool(server, c, snapshot, service)
+		return
+	}
 	if isAcquisitionRead(c.CapabilityID) {
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return

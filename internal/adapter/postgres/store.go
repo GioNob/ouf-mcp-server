@@ -225,7 +225,7 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 			}
 			return orchestration.AdmissionDecision{}, orchestration.NewSemanticReadBudgetExhaustedError(ErrBudgetExhausted, dimension, now, windowEnd)
 		}
-		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
+		return orchestration.AdmissionDecision{}, &orchestration.WindowBudgetExhaustedError{Cause: ErrBudgetExhausted, WindowEnd: windowEnd}
 	}
 	groupID := uuid.New()
 	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_equivalence_group(equivalence_group_id,budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) values($1,$2,$3,$4,$5) on conflict(budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) do update set semantic_fingerprint=excluded.semantic_fingerprint returning equivalence_group_id`, groupID, windowID, in.CapabilityID, in.FingerprintVersion, in.SemanticFingerprint).Scan(&groupID)
