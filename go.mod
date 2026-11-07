@@ -1,6 +1,6 @@
 module github.com/GioNob/ouf-mcp-server
 
-go 1.26.10
+go 1.27.3
 
 require (
 	github.com/google/jsonschema-go v0.4.3

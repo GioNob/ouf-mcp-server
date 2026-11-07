@@ -1,0 +1,28 @@
+name: M2 governed discovery composition
+on:
+  push:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/m2-discovery-composition.yml']
+  pull_request:
+    paths: ['internal/kernel/**', 'internal/adapter/httpclient/**', 'internal/manifest/**', '.github/workflows/m2-discovery-composition.yml']
+permissions: {contents: read}
+jobs:
+  discovery-contract-and-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: GioNob/ouf-api-gateway
+          ref: ace683b1019f79adaace86796b67e463b93ec12e
+          path: .pairwise/discovery-gateway
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: true}
+      - run: python3 -m pip install -r .pairwise/discovery-gateway/requirements-dev.txt
+      - name: Check formatting of reused and composed Go sources
+        run: |
+          test -z "$(gofmt -l internal/kernel/semantic_discovery_dispatch_test.go internal/manifest/semantic_discovery_candidate_test.go internal/adapter/httpclient/clients.go internal/kernel/kernel.go)"
+      - name: Exercise SDK dispatch, Gateway schemas, deny and current M2 regressions
+        run: |
+          export GATEWAY_SEMANTIC_DISCOVERY_PAIRWISE_ROOT="$PWD/.pairwise/discovery-gateway"
+          go test -race ./internal/manifest ./internal/adapter/httpclient ./internal/kernel -run 'TestDiscovery|TestSemantic(Search|Get|ProposalTools)|TestSourceReview|TestManagedProfile' -count=1 -v

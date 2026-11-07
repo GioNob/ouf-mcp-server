@@ -71,7 +71,9 @@ func nativeMigrationFixture(t *testing.T) migrationFixture {
 		t.Fatal(e)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "013_") {
+		// This fixture is the database before transition 13, not every
+		// migration except 13. Future migrations must not be pre-applied.
+		if entry.Name() >= "013_" {
 			continue
 		}
 		raw, e := migrationFiles.ReadFile("migrations/" + entry.Name())

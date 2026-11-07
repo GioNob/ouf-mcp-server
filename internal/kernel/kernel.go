@@ -294,6 +294,10 @@ type requestIdentity struct {
 }
 
 func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	if strings.HasPrefix(c.ToolName, "source.analysis.") {
+		registerAnalysisTool(server, c, snapshot, service)
+		return
+	}
 	if isAcquisitionRead(c.CapabilityID) {
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return
@@ -309,7 +313,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {
 				maxObjects, maxBytes = 1, 262144
-				if c.ToolName == "semantic.search" {
+				if c.ToolName == "semantic.search" || strings.HasPrefix(c.ToolName, "semantic.discovery.") {
 					maxObjects = 100
 				}
 			}
