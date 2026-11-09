@@ -21,8 +21,8 @@ jobs:
       - run: python3 -m pip install -r .pairwise/discovery-gateway/requirements-dev.txt
       - name: Check formatting of reused and composed Go sources
         run: |
-          test -z "$(gofmt -l internal/kernel/semantic_discovery_dispatch_test.go internal/manifest/semantic_discovery_candidate_test.go internal/adapter/httpclient/clients.go internal/kernel/kernel.go)"
+          test -z "$(gofmt -l internal/kernel/semantic_discovery_dispatch_test.go internal/kernel/analysis_discovery_publication_test.go internal/manifest/semantic_discovery_candidate_test.go internal/adapter/httpclient/clients.go internal/kernel/kernel.go)"
       - name: Exercise SDK dispatch, Gateway schemas, deny and current M2 regressions
         run: |
           export GATEWAY_SEMANTIC_DISCOVERY_PAIRWISE_ROOT="$PWD/.pairwise/discovery-gateway"
-          go test -race ./internal/manifest ./internal/adapter/httpclient ./internal/kernel -run 'TestDiscovery|TestSemantic(Search|Get|ProposalTools)|TestSourceReview|TestManagedProfile' -count=1 -v
+          go test -race ./internal/manifest ./internal/adapter/httpclient ./internal/kernel -run 'TestDiscovery|TestPublished(Discovery|AnalysisDiscovery)|TestSemantic(Search|Get|ProposalTools)|TestSourceReview|TestManagedProfile' -count=1 -v
