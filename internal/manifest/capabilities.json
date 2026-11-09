@@ -1,5 +1,5 @@
 {
-  "version": "1.9.0-file-loop-and-semantic-proposals",
+  "version": "1.10.0-profile-analysis-and-discovery",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -4589,7 +4589,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "semantic",
       "operationClass": "COMMAND",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.semantic.discovery",
       "gatewayBindingRef": "capability://ouf.semantic.discovery",
       "baseCostEnvelope": {
@@ -4673,7 +4673,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "semantic",
       "operationClass": "READ",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.semantic.discovery.status",
       "gatewayBindingRef": "capability://ouf.semantic.discovery.status",
       "baseCostEnvelope": {
@@ -4730,7 +4730,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "semantic",
       "operationClass": "READ",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.semantic.discovery.candidates",
       "gatewayBindingRef": "capability://ouf.semantic.discovery.candidates",
       "baseCostEnvelope": {
@@ -4786,7 +4786,7 @@
       },
       "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
-        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
         "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
         "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
@@ -4794,7 +4794,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "mcp",
       "operationClass": "COMMAND",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.managed-source.preview",
       "gatewayBindingRef": "capability://ouf.source.analysis.plan",
       "baseCostEnvelope": {
@@ -4904,7 +4904,7 @@
       },
       "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
-        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
         "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
         "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
@@ -4912,7 +4912,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "mcp",
       "operationClass": "READ",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.managed-source.preview",
       "gatewayBindingRef": "capability://ouf.source.analysis.read",
       "baseCostEnvelope": {
@@ -4976,7 +4976,7 @@
       },
       "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
-        "INACTIVE candidate; requires coherent deployment and capability activation",
+        "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
         "Fresh managed-preview permission and underlying semantic permission are required; no permission expansion",
         "Discovery requests get stable owner idempotency keys; credentials/delegations are never persisted"
@@ -4984,7 +4984,7 @@
       "mcpClass": "MCP_TOOL",
       "owner": "mcp",
       "operationClass": "COMMAND",
-      "publicationState": "INACTIVE",
+      "publicationState": "ACTIVE",
       "requiredAuthorizationCapability": "ouf.managed-source.preview",
       "gatewayBindingRef": "capability://ouf.source.analysis.step",
       "baseCostEnvelope": {

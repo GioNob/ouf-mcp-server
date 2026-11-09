@@ -231,6 +231,23 @@ func TestProfileAnalysisActualExecutionResumeAuthorizationAndWindowWait(t *testi
 }
 func TestProfileAnalysisTransientReadAndInactiveDiscovery(t *testing.T) {
 	ctx, s, c, i, _, g, p := coordinatorFixture(t, 20)
+	// Exercise an explicitly unpublished descriptor independently of the release catalogue.
+	for n := range c.Manifest.Capabilities {
+		if c.Manifest.Capabilities[n].ToolName == "semantic.discovery.request" {
+			c.Manifest.Capabilities[n].PublicationState = "INACTIVE"
+		}
+	}
+	checksum, err := c.Manifest.Checksum()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := c.Manifest.CanonicalPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.EnsureManifest(ctx, checksum, c.Manifest.Version, "mcp-manifest-v1", payload); err != nil {
+		t.Fatal(err)
+	}
 	v, e := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{searchWork(0)})
 	if e != nil {
 		t.Fatal(e)
