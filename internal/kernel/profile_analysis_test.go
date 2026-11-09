@@ -3,6 +3,8 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,20 +63,16 @@ func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
 		t.Fatal(e)
 	}
 	cap, ok := analysis.Find(snapshot, "source.analysis.plan")
-	if !ok || cap.PublicationState != "INACTIVE" {
-		t.Fatal("candidate exposure")
-	}
-	for _, c := range snapshot.ToolEligible() {
-		if strings.HasPrefix(c.ToolName, "source.analysis.") {
-			t.Fatal("production exposure")
-		}
+	if !ok || cap.PublicationState != "ACTIVE" {
+		t.Fatal("analysis tool not published")
 	}
 	store := &analysisSDKStore{}
 	gateway := &analysisSDKGateway{asset: uuid.NewString(), profile: uuid.NewString()}
 	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: store, Gateway: gateway, FingerprintKey: make([]byte, 32)}
-	server := mcp.NewServer(&mcp.Implementation{Name: "analysis-fixture", Version: "1"}, nil)
-	registerGovernedTool(server, cap, snapshot, service)
-	handler := modernOnly(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	handler, e := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), service, "https://example.test/trusted-human/managed-files/")
+	if e != nil {
+		t.Fatal(e)
+	}
 	transport := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "mcp", "X-OUF-Principal-ID": "analyst", "X-OUF-Tenant-ID": "tenant", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1"} {
 			r.Header.Set(k, v)

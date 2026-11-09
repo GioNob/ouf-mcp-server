@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestDiscoveryCandidateMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
+func TestPublishedDiscoveryMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 	for _, operation := range []string{"request", "status", "candidates"} {
 		t.Run(operation, func(t *testing.T) {
 			snapshot, err := manifest.Load()
@@ -68,10 +67,10 @@ func TestDiscoveryCandidateMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 			defer gateway.Close()
 			u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
 			service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: &statusAdmission{}, Gateway: &httpclient.GatewayClient{Endpoint: u, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
-			// Register only this candidate in an isolated SDK fixture. Production eligibility remains INACTIVE.
-			server := mcp.NewServer(&mcp.Implementation{Name: "discovery-fixture", Version: "1"}, nil)
-			registerGovernedTool(server, capability, snapshot, service)
-			handler := modernOnly(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+			handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, scope := range []string{"ouf.semantic.discovery", "mcp.connect"} {
 				transport := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					for k, v := range map[string]string{"X-OUF-Delegation": "opaque-proof", "X-OUF-Gateway-Verified": "true", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
@@ -85,8 +84,20 @@ func TestDiscoveryCandidateMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 					t.Fatal(err)
 				}
 				tools, err := session.ListTools(context.Background(), nil)
-				if err != nil || len(tools.Tools) != 1 || tools.Tools[0].Annotations.ReadOnlyHint != (operation != "request") {
-					t.Fatal("incorrect candidate tool annotation")
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, tool := range tools.Tools {
+					if tool.Name == capability.ToolName {
+						found = true
+						if tool.Annotations == nil || tool.Annotations.ReadOnlyHint != (operation != "request") {
+							t.Fatal("incorrect discovery tool annotation")
+						}
+					}
+				}
+				if !found {
+					t.Fatal("published discovery tool missing")
 				}
 				args := map[string]any{"requestId": "11111111-1111-4111-8111-111111111111"}
 				if operation == "request" {
@@ -111,30 +122,3 @@ func TestDiscoveryCandidateMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 	}
 }
 
-// An ordinary production handler cannot advertise candidate tools.
-func TestDiscoveryNotAdvertisedByCurrentProductionHandler(t *testing.T) {
-	handler, err := NewHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set("X-OUF-Gateway-Verified", "true")
-		handler.ServeHTTP(w, r)
-	}))
-	defer server.Close()
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-	tools, err := session.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range tools.Tools {
-		if strings.HasPrefix(tool.Name, "semantic.discovery.") {
-			t.Fatal("candidate tool exposed")
-		}
-	}
-}
