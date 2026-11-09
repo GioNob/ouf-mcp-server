@@ -121,4 +121,3 @@ func TestPublishedDiscoveryMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 		})
 	}
 }
-
