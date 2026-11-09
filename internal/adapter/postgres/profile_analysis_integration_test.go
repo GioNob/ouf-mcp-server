@@ -237,6 +237,17 @@ func TestProfileAnalysisTransientReadAndInactiveDiscovery(t *testing.T) {
 			c.Manifest.Capabilities[n].PublicationState = "INACTIVE"
 		}
 	}
+	checksum, err := c.Manifest.Checksum()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := c.Manifest.CanonicalPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.EnsureManifest(ctx, checksum, c.Manifest.Version, "mcp-manifest-v1", payload); err != nil {
+		t.Fatal(err)
+	}
 	v, e := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{searchWork(0)})
 	if e != nil {
 		t.Fatal(e)
