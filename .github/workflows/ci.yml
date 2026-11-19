@@ -35,13 +35,13 @@ jobs:
           ref: fb2dd51dfc204577a47c1e702f17531dd0709b3c
           path: .pairwise/authorization
       - uses: actions/setup-go@v6
-        with: {go-version: '1.27.3', cache: true}
+        with: {go-version: '1.27.4', cache: true}
       - name: Verify official Go distribution and retain checksum
         run: |
           mkdir -p build
           python3 - <<'PYGO'
           import hashlib,json,os,pathlib,subprocess,tarfile,tempfile,urllib.request
-          version='go1.27.3'
+          version='go1.27.4'
           assert subprocess.check_output(['go','env','GOVERSION'],text=True).strip()==version
           assert subprocess.check_output(['go','env','GOHOSTOS'],text=True).strip()=='linux'
           assert subprocess.check_output(['go','env','GOHOSTARCH'],text=True).strip()=='amd64'
@@ -50,7 +50,7 @@ jobs:
           release=next(r for r in releases if r['version']==version and r['stable'] is True)
           row=next(f for f in release['files'] if f['filename']==version+'.linux-amd64.tar.gz')
           assert row['os']=='linux' and row['arch']=='amd64' and row['kind']=='archive'
-          assert row['sha256']=='65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40' and row['size']==70588678
+          assert row['sha256']=='7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840' and row['size']==70680823
           with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP']) as temporary:
               archive=pathlib.Path(temporary)/row['filename'];sha=hashlib.sha256();size=0
               with urllib.request.urlopen('https://dl.google.com/go/'+row['filename'],timeout=180) as response,archive.open('xb') as output:
