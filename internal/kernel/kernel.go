@@ -123,7 +123,9 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			}
 			continue
 		}
-		if service == nil {
+		if isSourceRevisionCapability(capability.CapabilityID) {
+			registerSourceRevisionTool(server, capability, snapshot, service)
+		} else if service == nil {
 			registerUnavailableTool(server, capability)
 		} else {
 			registerGovernedTool(server, capability, snapshot, service)
@@ -302,7 +304,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return
 	}
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -317,7 +319,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 					maxObjects = 100
 				}
 			}
-			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
+			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 				maxObjects, maxBytes = 1, 65536
 			}
 			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
@@ -472,7 +474,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		body, _ := json.Marshal(result.Problem)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}, nil, nil
+	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
+	if isSourceRevisionCapability(c.CapabilityID) {
+		return content, json.RawMessage(result.Body), nil
+	}
+	return content, nil, nil
 }
 
 func errorResult(code string, retryable bool) *mcp.CallToolResult {

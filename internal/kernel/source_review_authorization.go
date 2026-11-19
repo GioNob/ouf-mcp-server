@@ -9,7 +9,11 @@ import (
 )
 
 func isSourceReviewCapability(id string) bool {
-	return id == "ouf.managed-source.onboarding.review.prepare" || id == "ouf.managed-source.onboarding.read" || id == "ouf.onboarding.revision.prepare" || id == "ouf.onboarding.revision.read"
+	return id == "ouf.managed-source.onboarding.review.prepare" || id == "ouf.managed-source.onboarding.read" || isSourceRevisionCapability(id)
+}
+
+func isSourceRevisionCapability(id string) bool {
+	return id == "ouf.onboarding.revision.prepare" || id == "ouf.onboarding.revision.read"
 }
 
 func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string) (string, orchestration.ResourceContext, error) {
@@ -40,7 +44,7 @@ func sourceReviewAuthorization(c manifest.Capability, args []byte, tenant string
 		// and rechecks its current exact-version policy and tenant/subject ownership.
 		return c.RequiredAuthorization, orchestration.ResourceContext{ResourceType: "source", ResourceID: input.SourceID, TenantID: tenant}, nil
 	}
-	if input.VersionID == "" && (c.CapabilityID == "ouf.onboarding.revision.prepare" || c.CapabilityID == "ouf.onboarding.revision.read") {
+	if input.VersionID == "" && isSourceRevisionCapability(c.CapabilityID) {
 		input.VersionID = input.ParentID
 	}
 	if input.SourceID == "" || input.VersionID == "" {
