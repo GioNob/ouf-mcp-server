@@ -10,6 +10,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
+	"github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -181,10 +182,16 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		if state == "UNKNOWN" || state == "UNRESOLVED" {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
 		}
+		if in.Reprocessing != nil {
+			return s.reserveSemanticReprocessing(ctx, tx, in, existingID)
+		}
 		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true}, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return orchestration.AdmissionDecision{}, err
+	}
+	if in.Reprocessing != nil {
+		return orchestration.AdmissionDecision{}, reprocessing.ErrPermit
 	}
 	var now time.Time
 	if err = tx.QueryRow(ctx, "select transaction_timestamp()").Scan(&now); err != nil {
@@ -206,8 +213,19 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, err
 	}
 	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > windowMaximum.DistinctObjects
-	if reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls || reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes || objectBudgetExceeded {
-		return orchestration.AdmissionDecision{}, ErrBudgetExhausted
+	callBudgetExceeded := reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls
+	byteBudgetExceeded := reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes
+	if callBudgetExceeded || byteBudgetExceeded || objectBudgetExceeded {
+		if in.BudgetProfile == orchestration.SemanticReadBudgetProfile {
+			dimension := "DISTINCT_OBJECTS"
+			if callBudgetExceeded {
+				dimension = "TOOL_CALLS"
+			} else if byteBudgetExceeded {
+				dimension = "RESULT_BYTES"
+			}
+			return orchestration.AdmissionDecision{}, orchestration.NewSemanticReadBudgetExhaustedError(ErrBudgetExhausted, dimension, now, windowEnd)
+		}
+		return orchestration.AdmissionDecision{}, &orchestration.WindowBudgetExhaustedError{Cause: ErrBudgetExhausted, WindowEnd: windowEnd}
 	}
 	groupID := uuid.New()
 	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_equivalence_group(equivalence_group_id,budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) values($1,$2,$3,$4,$5) on conflict(budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) do update set semantic_fingerprint=excluded.semantic_fingerprint returning equivalence_group_id`, groupID, windowID, in.CapabilityID, in.FingerprintVersion, in.SemanticFingerprint).Scan(&groupID)

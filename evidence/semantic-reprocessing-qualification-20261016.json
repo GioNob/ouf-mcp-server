@@ -1,0 +1,18 @@
+{
+  "schema": "ouf.mcp-semantic-reprocessing-source-qualification.v1",
+  "sourceCommit": "79f0180d308a1ca19bdd8956009085bd6abfdd41",
+  "workflowRun": 38934300206,
+  "job": 117085778802,
+  "conclusion": "success",
+  "postgresMajor": 17,
+  "normalAndRacePassed": true,
+  "commandCompiled": true,
+  "rootCustodyPassed": true,
+  "lostResponseNativeUnknownTransitionPassed": true,
+  "existingInstallerRoleFramesMatched": true,
+  "ownerGatewayPort": "synthetic",
+  "targetDeployed": false,
+  "runtimeAuthorityIssued": false,
+  "semanticProposalCreated": false,
+  "acceptanceGranted": false
+}

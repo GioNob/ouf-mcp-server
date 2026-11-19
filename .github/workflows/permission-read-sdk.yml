@@ -1,0 +1,21 @@
+name: Permission catalogue real SDK regression
+on:
+  push:
+    branches: [test/permission-read-sdk-20261018, feat/acquisition-evidence-read-20261025]
+  pull_request:
+    paths:
+      - internal/manifest/capabilities.json
+      - internal/manifest/*schema_test.go
+      - internal/manifest/permission_union_portability_test.go
+      - internal/kernel/permission_read_transport_test.go
+      - .github/workflows/permission-read-sdk.yml
+permissions: {contents: read}
+jobs:
+  sdk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.4', cache: true}
+      - run: go test ./internal/manifest ./internal/kernel -run 'Test(ApplicationRoleInputsRemainClosedAndProposalOnly|PermissionUnionBranchesAreCompleteClientContracts|PermissionReadSelectorsRoundTripThroughRealMCPTransport)$' -count=1 -v

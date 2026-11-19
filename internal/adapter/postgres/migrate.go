@@ -29,7 +29,16 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), "select pg_advisory_unlock(73012026)") }()
-	if _, err = conn.Exec(ctx, "create schema if not exists ouf_mcp; create table if not exists ouf_mcp.schema_migration(version integer primary key, checksum char(64) not null check (checksum ~ '^[0-9a-f]{64}$'), applied_at timestamptz not null default transaction_timestamp())"); err != nil {
+	var schemaExists bool
+	if err = conn.QueryRow(ctx, "select exists(select 1 from pg_namespace where nspname='ouf_mcp')").Scan(&schemaExists); err != nil {
+		return err
+	}
+	if !schemaExists {
+		if _, err = conn.Exec(ctx, "create schema ouf_mcp"); err != nil {
+			return err
+		}
+	}
+	if _, err = conn.Exec(ctx, "create table if not exists ouf_mcp.schema_migration(version integer primary key, checksum char(64) not null check (checksum ~ '^[0-9a-f]{64}$'), applied_at timestamptz not null default transaction_timestamp())"); err != nil {
 		return err
 	}
 	entries, err := fs.ReadDir(migrationFiles, "migrations")

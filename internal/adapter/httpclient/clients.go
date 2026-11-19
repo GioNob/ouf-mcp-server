@@ -137,6 +137,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
+	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.operations.summary", "ouf.operations.incidents",
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
@@ -151,12 +153,22 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/search"
 	case "ouf.semantic.consultation.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/get"
+	case "ouf.semantic.discovery":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/request"
+	case "ouf.semantic.discovery.status":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/status"
+	case "ouf.semantic.discovery.candidates":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/candidates"
 	case "urban.object.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
 	case "ouf.managed-source.file.profile":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
+	case "ouf.onboarding.revision.prepare":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/source.revision/prepare"
+	case "ouf.onboarding.revision.read":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/source.revision/read"
 	case "ouf.managed-source.onboarding.review.prepare":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/review-prepare"
 	case "ouf.managed-source.onboarding.read":

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/reprocessing"
 	"github.com/GioNob/ouf-mcp-server/internal/statusview"
 	"github.com/google/uuid"
 )
@@ -22,6 +23,17 @@ var (
 	ErrResultLimit        = errors.New("gateway result exceeds governed byte limit")
 	ErrToolSelectionStall = errors.New("tool selection stalled")
 )
+
+// AuthorizationDeniedError preserves the local decision without making it an
+// authority, a retry instruction, or a container for principal/credential data.
+// Error and Unwrap preserve existing errors.Is and generic-tool contracts.
+type AuthorizationDeniedError struct {
+	ReasonCode    string
+	PolicyVersion int64
+}
+
+func (e *AuthorizationDeniedError) Error() string { return ErrUnauthorized.Error() }
+func (e *AuthorizationDeniedError) Unwrap() error { return ErrUnauthorized }
 
 type IdentityClaims struct {
 	ExternalRoleRefs []string  `json:"externalRoleRefs"`
@@ -67,6 +79,8 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
+	Reprocessing                                                                    *reprocessing.VerifiedPermit
+	AttemptTimeout                                                                  time.Duration
 	BudgetProfile                                                                   string
 	AttemptID                                                                       uuid.UUID
 	Identity                                                                        Identity
@@ -158,6 +172,8 @@ type Result struct {
 }
 
 type Service struct {
+	ReprocessingGuard func() error
+	Reprocessing      *reprocessing.VerifiedPermit
 	RequireDelegation bool
 	Auth              AuthorizationPort
 	Admission         AdmissionPort
@@ -167,8 +183,14 @@ type Service struct {
 }
 
 func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
-	if in.BudgetProfile == "" && IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
-		in.BudgetProfile = OperationalControlBudgetProfile
+	if in.BudgetProfile == "" {
+		if IsSemanticRead(in.CapabilityID, in.OperationClass) {
+			in.BudgetProfile = SemanticReadBudgetProfile
+		} else if isManagedSchemaPage(in) {
+			in.BudgetProfile = ManagedSchemaBudgetProfile
+		} else if IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
+			in.BudgetProfile = OperationalControlBudgetProfile
+		}
 	}
 	if _, _, err := AdmissionWindowBudget(AdmissionRequest{BudgetProfile: in.BudgetProfile, CapabilityID: in.CapabilityID, OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum}); err != nil {
 		return Result{}, err
@@ -178,7 +200,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, fmt.Errorf("invalid governed invocation")
 	}
 	if s.RequireDelegation && in.Identity.Delegation == "" {
-		return Result{}, ErrUnauthorized
+		return Result{}, &AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
 	}
 	if in.Upload != nil && (in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Reader == nil || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024) {
 		return Result{}, fmt.Errorf("invalid governed upload")
@@ -227,7 +249,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 				AuthorizationDecisionRef: decision.DecisionRef,
 			})
 		}
-		return Result{}, ErrUnauthorized
+		return Result{}, &AuthorizationDeniedError{ReasonCode: decision.DecisionCode, PolicyVersion: decision.BundleVersion}
 	}
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
@@ -251,7 +273,18 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	var permit *reprocessing.VerifiedPermit
+	if s.Reprocessing.Matches(in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.CapabilityID, in.Owner, in.OperationClass, in.IdempotencyKey) {
+		permit = s.Reprocessing
+		if s.ReprocessingGuard == nil {
+			return Result{}, reprocessing.ErrPermit
+		}
+		if err := s.ReprocessingGuard(); err != nil {
+			return Result{}, err
+		}
+	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
+		Reprocessing: permit, AttemptTimeout: in.Timeout,
 		BudgetProfile: in.BudgetProfile,
 		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
@@ -263,6 +296,14 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	if admitted.Replay {
 		return Result{AttemptID: admitted.AttemptID, Replay: true}, nil
+	}
+	if permit != nil {
+		if err := s.ReprocessingGuard(); err != nil {
+			return Result{}, err
+		}
+		if err := permit.CheckTime(time.Now(), in.Timeout+time.Second); err != nil {
+			return Result{}, err
+		}
 	}
 	backendRequestID := uuid.NewString()
 	err = s.Admission.Dispatch(ctx, admitted.AttemptID, backendRequestID, in.Timeout+time.Second, admitted.LockVersion)
@@ -276,6 +317,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		MaxResultBytes: in.Maximum.ResultBytes,
 		Upload:         in.Upload,
 	}, in.Timeout)
+	if permit != nil && callErr != nil {
+		// Dispatch may have reached the owner. Preserve the finite lease and
+		// reservation for native UNKNOWN recovery; never infer a known failure
+		// or make this one-use session available for another dispatch.
+		if s.Audit != nil {
+			_ = s.Audit.Audit(ctx, AuditEvent{EventType: "SEMANTIC_REPROCESSING_OUTCOME_UNCERTAIN", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: "OWNER_OUTCOME_UNCERTAIN", AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel})
+		}
+		return Result{AttemptID: admitted.AttemptID}, callErr
+	}
 	outcome := AttemptOutcome{Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {
 		outcome.BackendRequestID = backendRequestID

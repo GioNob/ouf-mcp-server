@@ -1,0 +1,5 @@
+# Retained managed-profile job read admission
+
+source.file.preview with exact assetId/jobId now uses managed-profile-job pre-admission, matching Onboarding native recovery. Scope is moduleONBOARDING, assetRef/jobRef and TENANT_OPERATIONAL control detail; no CSV label is assigned. Existing content-profile and ASSETS views retain their previous authorization contexts. The owner must independently verify tenant/subject custody and the exact retained pair. This grants no budget, profiling request, upload or acquisition and introduces no new MCP tool. Explicit assignment/current policy, scope, expiry and DENY still apply. Bounded pre-admission denial reuses the existing safe acquisition denial projection.
+
+The real SDK/cache/TLS transport test proves exact-job dispatch, rejection of another job/asset/subject/tenant, missing scope, content/collection and forged context, plus owner denial without retry. Gateway/owner fixture is synthetic; source qualification does not prove target deployment, browser principal, effective grant or CSV E2E.
