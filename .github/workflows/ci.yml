@@ -45,7 +45,7 @@ jobs:
           assert subprocess.check_output(['go','env','GOVERSION'],text=True).strip()==version
           assert subprocess.check_output(['go','env','GOHOSTOS'],text=True).strip()=='linux'
           assert subprocess.check_output(['go','env','GOHOSTARCH'],text=True).strip()=='amd64'
-          with urllib.request.urlopen('https://go.dev/dl/?mode=json',timeout=60) as response:
+          with urllib.request.urlopen('https://go.dev/dl/?mode=json&include=all',timeout=60) as response:
               releases=json.load(response)
           release=next(r for r in releases if r['version']==version and r['stable'] is True)
           row=next(f for f in release['files'] if f['filename']==version+'.linux-amd64.tar.gz')
