@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDiscoveryCandidateIsClosedAndNotAdvertisedBeforeRelease(t *testing.T) {
+func TestDiscoveryPublicationKeepsOwnerAndOperationContracts(t *testing.T) {
 	snapshot, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -16,8 +16,8 @@ func TestDiscoveryCandidateIsClosedAndNotAdvertisedBeforeRelease(t *testing.T) {
 			continue
 		}
 		count++
-		if capability.PublicationState != "INACTIVE" || capability.Owner != "semantic" {
-			t.Fatal("unaccepted discovery tool advertised")
+		if capability.PublicationState != "ACTIVE" || capability.Owner != "semantic" {
+			t.Fatal("discovery publication or owner changed")
 		}
 		if capability.ToolName == "semantic.discovery.request" {
 			if capability.OperationClass != "COMMAND" {
@@ -30,9 +30,13 @@ func TestDiscoveryCandidateIsClosedAndNotAdvertisedBeforeRelease(t *testing.T) {
 	if count != 3 {
 		t.Fatalf("expected three discovery candidates, got %d", count)
 	}
+	eligible := 0
 	for _, capability := range snapshot.ToolEligible() {
 		if strings.HasPrefix(capability.ToolName, "semantic.discovery.") {
-			t.Fatal("candidate exposed without coordinated release")
+			eligible++
 		}
+	}
+	if eligible != 3 {
+		t.Fatalf("expected three published discovery tools, got %d", eligible)
 	}
 }
