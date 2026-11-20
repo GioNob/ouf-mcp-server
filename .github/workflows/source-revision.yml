@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: GioNob/ouf-api-gateway
-          ref: 7b20f80ee47ae3855f9a500e234d85f4b9a7e2c0
+          ref: ae876935cf6383ffd5c7a3d9c783ffc50b9dfbc2
           path: .pairwise/source-revision-gateway
       - uses: actions/setup-go@v6
         with: {go-version: '1.27.4', cache: true}
