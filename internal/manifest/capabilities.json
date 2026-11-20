@@ -1,5 +1,5 @@
 {
-  "version": "1.11.0-source-revision-new-asset",
+  "version": "1.12.0-source-revision-new-columns",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -4172,7 +4172,8 @@
       "purpose": "Prepare a revision of an ACTIVE source for native human review",
       "useWhen": [
         "the user wants to revise property policies on the current file using changes",
-        "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion"
+        "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
+        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one"
       ],
       "doNotUseWhen": [
         "the file belongs to a new source. Use source.onboarding.create",
@@ -4185,7 +4186,7 @@
         "maxArgumentsBytes": 65536,
         "maxResultBytes": 65536
       },
-      "resultSemantics": "Returns a native review receipt. File replacement includes assetRef and diagnostics. ONB_REVISION_CSV_INCOMPATIBLE lists the schema differences. The parent stays active during review. Subsequent HUMAN activation can start acquisition.",
+      "resultSemantics": "File replacement returns a native review receipt with assetRef, the recorded newColumns decisions in order and empty diagnostics. ONB_REVISION_CSV_INCOMPATIBLE lists the differences by column. The parent stays active during review. Subsequent HUMAN activation can start acquisition.",
       "securityNotes": [
         "Exact source/version authorization and existing managed-file ownership remain enforced",
         "Keep the same commandKey after interruptions; changed intent is a new governed revision",
@@ -4222,7 +4223,7 @@
         ],
         "if": { "required": ["assetRef"] },
         "then": { "not": { "required": ["changes"] } },
-        "else": { "required": ["changes"] },
+        "else": { "required": ["changes"], "not": { "required": ["newColumns"] } },
         "properties": {
           "sourceId": {
             "type": "string",
@@ -4262,6 +4263,62 @@
                 "type": "string",
                 "format": "uuid",
                 "pattern": "^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"
+              }
+            }
+          },
+          "newColumns": {
+            "type": "array",
+            "maxItems": 1024,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["column", "decision"],
+              "if": { "properties": { "decision": { "const": "MAP" } } },
+              "then": { "required": ["mapping"] },
+              "else": { "not": { "required": ["mapping"] } },
+              "properties": {
+                "column": { "type": "string", "minLength": 1 },
+                "decision": { "enum": ["EXCLUDE", "MAP"] },
+                "mapping": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["propertyIri", "transform", "reconciliation"],
+                  "properties": {
+                    "propertyIri": { "type": "string", "format": "iri", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
+                    "transform": { "enum": ["IDENTITY", "DECIMAL_DOT_V1", "DECIMAL_COMMA_V1", "DATE_ISO_V1", "DATE_DMY_V1"] },
+                    "reconciliation": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["policyRef", "cardinality", "normalizerRef", "normalizerVersion", "validity"],
+                      "properties": {
+                        "policyRef": { "const": "urn:ouf:policy:linked-object-property-reconciliation:v1" },
+                        "cardinality": { "enum": ["SINGLE", "MULTI"] },
+                        "normalizerRef": { "enum": ["EXACT_TYPED", "NFC_TRIM"] },
+                        "normalizerVersion": { "const": 1 },
+                        "validity": { "enum": ["UNBOUNDED", "SOURCE_INTERVAL"] },
+                        "revisionField": { "type": "string", "minLength": 1, "maxLength": 2048 },
+                        "deletionField": { "type": "string", "minLength": 1, "maxLength": 2048 }
+                      }
+                    },
+                    "accessLabel": { "enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"] },
+                    "authorityOrder": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "uniqueItems": true,
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "comparison": {
+                      "type": "object",
+                      "description": "Required when the parent uses governedIdentity.",
+                      "additionalProperties": false,
+                      "required": ["comparator", "assertionRef"],
+                      "properties": {
+                        "comparator": { "enum": ["CONCEPT", "TEXT_V1", "DECIMAL_V1", "JSON_V1"] },
+                        "assertionRef": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -4359,7 +4416,7 @@
         "maxArgumentsBytes": 4096,
         "maxResultBytes": 65536
       },
-      "resultSemantics": "Version/hash/lock and bounded rule projection or native review receipt; preparation never publishes or acquires. Activation can start a new acquisition under retained scheduler configuration.",
+      "resultSemantics": "Version/hash/lock and bounded rule projection or native review receipt. For a file replacement the receipt includes the recorded newColumns decisions and mappings for that version, including an empty array for historical replacements. Activation can start a new acquisition under retained scheduler configuration.",
       "securityNotes": [
         "Exact source/version authorization and existing managed-file ownership remain enforced",
         "Keep the same commandKey after interruptions; changed intent is a new governed revision",

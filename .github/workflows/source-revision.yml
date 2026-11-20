@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.13'}
       - run: pip install jsonschema
-      - run: test -z "$(gofmt -l internal/manifest/source_revision_schema_test.go internal/kernel/source_revision_test.go internal/kernel/source_review_authorization.go internal/kernel/kernel.go internal/adapter/httpclient/clients.go)"
+      - run: test -z "$(gofmt -l internal/manifest/source_revision_schema_test.go internal/kernel/source_revision.go internal/kernel/source_revision_test.go internal/kernel/source_review_authorization.go internal/kernel/kernel.go internal/adapter/httpclient/clients.go)"
       - run: go test ./internal/manifest ./internal/kernel -run '^TestSourceRevision' -count=1 -v
         env:
           GATEWAY_SOURCE_REVISION_PAIRWISE_ROOT: ${{ github.workspace }}/.pairwise/source-revision-gateway

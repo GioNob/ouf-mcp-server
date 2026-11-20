@@ -170,6 +170,38 @@ func revisionSession(t *testing.T, service *orchestration.Service, scope string)
 	return session
 }
 
+func TestSourceRevisionReceiptSchemas(t *testing.T) {
+	server := testServer(t)
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "revision-discovery", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	list, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	columns := func(schema any) any {
+		object, _ := schema.(map[string]any)
+		properties, _ := object["properties"].(map[string]any)
+		return properties["newColumns"]
+	}
+	var input, prepareReceipt, readReceipt any
+	for _, tool := range list.Tools {
+		switch tool.Name {
+		case "source.onboarding.revision.prepare":
+			input, prepareReceipt = columns(tool.InputSchema), columns(tool.OutputSchema)
+		case "source.onboarding.revision.read":
+			readReceipt = columns(tool.OutputSchema)
+		}
+	}
+	if input == nil || !reflect.DeepEqual(input, prepareReceipt) || !reflect.DeepEqual(input, readReceipt) {
+		t.Fatal("tools/list must expose the decision contract on prepare input and both receipts")
+	}
+}
+
 func TestSourceRevisionNewAsset(t *testing.T) {
 	const prepare = "source.onboarding.revision.prepare"
 	const read = "source.onboarding.revision.read"
@@ -177,18 +209,42 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 	const asset = "00000000-0000-4000-8000-000000000002"
 	const profile = "00000000-0000-4000-8000-000000000003"
 	const key = "second-upload-1"
-	const receipt = `{"state":"IN_REVIEW","assetRef":{"assetId":"` + asset + `","profileId":"` + profile + `"},"diagnostics":[],"onboardingVersionId":"00000000-0000-4000-8000-000000000004","challengeId":"00000000-0000-4000-8000-000000000005","humanApprovalRequired":true}`
-	const diagnostics = `[{"code":"MISSING_MAPPED_COLUMN","column":"amount","expected":"DECIMAL","actual":null},{"code":"NEW_COLUMN","column":"total","expected":null,"actual":"STRING"}]`
-	const problem = `{"code":"ONB_REVISION_CSV_INCOMPATIBLE","diagnostics":` + diagnostics + `}`
+	const excluded = `{"column":"note","decision":"EXCLUDE"}`
+	const mapped = `{"column":"prezzo","decision":"MAP","mapping":{"propertyIri":"urn:example:prezzo","transform":"DECIMAL_DOT_V1","reconciliation":{"policyRef":"urn:ouf:policy:linked-object-property-reconciliation:v1","cardinality":"SINGLE","normalizerRef":"EXACT_TYPED","normalizerVersion":1,"validity":"UNBOUNDED"},"accessLabel":"SENSITIVE","authorityOrder":["source-b","source-a"],"comparison":{"comparator":"DECIMAL_V1","assertionRef":"urn:example:price-comparison"}}}`
+	const missing = `[{"code":"MISSING_MAPPED_COLUMN","column":"amount","expected":"DECIMAL","actual":null},{"code":"NEW_COLUMN_DECISION_REQUIRED","column":"total","expected":null,"actual":"STRING"},{"code":"NEW_COLUMN_DECISION_REQUIRED","column":"prezzo","expected":null,"actual":"DECIMAL"}]`
+	const notNew = `[{"code":"COLUMN_NOT_NEW","column":"amount","expected":null,"actual":"DECIMAL"}]`
 	assetRef := map[string]any{"assetId": asset, "profileId": profile}
-	prepareArgs := map[string]any{
-		"sourceId": "source-example", "parentVersionId": parent, "commandKey": key,
-		"configurationHash": "sha256:" + strings.Repeat("a", 64), "expectedVersion": float64(7),
-		"publicationEffect": "NEW_PUBLICATION_MAY_START_ACQUISITION", "assetRef": assetRef,
-	}
 	readArgs := map[string]any{"sourceId": "source-example", "parentVersionId": parent, "commandKey": key}
-	for _, scenario := range []string{"compatible", "incompatible", "lost response", "unavailable"} {
-		t.Run(scenario, func(t *testing.T) {
+	for _, tc := range []struct{ name, decisions, diagnostics string }{
+		{name: "compatible"},
+		{name: "explicit empty", decisions: "[]"},
+		{name: "exclude", decisions: "[" + excluded + "]"},
+		{name: "map", decisions: "[" + mapped + "]"},
+		{name: "mixed", decisions: "[" + excluded + "," + mapped + "]"},
+		{name: "missing decisions", decisions: "[" + excluded + "]", diagnostics: missing},
+		{name: "not new", decisions: `[{"column":"amount","decision":"EXCLUDE"}]`, diagnostics: notNew},
+		{name: "map without mapping", decisions: `[{"column":"prezzo","decision":"MAP"}]`},
+		{name: "oversize owner body", decisions: "[" + excluded + "]"},
+		{name: "lost response", decisions: "[" + mapped + "]"},
+		{name: "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepareArgs := map[string]any{
+				"sourceId": "source-example", "parentVersionId": parent, "commandKey": key,
+				"configurationHash": "sha256:" + strings.Repeat("a", 64), "expectedVersion": float64(7),
+				"publicationEffect": "NEW_PUBLICATION_MAY_START_ACQUISITION", "assetRef": assetRef,
+			}
+			recorded := "[]"
+			if tc.decisions != "" {
+				var decisions []any
+				if err := json.Unmarshal([]byte(tc.decisions), &decisions); err != nil {
+					t.Fatal(err)
+				}
+				prepareArgs["newColumns"] = decisions
+				recorded = tc.decisions
+			}
+			receipt := `{"state":"IN_REVIEW","assetRef":{"assetId":"` + asset + `","profileId":"` + profile + `"},"newColumns":` + recorded + `,"diagnostics":[],"onboardingVersionId":"00000000-0000-4000-8000-000000000004","challengeId":"00000000-0000-4000-8000-000000000005","humanApprovalRequired":true}`
+			problem := `{"code":"ONB_REVISION_CSV_INCOMPATIBLE","diagnostics":` + tc.diagnostics + `}`
 			var prepares, reads atomic.Int32
 			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var in orchestration.GatewayRequest
@@ -209,11 +265,12 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 						t.Error("file replacement lost its parent, intent or command binding")
 					}
 					assertGatewayDispatchSchema(t, "GATEWAY_SOURCE_REVISION_PAIRWISE_ROOT", "mcp-gateway-source-revision-prepare-dispatch-v1.json", in)
-					switch scenario {
-					case "incompatible":
+					if tc.diagnostics != "" {
 						w.WriteHeader(http.StatusUnprocessableEntity)
 						_, _ = io.WriteString(w, strings.Replace(problem, `"column":"amount"`, `"sample":"private","column":"amount"`, 1))
 						return
+					}
+					switch tc.name {
 					case "lost response":
 						// The owner accepted the command, but its receipt was cut short.
 						w.Header().Set("Content-Length", "100")
@@ -238,8 +295,16 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 				_, _ = io.WriteString(w, receipt)
 			}))
 			defer gateway.Close()
-			service := revisionService(t, gateway, &statusAdmission{}, "source-example", parent)
+			admission := &statusAdmission{}
+			service := revisionService(t, gateway, admission, "source-example", parent)
 			session := revisionSession(t, service, "ouf.onboarding.revision.prepare ouf.onboarding.revision.read")
+			if tc.name == "map without mapping" {
+				res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: prepare, Arguments: prepareArgs})
+				if (err == nil && !res.IsError) || admission.calls.Load() != 0 || prepares.Load() != 0 {
+					t.Fatal("MAP without mapping must fail before admission and dispatch")
+				}
+				return
+			}
 			call := func(tool string, args map[string]any, wantError bool, want string) {
 				t.Helper()
 				res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
@@ -249,24 +314,44 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 				if got := res.Content[0].(*mcp.TextContent).Text; got != want {
 					t.Fatalf("%s returned %s, want %s", tool, got, want)
 				}
+				if !wantError {
+					var owner map[string]any
+					if err := json.Unmarshal([]byte(want), &owner); err != nil || !reflect.DeepEqual(res.StructuredContent, owner) {
+						t.Fatalf("%s structured receipt differs from the owner: %+v", tool, res.StructuredContent)
+					}
+				}
 			}
-			var wantReads int32
-			switch scenario {
-			case "compatible":
-				call(prepare, prepareArgs, false, receipt)
-			case "incompatible":
+			if tc.name == "oversize owner body" {
+				body, err := json.Marshal(map[string]any{"Arguments": prepareArgs})
+				if err != nil {
+					t.Fatal(err)
+				}
+				column := prepareArgs["newColumns"].([]any)[0].(map[string]any)
+				column["column"] = "note" + strings.Repeat("a", 65537-len(body))
+				call(prepare, prepareArgs, true, `{"code":"OWNER_COMMAND_ARGUMENTS_TOO_LARGE","retryable":false}`)
+				if admission.calls.Load() != 0 || prepares.Load() != 0 {
+					t.Fatal("oversize signed body reached admission or Gateway")
+				}
+				return
+			}
+			if tc.diagnostics != "" {
 				call(prepare, prepareArgs, true, problem)
+				if prepares.Load() != 1 || reads.Load() != 0 {
+					t.Error("permanent incompatibility triggered another dispatch")
+				}
+				return
+			}
+			switch tc.name {
 			case "lost response":
 				call(prepare, prepareArgs, true, `{"code":"SOURCE_REVIEW_READ_REQUIRED","retryable":false}`)
-				call(read, readArgs, false, receipt)
-				wantReads = 1
 			case "unavailable":
 				unavailable, _ := json.Marshal(orchestration.Problem{Code: "SOURCE_REVIEW_READ_REQUIRED", Status: 503, RetryAfter: "15"})
 				call(prepare, prepareArgs, true, string(unavailable))
-				call(read, readArgs, false, receipt)
-				wantReads = 1
+			default:
+				call(prepare, prepareArgs, false, receipt)
 			}
-			if prepares.Load() != 1 || reads.Load() != wantReads {
+			call(read, readArgs, false, receipt)
+			if prepares.Load() != 1 || reads.Load() != 1 {
 				t.Fatalf("unexpected dispatch count: prepare=%d read=%d", prepares.Load(), reads.Load())
 			}
 		})
