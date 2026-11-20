@@ -13,7 +13,7 @@ For file replacement MCP sends the parent lock as `expectedVersion` and as the w
 
 Successful prepare and read receipts include the owner's recorded `newColumns` in order, with the full mapping for each mapped column. Historical file replacements return an empty array. The parent stays active while the candidate awaits HUMAN review. Subsequent HUMAN activation can start acquisition.
 
-The candidate manifest version is `1.12.0-source-revision-new-columns`. Its canonical `manifestChecksum` is `7467de3d308bcd0210f80c1dfe5e626b619f278f530c97507429c46385ed13a0`.
+The release manifest version is `1.13.0-source-revision-and-discovery-adoption` (line D + `semantic.discovery.adopt`); its canonical `manifestChecksum` is the one the server reports at startup.
 
 Keep the commandKey after interruption. If dispatch/admission returns SOURCE_REVIEW_READ_REQUIRED or an outcome is ambiguous, call source.onboarding.revision.read with the original sourceId,parentVersionId,commandKey to retrieve the owner's retained result, even when the new version ID was lost. Never generate a new key, duplicate source or repeat identity decisions to recover a missing response. No budget, challenge TTL or authority is renewed.
 

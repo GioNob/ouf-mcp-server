@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -315,7 +316,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {
 				maxObjects, maxBytes = 1, 262144
-				if c.ToolName == "semantic.search" || strings.HasPrefix(c.ToolName, "semantic.discovery.") {
+				if c.ToolName == "semantic.search" || (strings.HasPrefix(c.ToolName, "semantic.discovery.") && c.ToolName != "semantic.discovery.adopt") {
 					maxObjects = 100
 				}
 			}
@@ -373,6 +374,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 	if !ok {
 		return errorResult("UNAUTHENTICATED", false), nil, nil
+	}
+	if (len(c.AllowedActors) > 0 && !slices.Contains(c.AllowedActors, identity.ActorType)) || (c.RequiredScope != "" && !slices.Contains(identity.Scopes, c.RequiredScope)) {
+		return errorResult("NOT_AUTHORIZED", false), nil, nil
 	}
 	if identity.CorrelationID == "" {
 		identity.CorrelationID = uuid.NewString()
@@ -444,7 +448,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isSourcePreparationCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" {
 		timeout = 10 * time.Second
 	}
-	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
+	in := orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	if c.ToolName == "semantic.discovery.adopt" {
+		return callDiscoveryAdoption(ctx, service, in), nil, nil
+	}
+	result, err := service.Call(ctx, in)
 	if err != nil {
 		if orchestration.IsSemanticRead(c.CapabilityID, c.OperationClass) {
 			if result := semanticReadAdmissionErrorResult(err); result != nil {
