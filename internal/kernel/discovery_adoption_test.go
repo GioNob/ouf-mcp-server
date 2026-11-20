@@ -142,7 +142,7 @@ func TestSemanticAdoptionReceiptsReplayLossAndOwnerError(t *testing.T) {
 			service := &orchestration.Service{Auth: adoptionAuth{denyRead: mode == "read-denied"}, Admission: &adoptionAdmission{}, Gateway: gateway, FingerprintKey: make([]byte, 32)}
 			in := orchestration.Invocation{
 				Identity: orchestration.Identity{PrincipalID: "mapper", TenantID: "tenant", ServicePrincipalID: "mcp", ActorType: "HUMAN"},
-				Owner: "semantic", CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt",
+				Owner:    "semantic", CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt",
 				IdempotencyKey: "adopt-01", Arguments: json.RawMessage(`{"commandKey":"adopt-01","requestId":"11111111-1111-4111-8111-111111111111","candidateId":"22222222-2222-4222-8222-222222222222"}`),
 				Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144}, Timeout: time.Second, Window: time.Minute, RetryThreshold: 3,
 			}
