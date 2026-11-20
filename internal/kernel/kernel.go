@@ -466,6 +466,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT", true), nil, nil
 	}
 	if result.Problem != nil {
+		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
+			return revisionCSVError(result.Body), nil, nil
+		}
 		body, _ := json.Marshal(result.Problem)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	}
@@ -475,6 +478,34 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 func errorResult(code string, retryable bool) *mcp.CallToolResult {
 	body, _ := json.Marshal(unavailableResult{Code: code, Retryable: retryable})
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}
+}
+
+// Project only schema differences from the owner, in the reported order.
+func revisionCSVError(body []byte) *mcp.CallToolResult {
+	var problem struct {
+		Code        string `json:"code"`
+		Diagnostics []struct {
+			Code     string          `json:"code"`
+			Column   *string         `json:"column"`
+			Expected json.RawMessage `json:"expected"`
+			Actual   json.RawMessage `json:"actual"`
+		} `json:"diagnostics"`
+	}
+	if json.Unmarshal(body, &problem) != nil || len(problem.Diagnostics) == 0 {
+		return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+	}
+	for _, d := range problem.Diagnostics {
+		if d.Code == "" {
+			return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+		}
+		for _, value := range []json.RawMessage{d.Expected, d.Actual} {
+			if len(value) > 0 && (value[0] == '{' || value[0] == '[') {
+				return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+			}
+		}
+	}
+	filtered, _ := json.Marshal(problem)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(filtered)}}, IsError: true}
 }
 
 func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
