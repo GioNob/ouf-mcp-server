@@ -1,5 +1,5 @@
 {
-  "version": "1.10.0-profile-analysis-and-discovery",
+  "version": "1.11.0-discovery-adoption",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -2503,6 +2503,82 @@
       }
     },
     {
+      "toolName": "semantic.discovery.adopt",
+      "capabilityId": "ouf.semantic.discovery.adopt",
+      "purpose": "Adopt the selected discovery candidate as one semantic DRAFT",
+      "useWhen": [
+        "a human has selected a candidate from a successful discovery request"
+      ],
+      "doNotUseWhen": [
+        "approving or publishing a revision: use the Trusted Human Surface (THS)"
+      ],
+      "preferredAlternatives": [
+        "semantic.discovery.candidates",
+        "semantic.review.prepare",
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "The historical owner receipt includes provenance, revisionId and expectedRowVersion for validation with semantic.review.prepare.",
+      "securityNotes": [
+        "HUMAN with current discovery grant and signed delegation required",
+        "Keep commandKey stable. After an uncertain outcome use semantic.proposal.read with the original commandKey and current read and adoption grants."
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.discovery.adopt",
+      "gatewayBindingRef": "capability://ouf.semantic.discovery.adopt",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "candidateId",
+          "commandKey"
+        ],
+        "properties": {
+          "requestId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "candidateId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          }
+        },
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          }
+        }
+      },
+      "allowedActors": [
+        "HUMAN"
+      ],
+      "requiredScope": "ouf.semantic.discovery"
+    },
+    {
       "toolName": "semantic.propose",
       "capabilityId": "ouf.semantic.propose",
       "purpose": "Create one native semantic DRAFT or bounded Turtle ontology DRAFT with a durable caller-scoped receipt",
@@ -2901,7 +2977,7 @@
       "capabilityId": "ouf.semantic.proposal.read",
       "purpose": "Read this caller’s durable semantic command receipt after interruption",
       "useWhen": [
-        "preparing authorized native semantic proposals for human review"
+        "reconciling a semantic proposal or discovery adoption with its original commandKey"
       ],
       "doNotUseWhen": [
         "approving, publishing, activating, adopting external terms or bypassing owner decisions"

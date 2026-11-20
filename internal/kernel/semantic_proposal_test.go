@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 		name, cap, permission, mode, operation string
 		args                                   map[string]any
 	}{
+		{"semantic.discovery.adopt", "ouf.semantic.discovery.adopt", "ouf.semantic.discovery.adopt", "discovery/adopt", "COMMAND", map[string]any{"commandKey": "adopt-01", "requestId": "11111111-1111-4111-8111-111111111111", "candidateId": "22222222-2222-4222-8222-222222222222"}},
 		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-1", "semanticId": "ouf:test:Place", "artifactType": "CLASS", "namespace": "ouf", "localName": "Place", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Luogo"}, "definition": map[string]any{}}},
 		{"semantic.propose", "ouf.semantic.propose", "ouf.semantic.propose", "create", "COMMAND", map[string]any{"commandKey": "draft-rdf-1", "semanticId": "urn:test:Theatres", "artifactType": "ONTOLOGY", "namespace": "urn:test:", "localName": "Theatres", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": map[string]any{"it": "Teatri"}, "mediaType": "text/turtle", "rdfTurtle": "@prefix owl: <http://www.w3.org/2002/07/owl#> . <urn:test:Theatres> a owl:Ontology ."}},
 		{"semantic.review.prepare", "ouf.semantic.review.prepare", "ouf.semantic.review.prepare", "validate", "COMMAND", map[string]any{"commandKey": "validate-1", "revisionId": "11111111-1111-4111-8111-111111111111", "expectedRowVersion": 0}},
@@ -34,12 +36,17 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now().UTC()
 			actor := "AI_AGENT"
-			scopes := []string{tc.permission, "mcp.connect"}
+			requiredScope := tc.permission
+			if tc.name == "semantic.discovery.adopt" {
+				actor = "HUMAN"
+				requiredScope = "ouf.semantic.discovery"
+			}
+			scopes := []string{requiredScope, "mcp.connect"}
 			if tc.operation == "READ" {
 				actor = "HUMAN"
 				scopes = append(scopes, "ouf.semantic.read")
 			}
-			source := statusBundle{authorization.ActivePolicyBundle{BundleID: "semantic", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "semantic", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.permission, Operation: tc.operation, RequiredScope: tc.permission, AllowedActors: []string{actor}}}, Grants: []authorization.Grant{{GrantID: "semantic-grant", CapabilityID: tc.permission, TenantID: "tenant-a", SubjectID: "agent", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "semantic.proposalcommand", ResourceAttributes: map[string]string{"module": "SEMANTIC"}}}}}}}
+			source := statusBundle{authorization.ActivePolicyBundle{BundleID: "semantic", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "semantic", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.permission, Operation: tc.operation, RequiredScope: requiredScope, AllowedActors: []string{actor}}}, Grants: []authorization.Grant{{GrantID: "semantic-grant", CapabilityID: tc.permission, TenantID: "tenant-a", SubjectID: "agent", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "semantic.proposalcommand", ResourceAttributes: map[string]string{"module": "SEMANTIC"}}}}}}}
 			cache := authorization.NewCache(source)
 			if err := cache.Refresh(context.Background()); err != nil {
 				t.Fatal(err)
@@ -56,7 +63,11 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 					w.WriteHeader(400)
 					return
 				}
-				assertGatewayDispatchSchema(t, "GATEWAY_SEMANTIC_PROPOSAL_PAIRWISE_ROOT", "mcp-gateway-semantic-proposals-v1.json", in)
+				pairwiseRoot := "GATEWAY_SEMANTIC_PROPOSAL_PAIRWISE_ROOT"
+				if tc.name == "semantic.discovery.adopt" {
+					pairwiseRoot = "GATEWAY_SEMANTIC_ADOPTION_PAIRWISE_ROOT"
+				}
+				assertGatewayDispatchSchema(t, pairwiseRoot, "mcp-gateway-semantic-proposals-v1.json", in)
 				if in.CapabilityID != tc.cap || in.Owner != "semantic" || in.OperationClass != tc.operation || in.AuthorizationDecisionRef != "semantic:1:"+tc.permission {
 					t.Error("scope or owner binding changed")
 				}
@@ -71,6 +82,13 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 					t.Error("stable command key lost")
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if tc.name == "semantic.discovery.adopt" {
+					if r.Header.Get("Idempotency-Key") != tc.args["commandKey"] || !reflect.DeepEqual(forwarded, tc.args) {
+						t.Error("adoption intent changed")
+					}
+					io.WriteString(w, adoptionReceipt)
+					return
+				}
 				io.WriteString(w, `{"status":"OWNER_RECEIPT_ONLY"}`)
 			}))
 			defer gateway.Close()
@@ -109,7 +127,7 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				if err != nil {
 					t.Fatal(err)
 				}
-				if scope == tc.permission {
+				if scope == requiredScope {
 					if res.IsError || calls.Load() != before+1 {
 						t.Fatalf("command failed: %+v", res)
 					}

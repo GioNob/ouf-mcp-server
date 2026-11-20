@@ -8,8 +8,8 @@ import (
 )
 
 func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant string) (string, orchestration.ResourceContext, error) {
-	required := map[string]string{"ouf.semantic.propose": "ouf.semantic.propose", "ouf.semantic.review.prepare": "ouf.semantic.review.prepare", "ouf.semantic.approval.request": "ouf.semantic.approval.request", "ouf.semantic.proposal.read": "ouf.semantic.proposal.read"}[c.CapabilityID]
-	if required == "" || c.Owner != "semantic" || c.RequiredAuthorization != required {
+	required := c.CapabilityID
+	if !isSemanticProposalCapability(required) || c.Owner != "semantic" || c.RequiredAuthorization != required {
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid semantic proposal manifest binding")
 	}
 	var input struct {
@@ -28,7 +28,7 @@ func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant st
 // Consultation is a distinct deployed READ contract, not a proposal command.
 func isSemanticProposalCapability(id string) bool {
 	switch id {
-	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
+	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
 		return true
 	}
 	return false

@@ -19,9 +19,9 @@ import (
 	"math/rand/v2"
 )
 
-var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+var ErrIdempotencyConflict = orchestration.ErrIdempotencyConflict
 var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
-var ErrIdempotencyOutcomeUnknown = errors.New("idempotency outcome unknown")
+var ErrIdempotencyOutcomeUnknown = orchestration.ErrIdempotencyOutcomeUnknown
 var ErrGroupLocked = errors.New("equivalence group locked by uncertain attempt")
 
 type Store struct{ pool *pgxpool.Pool }
