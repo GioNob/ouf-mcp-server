@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -123,7 +124,9 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			}
 			continue
 		}
-		if service == nil {
+		if isSourceRevisionCapability(capability.CapabilityID) {
+			registerSourceRevisionTool(server, capability, snapshot, service)
+		} else if service == nil {
 			registerUnavailableTool(server, capability)
 		} else {
 			registerGovernedTool(server, capability, snapshot, service)
@@ -302,7 +305,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return
 	}
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -313,11 +316,11 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {
 				maxObjects, maxBytes = 1, 262144
-				if c.ToolName == "semantic.search" || strings.HasPrefix(c.ToolName, "semantic.discovery.") {
+				if c.ToolName == "semantic.search" || (strings.HasPrefix(c.ToolName, "semantic.discovery.") && c.ToolName != "semantic.discovery.adopt") {
 					maxObjects = 100
 				}
 			}
-			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" || strings.HasPrefix(c.ToolName, "source.onboarding.revision.") {
+			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 				maxObjects, maxBytes = 1, 65536
 			}
 			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
@@ -371,6 +374,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 	if !ok {
 		return errorResult("UNAUTHENTICATED", false), nil, nil
+	}
+	if (len(c.AllowedActors) > 0 && !slices.Contains(c.AllowedActors, identity.ActorType)) || (c.RequiredScope != "" && !slices.Contains(identity.Scopes, c.RequiredScope)) {
+		return errorResult("NOT_AUTHORIZED", false), nil, nil
 	}
 	if identity.CorrelationID == "" {
 		identity.CorrelationID = uuid.NewString()
@@ -442,7 +448,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isSourcePreparationCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" {
 		timeout = 10 * time.Second
 	}
-	result, err := service.Call(ctx, orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}})
+	in := orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	if c.ToolName == "semantic.discovery.adopt" {
+		return callDiscoveryAdoption(ctx, service, in), nil, nil
+	}
+	result, err := service.Call(ctx, in)
 	if err != nil {
 		if orchestration.IsSemanticRead(c.CapabilityID, c.OperationClass) {
 			if result := semanticReadAdmissionErrorResult(err); result != nil {
@@ -466,15 +476,50 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT", true), nil, nil
 	}
 	if result.Problem != nil {
+		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
+			return revisionCSVError(result.Body), nil, nil
+		}
 		body, _ := json.Marshal(result.Problem)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}, nil, nil
+	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
+	if isSourceRevisionCapability(c.CapabilityID) {
+		return content, json.RawMessage(result.Body), nil
+	}
+	return content, nil, nil
 }
 
 func errorResult(code string, retryable bool) *mcp.CallToolResult {
 	body, _ := json.Marshal(unavailableResult{Code: code, Retryable: retryable})
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}
+}
+
+// Project only schema differences from the owner, in the reported order.
+func revisionCSVError(body []byte) *mcp.CallToolResult {
+	var problem struct {
+		Code        string `json:"code"`
+		Diagnostics []struct {
+			Code     string          `json:"code"`
+			Column   *string         `json:"column"`
+			Expected json.RawMessage `json:"expected"`
+			Actual   json.RawMessage `json:"actual"`
+		} `json:"diagnostics"`
+	}
+	if json.Unmarshal(body, &problem) != nil || len(problem.Diagnostics) == 0 {
+		return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+	}
+	for _, d := range problem.Diagnostics {
+		if d.Code == "" {
+			return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+		}
+		for _, value := range []json.RawMessage{d.Expected, d.Actual} {
+			if len(value) > 0 && (value[0] == '{' || value[0] == '[') {
+				return errorResult("SOURCE_REVISION_DIAGNOSTICS_INVALID", false)
+			}
+		}
+	}
+	filtered, _ := json.Marshal(problem)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(filtered)}}, IsError: true}
 }
 
 func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
