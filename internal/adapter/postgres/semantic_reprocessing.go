@@ -38,7 +38,7 @@ func (s *Store) reserveSemanticReprocessing(ctx context.Context, tx pgx.Tx, in o
 		if newState == "UNKNOWN" || newState == "UNRESOLVED" {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
 		}
-		return orchestration.AdmissionDecision{AttemptID: newID, Replay: true}, tx.Commit(ctx)
+		return orchestration.AdmissionDecision{AttemptID: newID, Replay: true, AttemptState: newState}, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return orchestration.AdmissionDecision{}, err

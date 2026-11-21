@@ -34,6 +34,22 @@ func TestSemanticCommandKeyCannotBypassEquivalentIntentBudget(t *testing.T) {
 	}
 }
 
+func TestDiscoveryFingerprintIgnoresOwnerKeyButPreservesIntent(t *testing.T) {
+	key := make([]byte, 32)
+	fingerprint := func(args string) string {
+		t.Helper()
+		fp, err := SemanticFingerprint(key, "ouf.semantic.discovery", json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+	first := fingerprint(`{"idempotencyKey":"first","intent":"theatres"}`)
+	if first != fingerprint(`{"idempotencyKey":"second","intent":"theatres"}`) || first == fingerprint(`{"idempotencyKey":"first","intent":"parks"}`) {
+		t.Fatal("discovery key or intent misclassified")
+	}
+}
+
 func TestSourceReviewCommandKeyCannotResetEquivalentIntentBudget(t *testing.T) {
 	key := make([]byte, 32)
 	const capability = "ouf.managed-source.onboarding.review.prepare"

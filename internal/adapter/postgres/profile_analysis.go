@@ -263,6 +263,7 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	}
 	t.State = "RUNNING"
 	t.Code = ""
+	t.Dimension = ""
 	t.Attempts++
 	if t.FirstAttemptAt.IsZero() {
 		t.FirstAttemptAt = now
@@ -312,7 +313,7 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 		return t, analysis.ErrInvalid
 	}
 	if f.WindowWait {
-		if f.Calls != 0 || f.State != "WAITING" || !f.NotBefore.After(now) {
+		if f.Calls != 0 || f.State != "WAITING" || f.NotBefore.IsZero() {
 			return t, analysis.ErrInvalid
 		}
 		t.Attempts--
@@ -320,6 +321,7 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 	}
 	t.State = f.State
 	t.Code = f.Code
+	t.Dimension = f.Dimension
 	t.AttemptID = f.AttemptID
 	t.Calls += f.Calls
 	t.CallTimeMS += f.ElapsedMS

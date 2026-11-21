@@ -73,6 +73,7 @@ type Task struct {
 	ResultBytes    int64           `json:"resultBytes"`
 	CallTimeMS     int64           `json:"callTimeMs"`
 	Waits          int64           `json:"windowWaits"`
+	Dimension      string          `json:"dimension,omitempty"`
 	MaxBytes       int64           `json:"maxBytes"`
 	MaxTimeMS      int64           `json:"maxTimeMs"`
 	MaxObjects     int64           `json:"maxObjects"`
@@ -121,6 +122,7 @@ type Finish struct {
 	Calls, ElapsedMS       int64
 	NotBefore              time.Time
 	WindowWait             bool
+	Dimension              string
 }
 type Store interface {
 	PlanAnalysis(context.Context, Plan) (View, error)

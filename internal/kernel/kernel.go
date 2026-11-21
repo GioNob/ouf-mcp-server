@@ -149,7 +149,7 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
-			return errorResult("UNAUTHENTICATED", false), nil, nil
+			return actorOrDelegationDenial(identity, ok), nil, nil
 		}
 		id := uuid.NewString()
 		url := pickerURL + "?handoff=" + id
@@ -174,7 +174,7 @@ func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Cap
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
-			return errorResult("UNAUTHENTICATED", false), nil, nil
+			return actorOrDelegationDenial(identity, ok), nil, nil
 		}
 		value, ok := input["handoffId"].(string)
 		if !ok || uuid.Validate(value) != nil {
@@ -231,7 +231,7 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 			if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
-				return errorResult("UNAUTHENTICATED", false), nil, nil
+				return actorOrDelegationDenial(identity, ok), nil, nil
 			}
 			raw, _ := json.Marshal(input["file"])
 			var descriptor hostfiles.Input
@@ -255,10 +255,13 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 				RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 4096},
 				Upload: &orchestration.UploadStream{Reader: staged.File, Size: staged.Size, SHA256: staged.SHA256, FileID: descriptor.FileID}})
 			if err != nil {
-				return errorResult(err.Error(), false), nil, nil
+				return governedCallErrorResult(err), nil, nil
 			}
 			if result.Replay {
-				return errorResult("UPLOAD_ATTEMPT_REPLAY_PENDING", true), nil, nil
+				return replayResult(c, args, result), nil, nil
+			}
+			if denial := ownerDenialResult(result.Problem); denial != nil {
+				return denial, nil, nil
 			}
 			if result.Problem != nil {
 				body, _ := json.Marshal(result.Problem)
@@ -375,8 +378,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if !ok {
 		return errorResult("UNAUTHENTICATED", false), nil, nil
 	}
-	if (len(c.AllowedActors) > 0 && !slices.Contains(c.AllowedActors, identity.ActorType)) || (c.RequiredScope != "" && !slices.Contains(identity.Scopes, c.RequiredScope)) {
-		return errorResult("NOT_AUTHORIZED", false), nil, nil
+	if len(c.AllowedActors) > 0 && !slices.Contains(c.AllowedActors, identity.ActorType) {
+		return governedCallErrorResult(&orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}), nil, nil
+	}
+	if c.RequiredScope != "" && !slices.Contains(identity.Scopes, c.RequiredScope) {
+		return governedCallErrorResult(&orchestration.AuthorizationDeniedError{ReasonCode: "SCOPE_MISSING"}), nil, nil
 	}
 	if identity.CorrelationID == "" {
 		identity.CorrelationID = uuid.NewString()
@@ -454,26 +460,13 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	result, err := service.Call(ctx, in)
 	if err != nil {
-		if orchestration.IsSemanticRead(c.CapabilityID, c.OperationClass) {
-			if result := semanticReadAdmissionErrorResult(err); result != nil {
-				return result, nil, nil
-			}
-		}
-		if isAcquisitionRead(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" {
-			return acquisitionErrorResult(err), nil, nil
-		}
-		return errorResult(err.Error(), false), nil, nil
+		return governedCallErrorResult(err), nil, nil
 	}
-	if result.Replay && len(result.Body) == 0 && isSourcePreparationCapability(c.CapabilityID) {
-		return errorResult("SOURCE_REVIEW_READ_REQUIRED", false), nil, nil
+	if result.Replay {
+		return replayResult(c, args, result), nil, nil
 	}
-	if result.Replay && len(result.Body) == 0 && isSemanticProposalCapability(c.CapabilityID) {
-		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false), nil, nil
-	}
-	if result.Replay && len(result.Body) == 0 && orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
-		// Admission replay has no cached authorized payload. Never turn metadata
-		// into a successful empty incident page or infer NO_INCIDENTS.
-		return errorResult("OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT", true), nil, nil
+	if denial := ownerDenialResult(result.Problem); denial != nil {
+		return denial, nil, nil
 	}
 	if result.Problem != nil {
 		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {

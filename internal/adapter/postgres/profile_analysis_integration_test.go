@@ -303,6 +303,44 @@ func TestProfileAnalysisCoordinatorPlans1024WithOneOwnedProfileRead(t *testing.T
 	}
 }
 
+func TestProfileAnalysisEquivalentSearchOnNextProfileResumesSameTask(t *testing.T) {
+	ctx, _, c, i, _, gateway, profile := coordinatorFixture(t, 1)
+	for round := 1; round <= 3; round++ {
+		profile.AssetID, profile.ProfileID = uuid.NewString(), uuid.NewString()
+		gateway.profile = profile
+		view, err := c.Plan(ctx, i, profile.AssetID, profile.ProfileID, 0, []analysis.Work{searchWork(0)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := gateway.calls
+		task, err := c.Step(ctx, i, view.ID, view.Tasks[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if round < 3 {
+			if task.State != "SUCCEEDED" || gateway.calls != before+1 {
+				t.Fatal("initial search failed", round, task)
+			}
+			continue
+		}
+		if task.State != "WAITING" || task.Dimension != "EQUIVALENT_ATTEMPTS" || task.Waits != 1 || task.Attempts != 0 || task.Calls != 0 || gateway.calls != before {
+			t.Fatal("window refusal dispatched or consumed a task attempt", task)
+		}
+		// Cross the actual DB minute boundary, without editing a checkpoint or counter.
+		delay := time.Until(task.NotBefore)
+		if delay < 0 || delay > time.Minute {
+			t.Fatal("invalid wait", delay)
+		}
+		time.Sleep(delay + 100*time.Millisecond)
+		resumeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done, err := c.Step(resumeCtx, i, view.ID, task.ID)
+		if err != nil || done.State != "SUCCEEDED" || done.ID != task.ID || done.Attempts != 1 || done.Calls != 1 || done.Waits != 1 || gateway.calls != before+1 {
+			t.Fatal("same task failed to resume", done, err)
+		}
+	}
+}
+
 func TestProfileAnalysisFiniteRetryHistoryAndInflightCapacity(t *testing.T) {
 	ctx, s, scope, p, m := analysisFixture(t, 20)
 	plan, e := analysis.Build(scope, p, m, 0, []analysis.Work{searchWork(0), searchWork(1), searchWork(2), searchWork(3), searchWork(4)})

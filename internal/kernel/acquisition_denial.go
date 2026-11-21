@@ -19,18 +19,18 @@ type acquisitionDenial struct {
 	EvaluatedPolicyVersion int64  `json:"evaluatedPolicyVersion,omitempty"`
 }
 
-func acquisitionErrorResult(err error) *mcp.CallToolResult {
+func governedCallErrorResult(err error) *mcp.CallToolResult {
+	if result := windowAdmissionErrorResult(err); result != nil {
+		return result
+	}
 	var denied *orchestration.AuthorizationDeniedError
 	if !errors.As(err, &denied) {
-		return errorResult(err.Error(), false)
+		if !errors.Is(err, orchestration.ErrUnauthorized) {
+			return errorResult(err.Error(), false)
+		}
+		denied = &orchestration.AuthorizationDeniedError{}
 	}
-	reason := "AUTHORIZATION_DENIED"
-	switch denied.ReasonCode {
-	case "DELEGATION_REQUIRED", "TENANT_MISMATCH", "CAPABILITY_NOT_DECLARED",
-		"ACTOR_NOT_ALLOWED", "SCOPE_MISSING", "DATA_LABEL_REQUIRED", "HUMAN_REQUIRED",
-		"EXPLICIT_DENY", "NO_APPLICABLE_GRANT":
-		reason = denied.ReasonCode
-	}
+	reason := orchestration.SafeDenialReason(denied.ReasonCode, "AUTHORIZATION_DENIED")
 	version := denied.PolicyVersion
 	if version < 0 {
 		version = 0
@@ -39,4 +39,27 @@ func acquisitionErrorResult(err error) *mcp.CallToolResult {
 		AuthorizationPhase: "MCP_PRE_ADMISSION", ReasonCode: reason, EvaluatedPolicyVersion: version}
 	raw, _ := json.Marshal(value)
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}
+}
+
+func ownerDenialResult(p *orchestration.Problem) *mcp.CallToolResult {
+	if p == nil || p.Status != 403 {
+		return nil
+	}
+	reason := orchestration.SafeDenialReason(p.Code, "OWNER_AUTHORIZATION_DENIED")
+	if p.Code == "SEM_CAPABILITY_REQUIRED:ouf.semantic.discovery.adopt" {
+		reason = p.Code
+	}
+	raw, _ := json.Marshal(acquisitionDenial{Code: "NOT_AUTHORIZED", ReasonCode: reason, AuthorizationPhase: "OWNER"})
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}
+}
+
+func actorOrDelegationDenial(i requestIdentity, present bool) *mcp.CallToolResult {
+	if !present {
+		return errorResult("UNAUTHENTICATED", false)
+	}
+	reason := "DELEGATION_REQUIRED"
+	if i.Delegation != "" {
+		reason = "ACTOR_NOT_ALLOWED"
+	}
+	return governedCallErrorResult(&orchestration.AuthorizationDeniedError{ReasonCode: reason})
 }
