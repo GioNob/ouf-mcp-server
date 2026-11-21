@@ -1,0 +1,47 @@
+name: MCP predecessor return
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      predecessor:
+        description: Full deployed source SHA in MCP_PREDECESSOR_IMAGES
+        required: true
+        default: '843d22059e03bcd58569fff9960bb46ae552b2b2'
+
+permissions:
+  contents: read
+
+jobs:
+  predecessor-return:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve deployed artifact and build candidate HEAD
+        env:
+          PREDECESSOR: ${{ inputs.predecessor || '843d22059e03bcd58569fff9960bb46ae552b2b2' }}
+          RELEASE_IMAGES: ${{ vars.MCP_PREDECESSOR_IMAGES }}
+        run: |
+          set -euo pipefail
+          [[ "$PREDECESSOR" =~ ^[0-9a-f]{40}$ ]]
+          if ! ref=$(jq -er --arg sha "$PREDECESSOR" '.[$sha] | strings' <<< "$RELEASE_IMAGES") ||
+             ! [[ "$ref" =~ ^[a-z0-9][a-z0-9./_-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Missing immutable deployed image for $PREDECESSOR in MCP_PREDECESSOR_IMAGES"
+            exit 1
+          fi
+          docker pull "$ref"
+          old=$(docker image inspect --format '{{.Id}}' "$ref")
+          docker build -t d080-candidate .
+          new=$(docker image inspect --format '{{.Id}}' d080-candidate)
+          printf 'OLD_IMAGE=%s\nNEW_IMAGE=%s\nPREDECESSOR=%s\n' "$old" "$new" "$PREDECESSOR" >> "$GITHUB_ENV"
+          printf 'Predecessor `%s` · `%s` · `%s`\n\nCandidate `%s` · `%s`\n' \
+            "$PREDECESSOR" "$ref" "$old" "$(git rev-parse HEAD)" "$new" >> "$GITHUB_STEP_SUMMARY"
+          docker pull postgres:17
+          docker pull python:3.12-alpine
+      - name: Restart the exact predecessor on candidate writes
+        run: bash scripts/predecessor_return/run.sh
