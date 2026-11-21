@@ -138,7 +138,7 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	body, _ := json.Marshal(in)
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
-	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
+	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read", "ouf.onboarding.schema-notices.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.operations.summary", "ouf.operations.incidents",
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
@@ -247,7 +247,7 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		var p orchestration.Problem
 		if replacingAsset && res.StatusCode == http.StatusServiceUnavailable {
 			p.Code = "SOURCE_REVIEW_READ_REQUIRED"
-		} else {
+		} else if in.CapabilityID != "ouf.onboarding.schema-notices.read" {
 			_ = json.Unmarshal(payload, &p)
 		}
 		p.RetryAfter = res.Header.Get("Retry-After")

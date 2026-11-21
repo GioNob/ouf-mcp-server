@@ -52,6 +52,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"source.file.profile",
 		"source.file.upload",
 		"source.onboarding.create",
+		"source.onboarding.notices.read",
 		"source.onboarding.read",
 		"source.onboarding.review.prepare",
 		"source.onboarding.revision.prepare",

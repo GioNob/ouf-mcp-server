@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["notices", "hasMore", "next"],
+  "properties": {
+    "notices": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["noticeId", "sourceId", "sourceName", "since", "lastObservedAt", "observationPolls", "differences", "nextAction", "revision"],
+        "properties": {
+          "noticeId": {"type": "string", "minLength": 1},
+          "sourceId": {"type": "string", "minLength": 1},
+          "sourceName": {"type": "string"},
+          "since": {"type": "string", "format": "date-time"},
+          "lastObservedAt": {"type": "string", "format": "date-time"},
+          "observationPolls": {"type": "integer", "minimum": 0},
+          "differences": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field", "change"],
+              "properties": {
+                "field": {"type": "string"},
+                "change": {"enum": ["ADDED", "REMOVED", "TYPE_CHANGED", "NULLABILITY_CHANGED", "KEY_CHANGED", "GEOMETRY_CHANGED"]}
+              }
+            }
+          },
+          "nextAction": {"const": "REVISE_ONBOARDING"},
+          "revision": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tool", "parentVersion", "observedSchemaRef"],
+            "properties": {
+              "tool": {"const": "source.onboarding.revision.prepare"},
+              "parentVersion": {"type": "integer", "minimum": 0},
+              "observedSchemaRef": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "hasMore": {"type": "boolean"},
+    "next": {"type": ["string", "null"], "minLength": 1, "maxLength": 1024}
+  },
+  "oneOf": [
+    {"properties": {"hasMore": {"const": false}, "next": {"type": "null"}}},
+    {"properties": {"hasMore": {"const": true}, "next": {"type": "string"}, "notices": {"minItems": 1}}}
+  ]
+}
