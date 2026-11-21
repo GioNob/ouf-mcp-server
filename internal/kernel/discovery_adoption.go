@@ -50,8 +50,14 @@ func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, 
 		read.IdempotencyKey = uuid.NewString()
 		read.Arguments, _ = json.Marshal(map[string]string{"commandKey": in.IdempotencyKey})
 		lookup, readErr := service.Call(ctx, read)
-		if errors.Is(readErr, orchestration.ErrUnauthorized) || (lookup.Problem != nil && lookup.Problem.Status == 403) {
-			return errorResult("NOT_AUTHORIZED", false)
+		if errors.Is(readErr, orchestration.ErrUnauthorized) {
+			return governedCallErrorResult(readErr)
+		}
+		if wait := windowAdmissionErrorResult(readErr); wait != nil {
+			return wait
+		}
+		if denial := ownerDenialResult(lookup.Problem); denial != nil {
+			return denial
 		}
 		var snapshot struct {
 			Operation                 string
@@ -67,12 +73,18 @@ func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, 
 	case errors.Is(err, orchestration.ErrIdempotencyConflict):
 		return errorResult("IDEMPOTENCY_KEY_REUSE", false)
 	case errors.Is(err, orchestration.ErrUnauthorized):
-		return errorResult("NOT_AUTHORIZED", false)
+		return governedCallErrorResult(err)
 	case errors.Is(err, orchestration.ErrResultLimit):
 		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
 	case err != nil:
+		if wait := windowAdmissionErrorResult(err); wait != nil {
+			return wait
+		}
 		return errorResult("SEMANTIC_ADOPTION_UNAVAILABLE", false)
 	case result.Problem != nil:
+		if denial := ownerDenialResult(result.Problem); denial != nil {
+			return denial
+		}
 		return errorResult(result.Problem.Code, false)
 	}
 

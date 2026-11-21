@@ -86,7 +86,7 @@ func TestSemanticAdoptionRejectsAgentBeforeAdmission(t *testing.T) {
 			id := requestIdentity{Identity: orchestration.Identity{ActorType: "AI_AGENT", Scopes: []string{c.RequiredScope}}}
 			ctx := context.WithValue(context.Background(), identityKey{}, id)
 			result, _, err := invoke(ctx, c, "", nil, nil, 1, 262144)
-			if err != nil || !result.IsError || result.Content[0].(*mcp.TextContent).Text != `{"code":"NOT_AUTHORIZED","retryable":false}` {
+			if err != nil || !result.IsError || result.Content[0].(*mcp.TextContent).Text != `{"code":"authorization denied","retryable":false,"authorizationPhase":"MCP_PRE_ADMISSION","reasonCode":"ACTOR_NOT_ALLOWED"}` {
 				t.Fatal(result, err)
 			}
 			return
@@ -142,7 +142,7 @@ func TestSemanticAdoptionReceiptsReplayLossAndOwnerError(t *testing.T) {
 			service := &orchestration.Service{Auth: adoptionAuth{denyRead: mode == "read-denied"}, Admission: &adoptionAdmission{}, Gateway: gateway, FingerprintKey: make([]byte, 32)}
 			in := orchestration.Invocation{
 				Identity: orchestration.Identity{PrincipalID: "mapper", TenantID: "tenant", ServicePrincipalID: "mcp", ActorType: "HUMAN"},
-				Owner:    "semantic", CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt",
+				Owner:    "semantic", CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt", ManifestChecksum: "fixture",
 				IdempotencyKey: "adopt-01", Arguments: json.RawMessage(`{"commandKey":"adopt-01","requestId":"11111111-1111-4111-8111-111111111111","candidateId":"22222222-2222-4222-8222-222222222222"}`),
 				Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144}, Timeout: time.Second, Window: time.Minute, RetryThreshold: 3,
 			}
@@ -151,7 +151,7 @@ func TestSemanticAdoptionReceiptsReplayLossAndOwnerError(t *testing.T) {
 				got := callDiscoveryAdoption(context.Background(), service, in)
 				body := got.Content[0].(*mcp.TextContent).Text
 				if mode == "read-denied" {
-					if !got.IsError || body != `{"code":"NOT_AUTHORIZED","retryable":false}` {
+					if !got.IsError || body != `{"code":"authorization denied","retryable":false,"authorizationPhase":"MCP_PRE_ADMISSION","reasonCode":"AUTHORIZATION_DENIED"}` {
 						t.Fatal(body)
 					}
 				} else if mode == "expired" {
@@ -174,5 +174,44 @@ func TestSemanticAdoptionReceiptsReplayLossAndOwnerError(t *testing.T) {
 				t.Fatal("unexpected dispatch counts", gateway.commands, gateway.reads)
 			}
 		})
+	}
+}
+
+type adoptionWindowAdmission struct {
+	statusAdmission
+	until time.Time
+}
+
+func (a *adoptionWindowAdmission) Reserve(_ context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
+	if !a.until.IsZero() {
+		return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(orchestration.ErrToolSelectionStall, "TOOL_SELECTION_STALL", "EQUIVALENT_ATTEMPTS", a.until.Add(-7*time.Second), a.until)
+	}
+	return orchestration.AdmissionDecision{AttemptID: in.AttemptID}, nil
+}
+
+func TestSemanticAdoptionReturnsWindowAndResumesSameCommand(t *testing.T) {
+	end := time.Now().UTC().Truncate(time.Minute).Add(time.Minute)
+	admission := &adoptionWindowAdmission{until: end}
+	gateway := &adoptionGateway{t: t}
+	service := &orchestration.Service{Auth: adoptionAuth{}, Admission: admission, Gateway: gateway, FingerprintKey: make([]byte, 32)}
+	in := orchestration.Invocation{
+		Identity: orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "mapper", TenantID: "tenant"},
+		CapabilityID: "ouf.semantic.discovery.adopt", Owner: "semantic", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt", ManifestChecksum: "fixture",
+		Arguments: json.RawMessage(`{"requestId":"11111111-1111-4111-8111-111111111111","candidateId":"22222222-2222-4222-8222-222222222222","commandKey":"adopt-01"}`), IdempotencyKey: "adopt-01",
+		Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144},
+	}
+	wait := callDiscoveryAdoption(context.Background(), service, in)
+	var timing struct {
+		WindowEndsAt      time.Time
+		RetryAfterSeconds int
+		Dimension         string
+	}
+	if !wait.IsError || json.Unmarshal([]byte(wait.Content[0].(*mcp.TextContent).Text), &timing) != nil || !timing.WindowEndsAt.Equal(end) || timing.RetryAfterSeconds != 7 || timing.Dimension != "EQUIVALENT_ATTEMPTS" || gateway.commands != 0 || gateway.reads != 0 {
+		t.Fatal("lost admission wait or dispatched", wait)
+	}
+	admission.until = time.Time{}
+	got := callDiscoveryAdoption(context.Background(), service, in)
+	if got.IsError || got.Content[0].(*mcp.TextContent).Text != adoptionReceipt || gateway.commands != 1 || gateway.reads != 0 {
+		t.Fatal("original adoption did not resume", got)
 	}
 }

@@ -58,7 +58,7 @@ func TestPublishedDiscoveryMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 				if json.Unmarshal(in.Arguments, &args) != nil {
 					t.Error("arguments invalid")
 				}
-				if operation == "request" && (args["intent"] != "teatro" || args["idempotencyKey"] != "discovery-test-0001") {
+				if operation == "request" && (args["intent"] != "teatro" || args["idempotencyKey"] != "discovery-test-0001" || in.IdempotencyKey != args["idempotencyKey"] || r.Header.Get("Idempotency-Key") != in.IdempotencyKey) {
 					t.Error("semantic retry key or intent changed")
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -112,8 +112,11 @@ func TestPublishedDiscoveryMCPDispatchUsesOwnerBindingAndScope(t *testing.T) {
 					if result.IsError || calls.Load() != before+1 {
 						t.Fatalf("candidate dispatch failed: %+v", result)
 					}
-				} else if !result.IsError || calls.Load() != before {
-					t.Fatal("unauthorized discovery reached Gateway")
+				} else {
+					var denial acquisitionDenial
+					if !result.IsError || calls.Load() != before || json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &denial) != nil || denial.ReasonCode != "SCOPE_MISSING" || denial.AuthorizationPhase != "MCP_PRE_ADMISSION" {
+						t.Fatal("missing or unsafe scope diagnosis", denial)
+					}
 				}
 				session.Close()
 				transport.Close()

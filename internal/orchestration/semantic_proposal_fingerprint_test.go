@@ -7,7 +7,7 @@ import (
 
 func TestSemanticCommandKeyCannotBypassEquivalentIntentBudget(t *testing.T) {
 	key := make([]byte, 32)
-	for _, cap := range []string{"ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request"} {
+	for _, cap := range []string{"ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.onboarding.revision.prepare"} {
 		a, err := SemanticFingerprint(key, cap, json.RawMessage(`{"commandKey":"attempt-a","revisionId":"revision-a","expectedRowVersion":0}`))
 		if err != nil {
 			t.Fatal(err)
@@ -31,6 +31,22 @@ func TestSemanticCommandKeyCannotBypassEquivalentIntentBudget(t *testing.T) {
 	readB, _ := SemanticFingerprint(key, "ouf.semantic.proposal.read", json.RawMessage(`{"commandKey":"attempt-b"}`))
 	if readA == readB {
 		t.Fatal("distinct receipt read targets conflated")
+	}
+}
+
+func TestDiscoveryFingerprintIgnoresOwnerKeyButPreservesIntent(t *testing.T) {
+	key := make([]byte, 32)
+	fingerprint := func(args string) string {
+		t.Helper()
+		fp, err := SemanticFingerprint(key, "ouf.semantic.discovery", json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+	first := fingerprint(`{"idempotencyKey":"first","intent":"theatres"}`)
+	if first != fingerprint(`{"idempotencyKey":"second","intent":"theatres"}`) || first == fingerprint(`{"idempotencyKey":"first","intent":"parks"}`) {
+		t.Fatal("discovery key or intent misclassified")
 	}
 }
 

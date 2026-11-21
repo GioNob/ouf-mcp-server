@@ -78,7 +78,7 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 					}
 					if scenario.name == "owner-refuses-after-local-allow" {
 						w.WriteHeader(http.StatusForbidden)
-						_, _ = w.Write([]byte(`{"code":"OWNER_DENIED"}`))
+						_, _ = w.Write([]byte(`{"code":"private-ci-owner-code","detail":"private-ci-owner-detail"}`))
 						return
 					}
 					_, _ = w.Write([]byte(`{"items":[],"partial":false,"authorization":"AUTHORIZED"}`))
@@ -120,7 +120,7 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, secret := range []string{"private-ci-workload", "private-ci-delegation", "private-ci-issuer", "private-ci-audience", "private-ci-bundle-do-not-disclose"} {
+				for _, secret := range []string{"private-ci-workload", "private-ci-delegation", "private-ci-issuer", "private-ci-audience", "private-ci-bundle-do-not-disclose", "private-ci-owner"} {
 					if strings.Contains(string(raw), secret) {
 						t.Fatal("private identity/authority leaked")
 					}
@@ -143,6 +143,12 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 					if result.IsError != (scenario.name == "owner-refuses-after-local-allow") {
 						t.Fatal("owner success/denial changed")
 					}
+					if result.IsError {
+						var denial acquisitionDenial
+						if json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &denial) != nil || denial.AuthorizationPhase != "OWNER" || denial.ReasonCode != "OWNER_AUTHORIZATION_DENIED" {
+							t.Fatal("owner denial lost its phase", denial)
+						}
+					}
 				}
 			})
 		}
@@ -151,7 +157,7 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 
 func TestAcquisitionDenialProjectionIsBoundedAndTyped(t *testing.T) {
 	for _, input := range []string{"raw-secret\nSCOPE_MISSING", strings.Repeat("x", 10000), "ALLOW", ""} {
-		result := acquisitionErrorResult(fmt.Errorf("wrapped: %w", &orchestration.AuthorizationDeniedError{ReasonCode: input, PolicyVersion: -1}))
+		result := governedCallErrorResult(fmt.Errorf("wrapped: %w", &orchestration.AuthorizationDeniedError{ReasonCode: input, PolicyVersion: -1}))
 		var value map[string]any
 		text := result.Content[0].(*mcp.TextContent).Text
 		if err := json.Unmarshal([]byte(text), &value); err != nil {
@@ -163,7 +169,7 @@ func TestAcquisitionDenialProjectionIsBoundedAndTyped(t *testing.T) {
 	}
 	// A string that looks like a reason is not a decision and cannot create a
 	// preflight diagnosis or OAuth challenge. Generic tool errors stay generic.
-	result := acquisitionErrorResult(errors.New("SCOPE_MISSING"))
+	result := governedCallErrorResult(errors.New("SCOPE_MISSING"))
 	if strings.Contains(result.Content[0].(*mcp.TextContent).Text, "reasonCode") || result.Meta != nil {
 		t.Fatal("untyped error gained authorization semantics")
 	}

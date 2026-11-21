@@ -40,6 +40,16 @@ type AuthorizationDeniedError struct {
 func (e *AuthorizationDeniedError) Error() string { return ErrUnauthorized.Error() }
 func (e *AuthorizationDeniedError) Unwrap() error { return ErrUnauthorized }
 
+func SafeDenialReason(code, fallback string) string {
+	switch code {
+	case "DELEGATION_REQUIRED", "TENANT_MISMATCH", "CAPABILITY_NOT_DECLARED",
+		"ACTOR_NOT_ALLOWED", "SCOPE_MISSING", "DATA_LABEL_REQUIRED", "HUMAN_REQUIRED",
+		"EXPLICIT_DENY", "NO_APPLICABLE_GRANT":
+		return code
+	}
+	return fallback
+}
+
 type IdentityClaims struct {
 	ExternalRoleRefs []string  `json:"externalRoleRefs"`
 	Acr              string    `json:"acr"`
@@ -97,11 +107,14 @@ type AdmissionRequest struct {
 	Maximum                                                                         Cost
 }
 type AdmissionDecision struct {
-	AttemptID   uuid.UUID
-	LockVersion int64
-	Replay      bool
+	AttemptState string
+	ResultID     *uuid.UUID
+	AttemptID    uuid.UUID
+	LockVersion  int64
+	Replay       bool
 }
 type AttemptOutcome struct {
+	ResultID         *uuid.UUID
 	Code             string
 	Success          bool
 	BackendRequestID string
@@ -170,10 +183,12 @@ type Invocation struct {
 	Upload                                                                   *UploadStream
 }
 type Result struct {
-	Body      []byte
-	Problem   *Problem
-	AttemptID uuid.UUID
-	Replay    bool
+	AttemptState string
+	ResultID     *uuid.UUID
+	Body         []byte
+	Problem      *Problem
+	AttemptID    uuid.UUID
+	Replay       bool
 }
 
 type Service struct {
@@ -191,6 +206,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.BudgetProfile == "" {
 		if IsSemanticRead(in.CapabilityID, in.OperationClass) {
 			in.BudgetProfile = SemanticReadBudgetProfile
+		} else if isDiscoveryOperation(in.CapabilityID, in.OperationClass) {
+			in.BudgetProfile = DiscoveryBudgetProfile
 		} else if isManagedSchemaPage(in) {
 			in.BudgetProfile = ManagedSchemaBudgetProfile
 		} else if IsOperationalControlRead(in.CapabilityID, in.OperationClass) {
@@ -259,6 +276,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
+	if in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND" {
+		var command struct {
+			IdempotencyKey string `json:"idempotencyKey"`
+		}
+		if json.Unmarshal(in.Arguments, &command) != nil || command.IdempotencyKey == "" {
+			return Result{}, errors.New("SEMANTIC_DISCOVERY_KEY_REQUIRED")
+		}
+		in.IdempotencyKey = command.IdempotencyKey
+	}
 	requestHash := sha256.Sum256(in.Arguments)
 	fingerprintArguments := in.Arguments
 	if in.ReadPositionRef != "" {
@@ -300,7 +326,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, err
 	}
 	if admitted.Replay {
-		return Result{AttemptID: admitted.AttemptID, Replay: true}, nil
+		return Result{AttemptID: admitted.AttemptID, Replay: true, AttemptState: admitted.AttemptState, ResultID: admitted.ResultID}, nil
 	}
 	if permit != nil {
 		if err := s.ReprocessingGuard(); err != nil {
@@ -344,6 +370,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	if in.CapabilityID == "ouf.semantic.discovery.adopt" && response.Problem != nil {
 		outcome.Code = adoptionProblemCode(response.Problem.Code)
+		if response.Status == 403 && outcome.Code == "SEMANTIC_ADOPTION_REJECTED" {
+			outcome.Code = SafeDenialReason(response.Problem.Code, "OWNER_AUTHORIZATION_DENIED")
+		}
 		response.Problem = &Problem{Status: response.Status, Code: outcome.Code}
 	}
 	actual := Cost{ToolCalls: 1, ResultBytes: int64(len(response.Body))}
@@ -369,6 +398,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if actual.ResultBytes > in.Maximum.ResultBytes || int64(len(response.Body)) > in.Maximum.ResultBytes {
 		callErr, outcome.Code = ErrResultLimit, "RESULT_LIMIT_EXCEEDED"
 		outcome.Success = false
+	}
+	if outcome.Success {
+		outcome.ResultID = replayResultID(in, response.Body)
 	}
 	if err := s.Admission.Reconcile(ctx, admitted.AttemptID, actual, outcome); err != nil {
 		return Result{}, err
@@ -405,7 +437,11 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 		return "", err
 	}
 	switch capability {
-	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
+	case "ouf.semantic.discovery":
+		if args, ok := value.(map[string]any); ok {
+			delete(args, "idempotencyKey")
+		}
+	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare", "ouf.onboarding.revision.prepare":
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "commandKey")
 		}

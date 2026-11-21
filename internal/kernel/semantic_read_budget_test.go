@@ -12,7 +12,7 @@ import (
 
 func TestSemanticReadBudgetWindowResponseIsExplicit(t *testing.T) {
 	end := time.Date(2026, 11, 7, 20, 8, 0, 0, time.UTC)
-	result := semanticReadAdmissionErrorResult(orchestration.NewSemanticReadBudgetExhaustedError(errors.New("budget"), "TOOL_CALLS", end.Add(-17*time.Second), end))
+	result := windowAdmissionErrorResult(orchestration.NewSemanticReadBudgetExhaustedError(errors.New("budget"), "TOOL_CALLS", end.Add(-17*time.Second), end))
 	if result == nil || !result.IsError || len(result.Content) != 1 {
 		t.Fatal(result)
 	}
@@ -32,7 +32,7 @@ func TestSemanticReadBudgetWindowResponseIsExplicit(t *testing.T) {
 
 func TestSemanticReadBudgetDoesNotMakeOtherErrorsRetryable(t *testing.T) {
 	for _, err := range []error{orchestration.ErrUnauthorized, orchestration.ErrToolSelectionStall, errors.New("unknown"), errors.New("orchestration budget exhausted")} {
-		if semanticReadAdmissionErrorResult(err) != nil {
+		if windowAdmissionErrorResult(err) != nil {
 			t.Fatal("untyped or permanent error became retryable", err)
 		}
 	}

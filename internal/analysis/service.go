@@ -21,7 +21,13 @@ type Coordinator struct {
 }
 
 func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, cap manifest.Capability) error {
-	if i.Delegation == "" || i.ActorType != "HUMAN" || !IdentityScope(i).Valid() {
+	if i.Delegation == "" {
+		return &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
+	}
+	if i.ActorType != "HUMAN" {
+		return &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
+	}
+	if !IdentityScope(i).Valid() {
 		return orchestration.ErrUnauthorized
 	}
 	d, e := c.Service.Auth.Authorize(ctx, orchestration.AuthorizationRequest{Identity: i, Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: i.TenantID}, CapabilityID: cap.RequiredAuthorization, Owner: cap.Owner, OperationClass: cap.OperationClass})
@@ -29,7 +35,7 @@ func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, ca
 		return e
 	}
 	if !d.Allowed || d.DecisionRef == "" {
-		return orchestration.ErrUnauthorized
+		return &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion}
 	}
 	return nil
 }
@@ -73,6 +79,9 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: 10 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
 	if e != nil {
 		return View{}, e
+	}
+	if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
+		return View{}, &OwnerDenial{ReasonCode: r.Problem.Code}
 	}
 	if r.Replay || r.Problem != nil {
 		return View{}, ErrScope
@@ -134,11 +143,12 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	if r.AttemptID != uuid.Nil {
 		f.AttemptID = r.AttemptID.String()
 	}
-	var window interface{ BudgetWindowEnd() time.Time }
+	var window *orchestration.WindowBudgetExhaustedError
 	if errors.As(callErr, &window) {
 		f.State = "WAITING"
 		f.Code = "ADMISSION_WINDOW_WAIT"
-		f.NotBefore = window.BudgetWindowEnd().Add(time.Second)
+		f.NotBefore = window.BudgetWindowEnd()
+		f.Dimension = window.Dimension
 		f.WindowWait = true
 		f.ElapsedMS = 0
 	} else if callErr != nil {
@@ -150,6 +160,9 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	} else if r.Problem != nil {
 		f.Calls = 1
 		f.Code = "OWNER_REQUEST_REJECTED"
+		if r.Problem.Status == http.StatusForbidden {
+			f.Code = "OWNER_AUTHORIZATION_DENIED"
+		}
 		if cap.OperationClass == "READ" && (r.Problem.Status == 429 || r.Problem.Status == 503) {
 			delay := []time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(task.Attempts-1, 4)]
 			delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
@@ -174,8 +187,20 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	// not erase an already observed outcome; a failed write leaves a fenced hold.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	return c.Store.FinishAnalysisTask(finishCtx, scope, id, taskID, task.Fence, f)
+	finished, err := c.Store.FinishAnalysisTask(finishCtx, scope, id, taskID, task.Fence, f)
+	if err == nil && errors.Is(callErr, orchestration.ErrUnauthorized) {
+		return finished, callErr
+	}
+	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden {
+		return finished, &OwnerDenial{ReasonCode: r.Problem.Code}
+	}
+	return finished, err
 }
+
+type OwnerDenial struct{ ReasonCode string }
+
+func (*OwnerDenial) Error() string { return "owner authorization denied" }
+
 func retryAfter(value string, now time.Time) time.Time {
 	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 && n <= 86400 {
 		return now.Add(time.Duration(n) * time.Second)
