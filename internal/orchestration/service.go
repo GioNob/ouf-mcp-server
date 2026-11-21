@@ -441,7 +441,7 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "idempotencyKey")
 		}
-	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare", "ouf.onboarding.revision.prepare":
+	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "commandKey")
 		}

@@ -7,7 +7,7 @@ import (
 
 func TestSemanticCommandKeyCannotBypassEquivalentIntentBudget(t *testing.T) {
 	key := make([]byte, 32)
-	for _, cap := range []string{"ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.onboarding.revision.prepare"} {
+	for _, cap := range []string{"ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request"} {
 		a, err := SemanticFingerprint(key, cap, json.RawMessage(`{"commandKey":"attempt-a","revisionId":"revision-a","expectedRowVersion":0}`))
 		if err != nil {
 			t.Fatal(err)
