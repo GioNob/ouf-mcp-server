@@ -195,7 +195,7 @@ func TestSemanticAdoptionReturnsWindowAndResumesSameCommand(t *testing.T) {
 	gateway := &adoptionGateway{t: t}
 	service := &orchestration.Service{Auth: adoptionAuth{}, Admission: admission, Gateway: gateway, FingerprintKey: make([]byte, 32)}
 	in := orchestration.Invocation{
-		Identity: orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "mapper", TenantID: "tenant"},
+		Identity:     orchestration.Identity{ServicePrincipalID: "mcp", PrincipalID: "mapper", TenantID: "tenant"},
 		CapabilityID: "ouf.semantic.discovery.adopt", Owner: "semantic", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt", ManifestChecksum: "fixture",
 		Arguments: json.RawMessage(`{"requestId":"11111111-1111-4111-8111-111111111111","candidateId":"22222222-2222-4222-8222-222222222222","commandKey":"adopt-01"}`), IdempotencyKey: "adopt-01",
 		Window: time.Minute, Timeout: time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144},
