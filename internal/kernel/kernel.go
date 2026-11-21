@@ -110,7 +110,12 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
 	}
-	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
+	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{
+		Capabilities: &mcp.ServerCapabilities{},
+		Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs. " +
+			"At the start of a conversation and before working on a source, call source.onboarding.notices.read. Show any open notice and its next step, source.onboarding.revision.prepare on the indicated parent version.",
+		Logger: logger,
+	})
 	for _, capability := range snapshot.ToolEligible() {
 		if capability.ToolName == "source.file.upload" {
 			if service != nil && pickerURL != "" {
@@ -124,7 +129,9 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			}
 			continue
 		}
-		if isSourceRevisionCapability(capability.CapabilityID) {
+		if capability.CapabilityID == schemaNoticesCapability {
+			registerSchemaNoticesTool(server, capability, snapshot, service)
+		} else if isSourceRevisionCapability(capability.CapabilityID) {
 			registerSourceRevisionTool(server, capability, snapshot, service)
 		} else if service == nil {
 			registerUnavailableTool(server, capability)
@@ -453,6 +460,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}
 	result, err := service.Call(ctx, in)
+	if c.CapabilityID == schemaNoticesCapability {
+		return schemaNoticesResult(result, err, args)
+	}
 	if err != nil {
 		if orchestration.IsSemanticRead(c.CapabilityID, c.OperationClass) {
 			if result := semanticReadAdmissionErrorResult(err); result != nil {

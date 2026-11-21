@@ -1,5 +1,5 @@
 {
-  "version": "1.13.0-source-revision-and-discovery-adoption",
+  "version": "1.14.0-schema-notices",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -4240,6 +4240,51 @@
             }
           }
         ]
+      }
+    },
+    {
+      "toolName": "source.onboarding.notices.read",
+      "capabilityId": "ouf.onboarding.schema-notices.read",
+      "purpose": "Controlla gli avvisi aperti di cambio di schema visibili all'utente.",
+      "useWhen": [
+        "all'inizio di una conversazione",
+        "prima di lavorare su una sorgente"
+      ],
+      "doNotUseWhen": ["per chiudere un avviso o riattivare l'ingestion"],
+      "preferredAlternatives": ["source.onboarding.revision.prepare per preparare la revisione indicata"],
+      "operationalLimits": {
+        "defaultLimit": 20,
+        "maxLimit": 100,
+        "maxAfterLength": 1024,
+        "maxResultBytes": 65536
+      },
+      "resultSemantics": "Ingestion ferma per cambio di schema: occorre rivedere l'onboarding. Mostra l'avviso e indica source.onboarding.revision.prepare sulla versione parentVersion indicata. observedSchemaRef identifica lo schema osservato. Per continuare la lettura usa next come after.",
+      "securityNotes": ["Onboarding rivaluta il grant di revisione per ogni sorgente nel tenant dell'utente. La lettura lascia aperto l'avviso."],
+      "mcpClass": "MCP_TOOL",
+      "owner": "onboarding",
+      "operationClass": "READ",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.onboarding.schema-notices.read",
+      "gatewayBindingRef": "capability://ouf.onboarding.schema-notices.read",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxResultBytes": 65536,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {"mismatchCalls": 0, "equivalentRetryCalls": 1},
+      "toolEligible": true,
+      "allowedActors": ["HUMAN"],
+      "requiredScope": "ouf.onboarding.schema-notices.read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "state": {"type": "string", "enum": ["OPEN"], "default": "OPEN"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+          "after": {"type": "string", "minLength": 1, "maxLength": 1024}
+        }
       }
     },
     {

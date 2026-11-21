@@ -40,6 +40,9 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	if result == nil || result.ProtocolVersion != ProtocolVersion {
 		t.Fatalf("discovery negotiated %#v", result)
 	}
+	if !strings.Contains(result.Instructions, "source.onboarding.notices.read") {
+		t.Fatal("discovery omitted the schema notice startup check")
+	}
 	tools, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +50,16 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 	gotNames := make([]string, 0, len(tools.Tools))
 	for _, tool := range tools.Tools {
 		gotNames = append(gotNames, tool.Name)
+		if tool.Name == "source.onboarding.notices.read" {
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.OutputSchema == nil {
+				t.Fatal("notice discovery requires a read-only tool with a page schema")
+			}
+			for _, text := range []string{"all'inizio di una conversazione", "prima di lavorare su una sorgente", "Ingestion ferma per cambio di schema", "source.onboarding.revision.prepare"} {
+				if !strings.Contains(tool.Description, text) {
+					t.Fatalf("notice description omitted %q", text)
+				}
+			}
+		}
 		schema, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			t.Fatal(err)
@@ -83,6 +96,7 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"source.file.preview",
 		"source.file.profile",
 		"source.onboarding.create",
+		"source.onboarding.notices.read",
 		"source.onboarding.read",
 		"source.onboarding.review.prepare",
 		"source.onboarding.revision.prepare",
