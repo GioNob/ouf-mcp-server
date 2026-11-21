@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -73,7 +75,8 @@ func TestSemanticAdoptionDescriptorMatchesOwnerPR49(t *testing.T) {
 
 type adoptionAdmission struct {
 	statusAdmission
-	replay bool
+	commandKey string
+	attemptID  uuid.UUID
 }
 
 func TestSemanticAdoptionRejectsAgentBeforeAdmission(t *testing.T) {
@@ -96,9 +99,13 @@ func TestSemanticAdoptionRejectsAgentBeforeAdmission(t *testing.T) {
 }
 
 func (a *adoptionAdmission) Reserve(_ context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
-	replay := a.replay && in.OperationClass == "COMMAND"
-	a.replay = true
-	return orchestration.AdmissionDecision{AttemptID: in.AttemptID, Replay: replay}, nil
+	if in.OperationClass == "COMMAND" {
+		if in.IdempotencyKey == a.commandKey && a.attemptID != uuid.Nil {
+			return orchestration.AdmissionDecision{AttemptID: a.attemptID, Replay: true, AttemptState: "SUCCEEDED"}, nil
+		}
+		a.commandKey, a.attemptID = in.IdempotencyKey, in.AttemptID
+	}
+	return orchestration.AdmissionDecision{AttemptID: in.AttemptID}, nil
 }
 
 type adoptionGateway struct {
@@ -106,25 +113,30 @@ type adoptionGateway struct {
 	commands      int
 	reads         int
 	loseResponse  bool
-	rejectCommand bool
+	commandReply  *orchestration.GatewayResponse
+	storedReceipt string
 }
 
 func (g *adoptionGateway) Execute(_ context.Context, in orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
 	if in.CapabilityID == "ouf.semantic.discovery.adopt" {
 		g.commands++
-		if g.rejectCommand {
-			return orchestration.GatewayResponse{Status: 409, Problem: &orchestration.Problem{Code: "CANDIDATE_EXPIRED", Detail: "private upstream message"}}, nil
-		}
 		if g.loseResponse {
 			return orchestration.GatewayResponse{}, fmt.Errorf("private transport diagnostic")
+		}
+		if g.commandReply != nil {
+			return *g.commandReply, nil
 		}
 		return orchestration.GatewayResponse{Status: 200, Body: []byte(adoptionReceipt)}, nil
 	}
 	g.reads++
-	if in.CapabilityID != "ouf.semantic.proposal.read" || in.OperationClass != "READ" || string(in.Arguments) != `{"commandKey":"adopt-01"}` {
+	if in.CapabilityID != "ouf.semantic.proposal.read" || in.OperationClass != "READ" || string(in.Arguments) != `{"commandKey":"adopt-01"}` || in.IdempotencyKey == "" || in.IdempotencyKey == "adopt-01" {
 		g.t.Fatal("wrong receipt lookup", in.CapabilityID, string(in.Arguments))
 	}
-	body := `{"operation":"ADOPT","historicalSnapshot":true,"ownerStateMustBeRechecked":true,"result":` + adoptionReceipt + `}`
+	stored := g.storedReceipt
+	if stored == "" {
+		stored = adoptionReceipt
+	}
+	body := `{"operation":"ADOPT","historicalSnapshot":true,"ownerStateMustBeRechecked":true,"result":` + stored + `}`
 	return orchestration.GatewayResponse{Status: 200, Body: []byte(body)}, nil
 }
 
@@ -136,42 +148,58 @@ func (a adoptionAuth) Authorize(_ context.Context, in orchestration.Authorizatio
 }
 
 func TestSemanticAdoptionReceiptsReplayLossAndOwnerError(t *testing.T) {
-	for _, mode := range []string{"replay", "lost-response", "expired", "read-denied"} {
-		t.Run(mode, func(t *testing.T) {
-			gateway := &adoptionGateway{t: t, loseResponse: mode == "lost-response" || mode == "read-denied", rejectCommand: mode == "expired"}
-			service := &orchestration.Service{Auth: adoptionAuth{denyRead: mode == "read-denied"}, Admission: &adoptionAdmission{}, Gateway: gateway, FingerprintKey: make([]byte, 32)}
+	const readRequired = `{"code":"SEMANTIC_RECEIPT_READ_REQUIRED","retryable":false}`
+	ack := &orchestration.GatewayResponse{Status: 202}
+	extended := strings.Replace(adoptionReceipt, `"rdfSha256":`, `"ontologySha256":"`+strings.Repeat("b", 64)+`","rdfSha256":`, 1)
+	current := strings.NewReplacer(`"DRAFT"`, `"ACTIVE","publicationSetId":"66666666-6666-4666-8666-666666666666"`,
+		"DURABLE_COMMAND_RESULT_NOT_CURRENT_STATE", "CURRENT_ADOPTION_REFERENCE").Replace(adoptionReceipt)
+	published := strings.Replace(current, "CURRENT_ADOPTION_REFERENCE", "DURABLE_COMMAND_RESULT_NOT_CURRENT_STATE", 1)
+	for _, tc := range []struct {
+		name         string
+		commandReply *orchestration.GatewayResponse
+		stored       string
+		lost, denied bool
+		wantBody     string
+		wantError    bool
+		wantReads    int
+		repeat       bool
+	}{
+		{name: "direct receipt", wantBody: adoptionReceipt, repeat: true},
+		{name: "direct receipt with ontology provenance", commandReply: &orchestration.GatewayResponse{Status: 200, Body: []byte(extended)}, stored: extended, wantBody: extended, repeat: true},
+		{name: "direct historical receipt of published revision", commandReply: &orchestration.GatewayResponse{Status: 200, Body: []byte(published)}, denied: true, wantBody: published},
+		{name: "acknowledgement", commandReply: ack, wantBody: adoptionReceipt, wantReads: 1, repeat: true},
+		{name: "current reference and extended historical receipt", commandReply: &orchestration.GatewayResponse{Status: 200, Body: []byte(current)}, stored: extended, wantBody: extended, wantReads: 1, repeat: true},
+		{name: "stored adoption of published revision", commandReply: ack, stored: current, wantBody: current, wantReads: 1, repeat: true},
+		{name: "response lost", lost: true, wantBody: adoptionReceipt, wantReads: 1},
+		{name: "receipt unavailable", commandReply: ack, stored: "null", wantError: true, wantBody: readRequired, wantReads: 1, repeat: true},
+		{name: "other candidate", commandReply: ack, stored: strings.ReplaceAll(adoptionReceipt, "22222222", "99999999"), wantError: true, wantBody: readRequired, wantReads: 1},
+		{name: "invalid provenance", commandReply: ack, stored: strings.Replace(extended, strings.Repeat("b", 64), "bad digest", 1), wantError: true, wantBody: readRequired, wantReads: 1},
+		{name: "expired", commandReply: &orchestration.GatewayResponse{Status: 409, Problem: &orchestration.Problem{Code: "CANDIDATE_EXPIRED", Detail: "private upstream message"}}, wantError: true, wantBody: `{"code":"CANDIDATE_EXPIRED","retryable":false}`},
+		{name: "read denied", lost: true, denied: true, wantError: true, wantBody: `{"code":"authorization denied","retryable":false,"authorizationPhase":"MCP_PRE_ADMISSION","reasonCode":"AUTHORIZATION_DENIED"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gateway := &adoptionGateway{t: t, commandReply: tc.commandReply, storedReceipt: tc.stored, loseResponse: tc.lost}
+			service := &orchestration.Service{Auth: adoptionAuth{denyRead: tc.denied}, Admission: &adoptionAdmission{}, Gateway: gateway, FingerprintKey: make([]byte, 32)}
 			in := orchestration.Invocation{
 				Identity: orchestration.Identity{PrincipalID: "mapper", TenantID: "tenant", ServicePrincipalID: "mcp", ActorType: "HUMAN"},
 				Owner:    "semantic", CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt", ManifestChecksum: "fixture",
 				IdempotencyKey: "adopt-01", Arguments: json.RawMessage(`{"commandKey":"adopt-01","requestId":"11111111-1111-4111-8111-111111111111","candidateId":"22222222-2222-4222-8222-222222222222"}`),
 				Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144}, Timeout: time.Second, Window: time.Minute, RetryThreshold: 3,
 			}
-			check := func() {
+			check := func(wantReads int) {
 				t.Helper()
 				got := callDiscoveryAdoption(context.Background(), service, in)
 				body := got.Content[0].(*mcp.TextContent).Text
-				if mode == "read-denied" {
-					if !got.IsError || body != `{"code":"authorization denied","retryable":false,"authorizationPhase":"MCP_PRE_ADMISSION","reasonCode":"AUTHORIZATION_DENIED"}` {
-						t.Fatal(body)
-					}
-				} else if mode == "expired" {
-					if !got.IsError || body != `{"code":"CANDIDATE_EXPIRED","retryable":false}` {
-						t.Fatal(body)
-					}
-				} else if got.IsError || body != adoptionReceipt {
+				if got.IsError != tc.wantError || body != tc.wantBody {
 					t.Fatal(body)
 				}
+				if gateway.commands != 1 || gateway.reads != wantReads {
+					t.Fatalf("dispatched %d commands and %d reads, want 1 command and %d reads", gateway.commands, gateway.reads, wantReads)
+				}
 			}
-			check()
-			if mode == "replay" {
-				check()
-			}
-			wantReads := 0
-			if mode == "replay" || mode == "lost-response" {
-				wantReads = 1
-			}
-			if gateway.commands != 1 || gateway.reads != wantReads {
-				t.Fatal("unexpected dispatch counts", gateway.commands, gateway.reads)
+			check(tc.wantReads)
+			if tc.repeat {
+				check(tc.wantReads + 1)
 			}
 		})
 	}

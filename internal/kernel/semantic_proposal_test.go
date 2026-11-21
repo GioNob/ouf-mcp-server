@@ -46,6 +46,10 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				actor = "HUMAN"
 				scopes = append(scopes, "ouf.semantic.read")
 			}
+			wantBody := `{"status":"OWNER_RECEIPT_ONLY"}`
+			if tc.name == "semantic.discovery.adopt" {
+				wantBody = adoptionReceipt
+			}
 			source := statusBundle{authorization.ActivePolicyBundle{BundleID: "semantic", BundleVersion: 1, ActivatedAt: now, Bundle: authorization.PolicyBundle{BundleID: "semantic", Version: 1, PublishedAt: now, Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: tc.permission, Operation: tc.operation, RequiredScope: requiredScope, AllowedActors: []string{actor}}}, Grants: []authorization.Grant{{GrantID: "semantic-grant", CapabilityID: tc.permission, TenantID: "tenant-a", SubjectID: "agent", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "semantic.proposalcommand", ResourceAttributes: map[string]string{"module": "SEMANTIC"}}}}}}}
 			cache := authorization.NewCache(source)
 			if err := cache.Refresh(context.Background()); err != nil {
@@ -86,10 +90,8 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 					if r.Header.Get("Idempotency-Key") != tc.args["commandKey"] || !reflect.DeepEqual(forwarded, tc.args) {
 						t.Error("adoption intent changed")
 					}
-					io.WriteString(w, adoptionReceipt)
-					return
 				}
-				io.WriteString(w, `{"status":"OWNER_RECEIPT_ONLY"}`)
+				io.WriteString(w, wantBody)
 			}))
 			defer gateway.Close()
 			u, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
@@ -130,6 +132,9 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				if scope == requiredScope {
 					if res.IsError || calls.Load() != before+1 {
 						t.Fatalf("command failed: %+v", res)
+					}
+					if len(res.Content) != 1 || res.Content[0].(*mcp.TextContent).Text != wantBody {
+						t.Fatalf("first call lost owner response: %+v", res.Content)
 					}
 				} else if !res.IsError || calls.Load() != before {
 					t.Fatal("denied command dispatched")
