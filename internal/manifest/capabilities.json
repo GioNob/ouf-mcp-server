@@ -1,5 +1,5 @@
 {
-  "version": "1.14.0-schema-notices",
+  "version": "1.15.0-source-unit-profile",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -3177,7 +3177,8 @@
       "capabilityId": "ouf.managed-source.file.profile",
       "purpose": "Queue profiling of a managed file owned by the authenticated human",
       "useWhen": [
-        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
+        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID",
+        "an owned managed asset is available for profiling; select its CSV table, XLSX sheet or GeoPackage layer with source.file.preview after the job completes"
       ],
       "doNotUseWhen": [
         "the user has no asset ID or wants to read a different user’s file"
@@ -3229,9 +3230,10 @@
     {
       "toolName": "source.file.preview",
       "capabilityId": "ouf.managed-source.preview",
-      "purpose": "Read an owned profile/job or bounded immutable schema pages (up to 1024 columns)",
+      "purpose": "Read an owned profile, job, unit inventory or immutable schema page (up to 1024 columns)",
       "useWhen": [
-        "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation"
+        "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation",
+        "list a CSV table, XLSX sheets or GeoPackage layers with UNITS, then read UNIT using the selected opaque unitRef"
       ],
       "doNotUseWhen": [
         "access to another tenant or subject, raw file bytes or storage locations is requested"
@@ -3243,7 +3245,7 @@
         "maxArgumentsBytes": 1024,
         "maxResultBytes": 1048576
       },
-      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding; COLUMNS view returns immutable schema pages without sample values; follow nextOffset until hasMore=false, preserving profile/version/schemaHash",
+      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding; COLUMNS view returns immutable schema pages without sample values; follow nextOffset until hasMore=false, preserving profile/version/schemaHash; UNITS and UNIT are sample-free. Use UNIT profileId, profileVersion, unitRef and schemaHash as unitProfileRef for analysis and onboarding.",
       "securityNotes": [
         "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
         "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
@@ -3286,7 +3288,9 @@
             "type": "string",
             "enum": [
               "ASSETS",
-              "COLUMNS"
+              "COLUMNS",
+              "UNITS",
+              "UNIT"
             ]
           },
           "limit": {
@@ -3303,6 +3307,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 1023
+          },
+          "unitRef": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
           }
         },
         "oneOf": [
@@ -3401,6 +3410,76 @@
                 "maximum": 128
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "view",
+              "assetId",
+              "profileId"
+            ],
+            "properties": {
+              "view": {
+                "const": "UNITS"
+              },
+              "assetId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "profileId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1023
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "view",
+              "assetId",
+              "profileId",
+              "unitRef"
+            ],
+            "properties": {
+              "view": {
+                "const": "UNIT"
+              },
+              "assetId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "profileId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1023
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              },
+              "unitRef": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
           }
         ]
       }
@@ -3410,10 +3489,11 @@
       "capabilityId": "ouf.managed-source.onboarding.create",
       "purpose": "Create an idempotent INTERNAL_MANAGED onboarding DRAFT from a reviewed file profile and pinned semantic references",
       "useWhen": [
-        "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions"
+        "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions",
+        "use unitProfileRef from UNIT for a CSV table, XLSX sheet or GeoPackage layer; any accompanying file identifiers must agree with the owner selection"
       ],
       "doNotUseWhen": [
-        "the user has no governed asset and profile IDs, or requests approval or activation"
+        "the user lacks a governed profile selection, or requests approval or activation"
       ],
       "preferredAlternatives": [
         "profile and preview the owned asset first",
@@ -3450,8 +3530,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "assetId",
-          "profileId",
           "sourceId",
           "name",
           "owner",
@@ -3572,8 +3650,54 @@
               }
             },
             "minItems": 1
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profileId",
+              "profileVersion",
+              "unitRef",
+              "schemaHash"
+            ],
+            "properties": {
+              "profileId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "profileVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              },
+              "unitRef": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "schemaHash": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "minLength": 71,
+                "maxLength": 71
+              }
+            }
           }
-        }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "assetId",
+              "profileId"
+            ]
+          },
+          {
+            "required": [
+              "unitProfileRef"
+            ]
+          }
+        ]
       }
     },
     {
@@ -3736,7 +3860,9 @@
       "capabilityId": "ouf.managed-source.onboarding.review.prepare",
       "purpose": "Prepare a validated source version for trusted human review with durable command reconciliation",
       "useWhen": [
-        "the user has prepared this owned onboarding version and needs its current review state"
+        "the user has prepared this owned onboarding version and needs its current review state",
+        "prepare the selected CSV table, XLSX sheet or GeoPackage layer with its immutable unitProfileRef",
+        "after ONB_UNIT_SCHEMA_CHANGED, read UNIT again and review the selected schema before preparing a new intent"
       ],
       "doNotUseWhen": [
         "approval, activation, configuration editing or access to another owner is requested"
@@ -3801,8 +3927,8 @@
           },
           "executionProposal": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "urn:ouf:managed-file-execution-proposal:typed-csv:v2",
-            "description": "Preparation only. CSV cells remain lexical in RAW; explicitly configured string, decimal and date mappings determine materialization types. Owner checks property/access/source/tenant and exact semantic references. No approval, publication, compatibility attestation or runtime authority is issued.",
+            "$id": "urn:ouf:managed-unit-execution-proposal:v1",
+            "description": "Owner-compiled proposal input for a CSV table, XLSX sheet or GeoPackage layer. Onboarding derives adapter and read parameters from the pinned unit and checks mappings, limits and semantic references.",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -4142,6 +4268,39 @@
                 }
               }
             }
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profileId",
+              "profileVersion",
+              "unitRef",
+              "schemaHash"
+            ],
+            "properties": {
+              "profileId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "profileVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              },
+              "unitRef": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "schemaHash": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "minLength": 71,
+                "maxLength": 71
+              }
+            }
           }
         }
       }
@@ -4151,7 +4310,8 @@
       "capabilityId": "ouf.managed-source.onboarding.read",
       "purpose": "Read an owned exact source version or recover its latest version and trusted review progress",
       "useWhen": [
-        "the user has prepared this owned onboarding version and needs its current review state"
+        "the user has prepared this owned onboarding version and needs its current review state",
+        "recover the draft or review state for the selected CSV table, XLSX sheet or GeoPackage layer"
       ],
       "doNotUseWhen": [
         "approval, activation, configuration editing or access to another owner is requested"
@@ -4294,7 +4454,8 @@
       "useWhen": [
         "the user wants to revise property policies on the current file using changes",
         "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
-        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one"
+        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one",
+        "pin the current unit for policy changes or supply the replacement CSV table, XLSX sheet or GeoPackage layer by unitProfileRef; use the active parent version, hash and original commandKey for reconciliation"
       ],
       "doNotUseWhen": [
         "the file belongs to a new source. Use source.onboarding.create",
@@ -4342,9 +4503,41 @@
           "commandKey",
           "publicationEffect"
         ],
-        "if": { "required": ["assetRef"] },
-        "then": { "not": { "required": ["changes"] } },
-        "else": { "required": ["changes"], "not": { "required": ["newColumns"] } },
+        "if": {
+          "required": [
+            "changes"
+          ]
+        },
+        "then": {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "assetRef"
+                ]
+              },
+              {
+                "required": [
+                  "newColumns"
+                ]
+              }
+            ]
+          }
+        },
+        "else": {
+          "anyOf": [
+            {
+              "required": [
+                "assetRef"
+              ]
+            },
+            {
+              "required": [
+                "unitProfileRef"
+              ]
+            }
+          ]
+        },
         "properties": {
           "sourceId": {
             "type": "string",
@@ -4515,6 +4708,39 @@
                 }
               }
             }
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profileId",
+              "profileVersion",
+              "unitRef",
+              "schemaHash"
+            ],
+            "properties": {
+              "profileId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "profileVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              },
+              "unitRef": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "schemaHash": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "minLength": 71,
+                "maxLength": 71
+              }
+            }
           }
         }
       }
@@ -4524,7 +4750,7 @@
       "capabilityId": "ouf.onboarding.revision.read",
       "purpose": "Read property rules of a source version, or reconcile an exact revision command after a lost response",
       "useWhen": [
-        "read the active parent before changing property policies or replacing its CSV",
+        "read the active parent before changing property policies or replacing a CSV table, XLSX sheet or GeoPackage layer",
         "recover the current review receipt after a lost prepare response using the original sourceId, parentVersionId and commandKey"
       ],
       "doNotUseWhen": [
@@ -4966,7 +5192,9 @@
       "capabilityId": "ouf.source.analysis.plan",
       "purpose": "Plan finite semantic evidence work using the authoritative owned profile; budget is the sum of unique planned calls",
       "useWhen": [
-        "a managed tabular profile requires repeatable column-property analysis"
+        "a managed tabular profile requires repeatable column-property analysis",
+        "use unitProfileRef from UNIT for a CSV table, XLSX sheet or GeoPackage layer",
+        "for a reference obtained outside this MCP service, read UNIT first or include its origin assetId so the owner can verify it"
       ],
       "doNotUseWhen": [
         "publication, approval, arbitrary network queries or unowned profiles are requested"
@@ -5013,8 +5241,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "assetId",
-          "profileId",
           "expectedRevision",
           "work"
         ],
@@ -5075,8 +5301,64 @@
                 }
               }
             }
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profileId",
+              "profileVersion",
+              "unitRef",
+              "schemaHash"
+            ],
+            "properties": {
+              "profileId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "profileVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              },
+              "unitRef": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "schemaHash": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "minLength": 71,
+                "maxLength": 71
+              }
+            }
           }
-        }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "assetId",
+              "profileId"
+            ],
+            "not": {
+              "required": [
+                "unitProfileRef"
+              ]
+            }
+          },
+          {
+            "required": [
+              "unitProfileRef"
+            ],
+            "not": {
+              "required": [
+                "profileId"
+              ]
+            }
+          }
+        ]
       }
     },
     {
@@ -5084,7 +5366,7 @@
       "capabilityId": "ouf.source.analysis.read",
       "purpose": "Read durable per-column evidence progress, cumulative consumption and bounded task pages",
       "useWhen": [
-        "a managed tabular profile requires repeatable column-property analysis"
+        "resume work on a CSV table, XLSX sheet or GeoPackage layer using its analysisId"
       ],
       "doNotUseWhen": [
         "publication, approval, arbitrary network queries or unowned profiles are requested"
@@ -5156,7 +5438,7 @@
       "capabilityId": "ouf.source.analysis.step",
       "purpose": "Execute or resume one planned semantic evidence task through existing governed admission",
       "useWhen": [
-        "a managed tabular profile requires repeatable column-property analysis"
+        "resume work on a CSV table, XLSX sheet or GeoPackage layer using its analysisId"
       ],
       "doNotUseWhen": [
         "publication, approval, arbitrary network queries or unowned profiles are requested"

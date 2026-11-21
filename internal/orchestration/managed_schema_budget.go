@@ -17,7 +17,7 @@ func isManagedSchemaPage(in Invocation) bool {
 	var args struct {
 		View string `json:"view"`
 	}
-	return json.Unmarshal(in.Arguments, &args) == nil && args.View == "COLUMNS"
+	return json.Unmarshal(in.Arguments, &args) == nil && (args.View == "COLUMNS" || args.View == "UNITS" || args.View == "UNIT")
 }
 
 func managedSchemaWindowBudget(in AdmissionRequest) (string, Cost, error) {

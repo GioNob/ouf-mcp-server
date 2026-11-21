@@ -16,7 +16,7 @@ func fixture(t *testing.T, n int) (Scope, Profile, *manifest.Snapshot) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	return Scope{"mcp", "actor", "tenant"}, Profile{uuid.NewString(), uuid.NewString(), 1, "sha256:" + strings.Repeat("a", 64), n}, m
+	return Scope{"mcp", "actor", "tenant"}, Profile{AssetID: uuid.NewString(), ProfileID: uuid.NewString(), Version: 1, SchemaHash: "sha256:" + strings.Repeat("a", 64), ColumnCount: n}, m
 }
 func TestPlanActualWorkForWideProfiles(t *testing.T) {
 	for _, n := range []int{20, 50, 100, 200, 300, 400, 1024} {
@@ -42,6 +42,62 @@ func TestPlanActualWorkForWideProfiles(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyCSVIdentityAndUnitIsolation(t *testing.T) {
+	const historical = `{"assetId":"00000000-0000-4000-8000-000000000001","profileId":"00000000-0000-4000-8000-000000000002","profileVersion":1,"schemaHash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","columnCount":2}`
+	const id = "d58d34118fa64f9b70619017fc9446e1ff25af254627b6c54c8c1d90f2b432b4"
+	const taskID = "0d22f67b20e28210e7cad6c9dcb8dfb14f0aec4a494cc2112aa87e5723f57da6"
+	scope, _, snapshot := fixture(t, 2)
+	var p Profile
+	if err := json.Unmarshal([]byte(historical), &p); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Build(scope, p, snapshot, 7, []Work{{Tool: "semantic.search", Arguments: json.RawMessage(`{"q":"name"}`), Columns: []int{0}}})
+	if err != nil || plan.ID != id || plan.ExpectedRevision != 7 || plan.Tasks[0].ID != taskID {
+		t.Fatal("historical IDs or revision changed", plan, err)
+	}
+	if encoded, err := json.Marshal(p); err != nil || string(encoded) != historical {
+		t.Fatal("historical profile encoding changed", string(encoded), err)
+	}
+	p.UnitRef = "table:0"
+	if AnalysisID(scope, p) != id {
+		t.Fatal("second budget for the singleton CSV table")
+	}
+	p.UnitRef = "sheet:0"
+	first := AnalysisID(scope, p)
+	p.UnitRef = "sheet:1"
+	if first == id || first == AnalysisID(scope, p) {
+		t.Fatal("distinct selections share a plan")
+	}
+}
+
+func TestUnitPageChecksOwnerSelectionAndBounds(t *testing.T) {
+	const asset = "00000000-0000-4000-8000-000000000001"
+	const profile = "00000000-0000-4000-8000-000000000002"
+	hash := "sha256:" + strings.Repeat("e", 64)
+	for unit, kind := range map[string]string{"layer:2": "LAYER", "sheet:1": "SHEET", "table:0": "TABLE"} {
+		page := map[string]any{
+			"schema": "ouf.source-unit-profile.v1", "profileId": profile, "profileVersion": 1, "schemaHash": hash,
+			"sourceKind": "FILE", "origin": map[string]string{"assetId": asset}, "unitKind": kind, "unitRef": unit,
+			"columnCount": 1024, "columns": []any{map[string]string{"name": "id"}}, "hasMore": false, "nextOffset": nil,
+		}
+		body, _ := json.Marshal(page)
+		p, err := UnitPage(body, asset, profile, unit, 1023, 128)
+		if err != nil || p.Reference() != (UnitProfileRef{profile, 1, unit, hash}) {
+			t.Fatal("last page of wide unit", kind, p, err)
+		}
+		for k, invalid := range map[string]any{"origin": map[string]string{"assetId": profile}, "unitRef": "other", "profileId": asset, "hasMore": true, "columnCount": 1025, "profileVersion": 0, "schemaHash": "invalid", "columns": []any{}} {
+			saved := page[k]
+			page[k] = invalid
+			bad, _ := json.Marshal(page)
+			if _, err := UnitPage(bad, asset, profile, unit, 1023, 128); err == nil {
+				t.Fatalf("%s accepted invalid %s", kind, k)
+			}
+			page[k] = saved
+		}
+	}
+}
+
 func TestPlanDeduplicatesSharedWorkAndKeepsDiscoveryStable(t *testing.T) {
 	s, p, m := fixture(t, 400)
 	work := []Work{{Tool: "semantic.search", Arguments: json.RawMessage(`{"q":"tipologia","type":"PROPERTY"}`), Columns: []int{2}}, {Tool: "semantic.search", Arguments: json.RawMessage(`{"type":"PROPERTY","q":"tipologia"}`), Columns: []int{3, 2}}}

@@ -165,7 +165,7 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 	if err = Migrate(ctx, appPool); err != nil {
 		t.Fatalf("ordinary analysis migration: %v", err)
 	}
-	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != 14 {
+	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != 15 {
 		t.Fatalf("analysis migration count %d: %v", count, err)
 	}
 	if err = pool.QueryRow(ctx, "select to_regclass('ouf_mcp.profile_analysis') is not null").Scan(&analysisTable); err != nil || !analysisTable {
