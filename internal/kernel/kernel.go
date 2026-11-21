@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/trustedclaims"
@@ -395,6 +396,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		maxObjects = 100
 	}
 	argumentLimit := 65536
+	if c.CapabilityID == "ouf.managed-source.preview" && len(args) > 1024 {
+		return errorResult("MANAGED_PREVIEW_ARGUMENTS_TOO_LARGE", false), nil, nil
+	}
 	if c.CapabilityID == "ouf.managed-source.onboarding.create" || c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
 		argumentLimit = 2 << 20
 	}
@@ -486,11 +490,22 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OPERATIONAL_READ_REQUIRES_FRESH_AUTHORIZED_ATTEMPT", true), nil, nil
 	}
 	if result.Problem != nil {
+		if (c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" || isSourcePreparationCapability(c.CapabilityID)) &&
+			result.Problem.Status == http.StatusConflict && result.Problem.Code == analysis.ErrUnitSchemaChanged.Error() {
+			return errorResult(analysis.ErrUnitSchemaChanged.Error(), false), nil, nil
+		}
 		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
 			return revisionCSVError(result.Body), nil, nil
 		}
 		body, _ := json.Marshal(result.Problem)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
+	}
+	if c.CapabilityID == "ouf.managed-source.preview" {
+		body, err := projectUnitPreview(ctx, service, identity.Identity, args, result.Body)
+		if err != nil {
+			return errorResult(analysis.SafeError(err), false), nil, nil
+		}
+		result.Body = body
 	}
 	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
 	if isSourceRevisionCapability(c.CapabilityID) {

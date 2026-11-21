@@ -11,7 +11,32 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, manifest string) (analysis.Profile, int64, error) {
+func (s *Store) UnitOrigin(ctx context.Context, scope analysis.Scope, profile string) (string, error) {
+	var asset string
+	err := s.pool.QueryRow(ctx, `select asset_id::text from ouf_mcp.unit_profile_origin
+		where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and profile_id=$4`,
+		scope.Service, scope.Principal, scope.Tenant, profile).Scan(&asset)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", analysis.ErrUnitPreviewRequired
+	}
+	return asset, err
+}
+
+func (s *Store) RememberUnitOrigin(ctx context.Context, scope analysis.Scope, profile, asset string) error {
+	tag, err := s.pool.Exec(ctx, `insert into ouf_mcp.unit_profile_origin
+		(service_principal_id,principal_id,tenant_id,profile_id,asset_id) values($1,$2,$3,$4,$5)
+		on conflict do nothing`, scope.Service, scope.Principal, scope.Tenant, profile, asset)
+	if err != nil || tag.RowsAffected() == 1 {
+		return err
+	}
+	stored, err := s.UnitOrigin(ctx, scope, profile)
+	if err == nil && stored != asset {
+		return analysis.ErrScope
+	}
+	return err
+}
+
+func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, manifest string, historicalRead bool) (analysis.Profile, int64, error) {
 	var p analysis.Profile
 	var raw []byte
 	var rev int64
@@ -23,7 +48,12 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	if err != nil {
 		return p, 0, err
 	}
-	if json.Unmarshal(raw, &p) != nil || stored != manifest {
+	if json.Unmarshal(raw, &p) != nil {
+		return p, 0, analysis.ErrScope
+	}
+	// Only the metadata/progress read may reopen a legacy plan after a catalog
+	// upgrade. All plan writes, task evidence reads and claims retain the fence.
+	if stored != manifest && !(historicalRead && p.UnitRef == "" && p.Valid() && id == analysis.AnalysisID(scope, p)) {
 		return p, 0, analysis.ErrScope
 	}
 	return p, rev, nil
@@ -69,7 +99,7 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	if e != nil {
 		return analysis.View{}, e
 	}
-	existing, rev, e := analysisHeader(ctx, tx, p.Scope, p.ID, p.Manifest)
+	existing, rev, e := analysisHeader(ctx, tx, p.Scope, p.ID, p.Manifest, false)
 	if e != nil {
 		return analysis.View{}, e
 	}
@@ -139,7 +169,7 @@ func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, mani
 		return analysis.View{}, e
 	}
 	defer tx.Rollback(ctx)
-	p, rev, e := analysisHeader(ctx, tx, scope, id, manifest)
+	p, rev, e := analysisHeader(ctx, tx, scope, id, manifest, true)
 	if e != nil {
 		return analysis.View{}, e
 	}
@@ -180,7 +210,7 @@ func (s *Store) ReadAnalysisTask(ctx context.Context, scope analysis.Scope, id, 
 		return analysis.Task{}, e
 	}
 	defer tx.Rollback(ctx)
-	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest); e != nil {
+	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest, false); e != nil {
 		return analysis.Task{}, e
 	}
 	t, e := readAnalysisTask(ctx, tx, id, taskID)
@@ -197,7 +227,7 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 		return t, e
 	}
 	defer tx.Rollback(ctx)
-	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest); e != nil {
+	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest, false); e != nil {
 		return t, e
 	}
 	t, e = readAnalysisTask(ctx, tx, id, taskID)

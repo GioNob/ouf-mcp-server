@@ -32,15 +32,14 @@ func registerAnalysisTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		switch c.ToolName {
 		case "source.analysis.plan":
 			var args struct {
-				AssetID          string          `json:"assetId"`
-				ProfileID        string          `json:"profileId"`
+				analysis.ProfileSelection
 				ExpectedRevision int64           `json:"expectedRevision"`
 				Work             []analysis.Work `json:"work"`
 			}
 			if json.Unmarshal(raw, &args) != nil {
 				return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 			}
-			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
+			out, err = coordinator.PlanSelection(ctx, i.Identity, args.ProfileSelection, args.ExpectedRevision, args.Work)
 		case "source.analysis.read":
 			var args struct {
 				AnalysisID string `json:"analysisId"`

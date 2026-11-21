@@ -34,6 +34,8 @@ var ErrConflict = errors.New("ANALYSIS_REVISION_CONFLICT")
 var ErrCapacity = errors.New("ANALYSIS_CAPACITY_HELD")
 var ErrUnavailable = errors.New("ANALYSIS_CAPABILITY_INACTIVE")
 var ErrFenced = errors.New("ANALYSIS_STALE_EXECUTION")
+var ErrUnitPreviewRequired = errors.New("ANALYSIS_UNIT_PREVIEW_REQUIRED")
+var ErrUnitSchemaChanged = errors.New("ONB_UNIT_SCHEMA_CHANGED")
 
 type Scope struct{ Service, Principal, Tenant string }
 
@@ -48,11 +50,34 @@ type Profile struct {
 	Version     int    `json:"profileVersion"`
 	SchemaHash  string `json:"schemaHash"`
 	ColumnCount int    `json:"columnCount"`
+	UnitRef     string `json:"unitRef,omitempty"`
+}
+
+type UnitProfileRef struct {
+	ProfileID  string `json:"profileId"`
+	Version    int    `json:"profileVersion"`
+	UnitRef    string `json:"unitRef"`
+	SchemaHash string `json:"schemaHash"`
+}
+
+func (p Profile) Reference() UnitProfileRef {
+	return UnitProfileRef{p.ProfileID, p.Version, p.UnitRef, p.SchemaHash}
+}
+
+// UnitOrigins stores only a locator. Custody and pinned schema are checked on
+// the owner read before creating a plan.
+type UnitOrigins interface {
+	RememberUnitOrigin(context.Context, Scope, string, string) error
+	UnitOrigin(context.Context, Scope, string) (string, error)
+}
+
+func validSchemaHash(hash string) bool {
+	b, err := hex.DecodeString(strings.TrimPrefix(hash, "sha256:"))
+	return strings.HasPrefix(hash, "sha256:") && err == nil && len(b) == sha256.Size
 }
 
 func (p Profile) Valid() bool {
-	b, e := hex.DecodeString(strings.TrimPrefix(p.SchemaHash, "sha256:"))
-	return uuid.Validate(p.AssetID) == nil && uuid.Validate(p.ProfileID) == nil && p.Version > 0 && strings.HasPrefix(p.SchemaHash, "sha256:") && e == nil && len(b) == 32 && p.ColumnCount >= 1 && p.ColumnCount <= 1024
+	return uuid.Validate(p.AssetID) == nil && uuid.Validate(p.ProfileID) == nil && p.Version > 0 && validSchemaHash(p.SchemaHash) && p.ColumnCount >= 1 && p.ColumnCount <= 1024
 }
 
 type Work struct {
@@ -137,6 +162,10 @@ func Digest(v any) string {
 }
 func AnalysisID(s Scope, p Profile) string {
 	// Manifest/conversation/correlation never create a fresh logical analysis.
+	// The singleton CSV table shares its historical budget and owner keys.
+	if p.UnitRef != "" && p.UnitRef != "table:0" {
+		return Digest([]any{ProfileVersion, s, p.ProfileID, "unit", p.UnitRef})
+	}
 	return Digest([]any{ProfileVersion, s, p.AssetID, p.ProfileID})
 }
 func allowed(tool string) bool {
@@ -285,7 +314,7 @@ func ValidateID(id string) error {
 	return nil
 }
 func SafeError(err error) string {
-	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
+	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, ErrUnitPreviewRequired, ErrUnitSchemaChanged, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()
 		}

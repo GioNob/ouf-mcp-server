@@ -203,12 +203,14 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	if in.CapabilityID == "ouf.onboarding.revision.prepare" {
 		var revision struct {
 			AssetRef        json.RawMessage `json:"assetRef"`
+			UnitProfileRef  json.RawMessage `json:"unitProfileRef"`
+			Changes         json.RawMessage `json:"changes"`
 			ExpectedVersion *int64          `json:"expectedVersion"`
 		}
 		if err := json.Unmarshal(in.Arguments, &revision); err != nil {
 			return orchestration.GatewayResponse{}, errors.New("invalid revision arguments")
 		}
-		replacingAsset = revision.AssetRef != nil
+		replacingAsset = revision.AssetRef != nil || (revision.UnitProfileRef != nil && revision.Changes == nil)
 		if replacingAsset {
 			if revision.ExpectedVersion == nil {
 				return orchestration.GatewayResponse{}, errors.New("missing revision expectedVersion")

@@ -44,11 +44,15 @@ func (c Coordinator) check(ctx context.Context, i orchestration.Identity) (strin
 	return c.Manifest.Checksum()
 }
 func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, profile string, expected int64, work []Work) (View, error) {
+	return c.PlanSelection(ctx, i, ProfileSelection{AssetID: asset, ProfileID: profile}, expected, work)
+}
+
+func (c Coordinator) PlanSelection(ctx context.Context, i orchestration.Identity, selection ProfileSelection, expected int64, work []Work) (View, error) {
 	checksum, e := c.check(ctx, i)
 	if e != nil {
 		return View{}, e
 	}
-	if uuid.Validate(asset) != nil || uuid.Validate(profile) != nil || len(work) < 1 || len(work) > MaxPlanBatch {
+	if !selection.valid() || expected < 0 || len(work) < 1 || len(work) > MaxPlanBatch {
 		return View{}, ErrInvalid
 	}
 	// The owner contract makes profile IDs immutable. Reuse the previously
@@ -56,26 +60,104 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	// Otherwise eight batches for 1024 columns repeat the same preview query and
 	// hit its equivalent-query guard even though they describe different work.
 	scope := IdentityScope(i)
-	logicalID := AnalysisID(scope, Profile{AssetID: asset, ProfileID: profile})
+	ref := selection.UnitProfileRef
+	key := Profile{AssetID: selection.AssetID, ProfileID: selection.ProfileID}
+	if ref != nil {
+		key.ProfileID, key.UnitRef = ref.ProfileID, ref.UnitRef
+		if key.AssetID == "" {
+			origins, ok := c.Store.(UnitOrigins)
+			if !ok {
+				return View{}, ErrUnitPreviewRequired
+			}
+			key.AssetID, e = origins.UnitOrigin(ctx, scope, key.ProfileID)
+			if e != nil {
+				return View{}, e
+			}
+		}
+	}
+	logicalID := AnalysisID(scope, key)
 	retained, readErr := c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 1)
-	if readErr == nil {
+	// A COLUMNS plan has a different owner hash from UNIT. Verify the new
+	// pin with the owner before reusing the original CSV ledger and hash.
+	legacyTable := readErr == nil && key.UnitRef == "table:0" && retained.Profile.UnitRef == ""
+	if readErr == nil && !legacyTable {
+		if ref != nil {
+			if key.AssetID != "" && key.AssetID != retained.Profile.AssetID || retained.Profile.Version != ref.Version {
+				return View{}, ErrScope
+			}
+			if retained.Profile.Reference() != *ref {
+				return View{}, ErrUnitSchemaChanged
+			}
+		}
 		plan, buildErr := Build(scope, retained.Profile, c.Manifest, expected, work)
 		if buildErr != nil {
 			return View{}, buildErr
 		}
 		return c.Store.PlanAnalysis(ctx, plan)
 	}
-	if !errors.Is(readErr, ErrScope) || expected != 0 {
+	if readErr != nil && (!errors.Is(readErr, ErrScope) || expected != 0) {
 		return View{}, readErr
 	}
 	preview, _ := Find(c.Manifest, "source.file.preview")
-	args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": 0, "limit": 1})
+	page := map[string]any{"view": "COLUMNS", "offset": 0, "limit": 1, "profileId": key.ProfileID}
+	if ref != nil {
+		page["view"], page["unitRef"] = "UNIT", ref.UnitRef
+	}
+	page["assetId"] = key.AssetID
+	args, _ := json.Marshal(page)
+	if len(args) > 1024 {
+		return View{}, ErrInvalid
+	}
 	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: 10 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
 	if e != nil {
 		return View{}, e
 	}
 	if r.Replay || r.Problem != nil {
+		if r.Problem != nil && r.Problem.Status == http.StatusConflict && r.Problem.Code == ErrUnitSchemaChanged.Error() {
+			return View{}, ErrUnitSchemaChanged
+		}
 		return View{}, ErrScope
+	}
+	p, e := verifiedProfile(r.Body, key, ref)
+	if e != nil {
+		return View{}, e
+	}
+	if legacyTable {
+		if retained.Profile.AssetID != p.AssetID || retained.Profile.ProfileID != p.ProfileID ||
+			retained.Profile.Version != p.Version || retained.Profile.ColumnCount != p.ColumnCount {
+			return View{}, ErrScope
+		}
+		p = retained.Profile
+	}
+	if ref != nil && selection.AssetID != "" {
+		origins, ok := c.Store.(UnitOrigins)
+		if !ok {
+			return View{}, ErrUnavailable
+		}
+		if e = origins.RememberUnitOrigin(ctx, scope, key.ProfileID, key.AssetID); e != nil {
+			return View{}, e
+		}
+	}
+	plan, e := Build(scope, p, c.Manifest, expected, work)
+	if e != nil {
+		return View{}, e
+	}
+	return c.Store.PlanAnalysis(ctx, plan)
+}
+
+func verifiedProfile(body []byte, key Profile, ref *UnitProfileRef) (Profile, error) {
+	if ref != nil {
+		p, err := UnitPage(body, key.AssetID, key.ProfileID, key.UnitRef, 0, 1)
+		if err != nil {
+			return Profile{}, err
+		}
+		if p.Version != ref.Version {
+			return Profile{}, ErrScope
+		}
+		if p.SchemaHash != ref.SchemaHash {
+			return Profile{}, ErrUnitSchemaChanged
+		}
+		return p, nil
 	}
 	var p Profile
 	var envelope struct {
@@ -83,14 +165,10 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		Offset  int               `json:"offset"`
 		Columns []json.RawMessage `json:"columns"`
 	}
-	if json.Unmarshal(r.Body, &p) != nil || json.Unmarshal(r.Body, &envelope) != nil || p.AssetID != asset || p.ProfileID != profile || !p.Valid() || envelope.View != "COLUMNS" || envelope.Offset != 0 || len(envelope.Columns) != 1 {
-		return View{}, ErrScope
+	if json.Unmarshal(body, &p) != nil || json.Unmarshal(body, &envelope) != nil || p.AssetID != key.AssetID || p.ProfileID != key.ProfileID || p.UnitRef != "" || !p.Valid() || envelope.View != "COLUMNS" || envelope.Offset != 0 || len(envelope.Columns) != 1 {
+		return Profile{}, ErrScope
 	}
-	plan, e := Build(IdentityScope(i), p, c.Manifest, expected, work)
-	if e != nil {
-		return View{}, e
-	}
-	return c.Store.PlanAnalysis(ctx, plan)
+	return p, nil
 }
 func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id string, offset, limit int) (View, error) {
 	checksum, e := c.check(ctx, i)

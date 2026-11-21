@@ -35,6 +35,54 @@ func searchWork(n int) analysis.Work {
 	b, _ := json.Marshal(map[string]any{"q": fmt.Sprintf("property-%d", n), "type": "PROPERTY"})
 	return analysis.Work{Tool: "semantic.search", Arguments: b, Columns: []int{n}}
 }
+
+func TestHistoricalCSVProgressAndScopedUnitOrigin(t *testing.T) {
+	ctx, s, scope, p, snapshot := analysisFixture(t, 2)
+	const rev = 9
+	const oldManifest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	id := analysis.AnalysisID(scope, p)
+	// Insert the persisted v1 shape independently of the current Plan writer.
+	_, err := s.pool.Exec(ctx, `insert into ouf_mcp.profile_analysis
+		(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum,revision)
+		values ($1,$2,$3,$4,jsonb_build_object('assetId',$5::text,'profileId',$6::text,
+		'profileVersion',1,'schemaHash',$7::text,'columnCount',2),$8,$9)`,
+		id, scope.Service, scope.Principal, scope.Tenant, p.AssetID, p.ProfileID, p.SchemaHash, oldManifest, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := snapshot.Checksum()
+	view, err := s.ReadAnalysis(ctx, scope, id, current, 0, 1)
+	if err != nil || view.ID != id || view.Revision != rev || view.Profile != p {
+		t.Fatal("legacy read", view, err)
+	}
+	plan, err := analysis.Build(scope, p, snapshot, rev, []analysis.Work{searchWork(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlanAnalysis(ctx, plan); !errors.Is(err, analysis.ErrScope) {
+		t.Fatal("changed manifest permitted a write", err)
+	}
+	var stored string
+	var revision int
+	if err := s.pool.QueryRow(ctx, `select manifest_checksum,revision from ouf_mcp.profile_analysis where analysis_id=$1`, id).Scan(&stored, &revision); err != nil || stored != oldManifest || revision != rev {
+		t.Fatal("historical hash or revision changed", err)
+	}
+	for range 2 {
+		if err := s.RememberUnitOrigin(ctx, scope, p.ProfileID, p.AssetID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RememberUnitOrigin(ctx, scope, p.ProfileID, uuid.NewString()); !errors.Is(err, analysis.ErrScope) {
+		t.Fatal("conflicting origin accepted", err)
+	}
+	if asset, err := s.UnitOrigin(ctx, scope, p.ProfileID); err != nil || asset != p.AssetID {
+		t.Fatal("original locator lost", asset, err)
+	}
+	scope.Tenant = uuid.NewString()
+	if _, err := s.UnitOrigin(ctx, scope, p.ProfileID); !errors.Is(err, analysis.ErrUnitPreviewRequired) {
+		t.Fatal("cross-tenant locator", err)
+	}
+}
 func TestProfileAnalysisWideDurablePlanAndNoReset(t *testing.T) {
 	for _, n := range []int{20, 50, 100, 200, 300, 400, 1024} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {

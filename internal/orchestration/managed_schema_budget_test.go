@@ -19,10 +19,10 @@ func TestManagedSchemaPagesHaveSeparateFiniteBudget(t *testing.T) {
 			t.Fatal("page budget leaked into other capability")
 		}
 	}
-	for _, view := range []string{"ASSETS", "", "COLUMNS"} {
+	for _, view := range []string{"ASSETS", "", "COLUMNS", "UNITS", "UNIT"} {
 		args, _ := json.Marshal(map[string]string{"view": view})
 		matched := isManagedSchemaPage(Invocation{CapabilityID: in.CapabilityID, OperationClass: "READ", Arguments: args})
-		if matched != (view == "COLUMNS") {
+		if matched != (view == "COLUMNS" || view == "UNITS" || view == "UNIT") {
 			t.Fatal("budget selection changed")
 		}
 	}
