@@ -2584,7 +2584,9 @@
       "purpose": "Create one native semantic DRAFT or bounded Turtle ontology DRAFT with a durable caller-scoped receipt",
       "useWhen": [
         "preparing authorized native semantic proposals for human review",
-        "Choose base types from the controlled vocabulary. If no published type fits structured data, propose a DATATYPE combining base types or pinned published DATATYPEs. Use it only after a human approves it in the THS and the Semantic Registry publishes it"
+        "Choose base types from the controlled vocabulary. If no published type fits structured data, propose a DATATYPE combining base types or pinned published DATATYPEs. Use it only after a human approves it in the THS and the Semantic Registry publishes it",
+        "Propose a VALUE_MAP for a column of codes from a controlled vocabulary. Use the distinct codes from the source.file.profile result, read through source.file.preview. Wait for the actual codes if the profile only provides a count. Preserve case and use each code after the VALUE_MAP_V1 trim",
+        "Use semantic.search and semantic.get to identify published concepts in one active published vocabulary and pin that vocabulary as semanticId@publicationSetId. Use only verified concepts from that vocabulary. After human approval in the THS and publication, use transform: VALUE_MAP_V1 with the published pin in transformParams.valueMapRef"
       ],
       "doNotUseWhen": [
         "approving, publishing, activating, adopting external terms or bypassing owner decisions"
@@ -2650,7 +2652,8 @@
               "VOCABULARY",
               "CONCEPT",
               "ONTOLOGY",
-              "DATATYPE"
+              "DATATYPE",
+              "VALUE_MAP"
             ]
           },
           "namespace": {
@@ -2707,82 +2710,87 @@
           },
           "definition": {
             "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "components": { "$ref": "#/$defs/datatypeComponents" },
-              "description": {
-                "type": "object",
+            "anyOf": [
+              { "$ref": "#/$defs/valueMapDefinition" },
+              {
                 "additionalProperties": false,
                 "properties": {
-                  "it": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4000
+                  "components": { "$ref": "#/$defs/datatypeComponents" },
+                  "description": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "it": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      },
+                      "en": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      },
+                      "de": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      },
+                      "sl": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      }
+                    },
+                    "maxProperties": 4
                   },
-                  "en": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4000
+                  "domainRefs": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
                   },
-                  "de": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4000
+                  "rangeRefs": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
                   },
-                  "sl": {
+                  "datatype": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 4000
+                    "maxLength": 1024
+                  },
+                  "minCardinality": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "maxCardinality": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "vocabularyRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  },
+                  "inverseRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
                   }
-                },
-                "maxProperties": 4
-              },
-              "domainRefs": {
-                "type": "array",
-                "maxItems": 32,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1024
                 }
-              },
-              "rangeRefs": {
-                "type": "array",
-                "maxItems": 32,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1024
-                }
-              },
-              "datatype": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1024
-              },
-              "minCardinality": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
-              },
-              "maxCardinality": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
-              },
-              "vocabularyRef": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1024
-              },
-              "inverseRef": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1024
               }
-            }
+            ]
           },
           "commandKey": {
             "type": "string",
@@ -2947,6 +2955,58 @@
             "maxItems": 32,
             "uniqueItems": true,
             "description": "Use unique component names. The Semantic Registry resolves published pins and checks cycles, depth (4) and total leaf components (256)."
+          },
+          "valueMapIri": {
+            "type": "string",
+            "format": "iri",
+            "not": {
+              "pattern": "[\\x00-\\x1F\\x7F]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+            },
+            "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+$"
+          },
+          "valueMapDefinition": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "targetVocabulary": {
+                "type": "string",
+                "not": {
+                  "pattern": "[\\x00-\\x1F\\x7F]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+                },
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "not": {
+                        "pattern": "[\\x00-\\x1F\\x7F]|^[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$"
+                      }
+                    },
+                    "concept": {"$ref": "#/$defs/valueMapIri"}
+                  },
+                  "required": ["code", "concept"]
+                },
+                "minItems": 1,
+                "maxItems": 2000,
+                "description": "Codes must be unique and are case sensitive. Concepts may repeat."
+              },
+              "labels": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "it": {"type": "string", "minLength": 1, "maxLength": 4000},
+                  "en": {"type": "string", "minLength": 1, "maxLength": 4000}
+                }
+              }
+            },
+            "required": ["targetVocabulary", "entries"]
           }
         },
         "if": { "properties": { "artifactType": { "const": "DATATYPE" } } },
@@ -2960,7 +3020,22 @@
             }
           }
         },
-        "else": { "properties": { "definition": { "not": { "required": ["components"] } } } },
+        "else": {
+          "if": { "properties": { "artifactType": { "const": "VALUE_MAP" } } },
+          "then": {
+            "properties": {
+              "semanticId": { "$ref": "#/$defs/valueMapIri" },
+              "definition": { "required": ["entries"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "definition": {
+                "not": { "anyOf": [{ "required": ["components"] }, { "required": ["entries"] }] }
+              }
+            }
+          }
+        },
         "oneOf": [
           {
             "required": [
@@ -3343,7 +3418,8 @@
       "capabilityId": "ouf.managed-source.file.profile",
       "purpose": "Queue profiling of a managed file owned by the authenticated human",
       "useWhen": [
-        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID"
+        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID",
+        "For a proposed VALUE_MAP, use source.file.preview to read this job and use the distinct codes of the column when the profile exposes them"
       ],
       "doNotUseWhen": [
         "the user has no asset ID or wants to read a different user’s file"
@@ -3577,7 +3653,8 @@
       "purpose": "Create an idempotent INTERNAL_MANAGED onboarding DRAFT from a reviewed file profile and pinned semantic references",
       "useWhen": [
         "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions",
-        "Choose a reader for each base type from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, use semantic.propose to combine base types or pinned published types into a DATATYPE. Use it only after human approval in the THS and publication"
+        "Choose a reader for each base type from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, use semantic.propose to combine base types or pinned published types into a DATATYPE. Use it only after human approval in the THS and publication",
+        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef"
       ],
       "doNotUseWhen": [
         "the user has no governed asset and profile IDs, or requests approval or activation"
@@ -4295,7 +4372,8 @@
       "capabilityId": "ouf.semantic.search",
       "purpose": "Search current published semantic artifacts for assisted source mapping",
       "useWhen": [
-        "source mapping needs official semantic metadata and immutable references"
+        "source mapping needs official semantic metadata and immutable references",
+        "Find a published vocabulary and its published concepts for a proposed VALUE_MAP. Verify exact references with semantic.get"
       ],
       "doNotUseWhen": [
         "publication, approval or arbitrary external query execution is requested"
@@ -4384,7 +4462,8 @@
       "capabilityId": "ouf.semantic.consultation.read",
       "purpose": "Read one exact published semantic reference including its definition and constraints",
       "useWhen": [
-        "source mapping needs official semantic metadata and immutable references"
+        "source mapping needs official semantic metadata and immutable references",
+        "Check the exact published vocabulary and its concepts before using them in a VALUE_MAP proposal"
       ],
       "doNotUseWhen": [
         "publication, approval or arbitrary external query execution is requested"
@@ -4966,7 +5045,8 @@
         "the user wants to revise compositions on the active file",
         "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
         "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one",
-        "Choose readers from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, propose a DATATYPE combining base types or pinned published types. Use it only after human approval in the THS and publication"
+        "Choose readers from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, propose a DATATYPE combining base types or pinned published types. Use it only after human approval in the THS and publication",
+        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef"
       ],
       "doNotUseWhen": [
         "the file belongs to a new source. Use source.onboarding.create",

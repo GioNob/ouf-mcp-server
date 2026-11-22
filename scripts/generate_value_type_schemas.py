@@ -8,13 +8,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "contracts/ouf-value-types-v1.json"
+VALUE_MAP_CONTRACT = ROOT / "contracts/ouf-value-maps-v1.json"
 MANIFEST = ROOT / "internal/manifest/capabilities.json"
 DIGEST = "4b90e85ecd1573404612ef0a0ee627feffaa9c189fe4363e82079bd07824c333"
+VALUE_MAP_DIGEST = "2f4528eb4c9c6bd9d2c6345464c8292f0cb3f36834cb2f54f81ae20e3dbe4a71"
 NAME = {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"}
 # publicationSetId is the UUID used by semantic.get and by Onboarding.
+PUBLICATION_SET_ID = r"[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}"
 PIN = {"type": "string", "pattern": (
-    r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
+    r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s@]+@" + PUBLICATION_SET_ID + "$"
 )}
+ABSOLUTE_IRI = r'^[A-Za-z][A-Za-z0-9+.-]*:([^\s\x00-\x1F\x7F<>\"{}`|\\^%]|%[A-Fa-f0-9]{2})+'
 
 
 def ref(name):
@@ -43,6 +47,30 @@ def ids(entries):
     return {"enum": [entry["id"] for entry in entries]}
 
 
+def value_map_defs(labels):
+    # Unicode White_Space outside the control range U+0000 through U+001F.
+    whitespace = "\x20\x85\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+    controls = r"[\x00-\x1F\x7F]"
+    space_or_control = {"not": {"pattern": controls + "|[" + whitespace + "]"}}
+    code = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "not": {"pattern": controls + "|^[" + whitespace + "]|[" + whitespace + "]$"},
+    }
+    entry = obj({"code": code, "concept": ref("valueMapIri")}, ["code", "concept"])
+    return {
+        "valueMapIri": {"type": "string", "format": "iri", **space_or_control, "pattern": ABSOLUTE_IRI + "$"},
+        "valueMapDefinition": obj({
+            "targetVocabulary": {"type": "string", **space_or_control,
+                                 "pattern": ABSOLUTE_IRI + "@" + PUBLICATION_SET_ID + "$"},
+            "entries": {**array(entry, 1, 2000),
+                        "description": "Codes must be unique and are case sensitive. Concepts may repeat."},
+            "labels": obj({key: labels[key] for key in ("it", "en")}),
+        }, ["targetVocabulary", "entries"]),
+    }
+
+
 def datatype_defs(contract):
     text = {"type": "string", "minLength": 1, "maxLength": 1024}
     # Format is an annotation in JSON Schema 2020-12 by default. Check the
@@ -67,9 +95,7 @@ def datatype_defs(contract):
         "required": {"type": "boolean"},
         "labels": {"$ref": "#/properties/labels"},
         "constraints": obj({**bounds, "maxLength": {"type": "integer", "minimum": 0},
-                            "vocabularyRef": {**text, "format": "iri", "pattern": (
-                                r"^[A-Za-z][A-Za-z0-9+.-]*:([^\s\x00-\x1F\x7F<>\"{}`|\\^%]|%[A-Fa-f0-9]{2})+$"
-                            )}}),
+                            "vocabularyRef": {**text, "format": "iri", "pattern": ABSOLUTE_IRI + "$"}}),
     }, ["name", "type", "cardinality", "required"])
     # Enforce the closed sets of constraint keys. Comparing bounds, resolving
     # the type graph and checking distinct component names belong to Semantic.
@@ -229,7 +255,9 @@ def generate(source, contract):
     tools = {c["toolName"]: c for c in json.loads(source)["capabilities"]}
     fields = tools["source.onboarding.create"]["inputSchema"]["properties"]["fields"]
     mapping = mapping_defs(contract, fields)
-    for name, defs in [("semantic.propose", datatype_defs(contract)),
+    proposal_labels = tools["semantic.propose"]["inputSchema"]["properties"]["labels"]["properties"]
+    semantic = {**datatype_defs(contract), **value_map_defs(proposal_labels)}
+    for name, defs in [("semantic.propose", semantic),
                        ("source.onboarding.create", mapping),
                        ("source.onboarding.revision.prepare", mapping)]:
         # Replace only this input schema's generated $defs, preserving the
@@ -265,6 +293,8 @@ if __name__ == "__main__":
     data = CONTRACT.read_bytes()
     if hashlib.sha256(data).hexdigest() != DIGEST:
         raise SystemExit("VALUE_TYPES_CONTRACT_DIGEST_MISMATCH")
+    if hashlib.sha256(VALUE_MAP_CONTRACT.read_bytes()).hexdigest() != VALUE_MAP_DIGEST:
+        raise SystemExit("VALUE_MAPS_CONTRACT_DIGEST_MISMATCH")
     before = MANIFEST.read_text(encoding="utf-8")
     after = generate(before, json.loads(data))
     if before != after:

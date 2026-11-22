@@ -17,17 +17,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// D-084, PET-mcp-002/097/099. A structured type pin may be unknown to
-// MCP. Only the owner resolves it. No external owner is used in this test.
+// D-084, PET-mcp-002/097/099. The synthetic owner receives the proposal
+// unchanged and stands in for resolution of the published references.
 func TestValueTypesGovernedDispatch(t *testing.T) {
 	for _, tc := range []struct {
 		name, scope, owner, route, replace string
+		valueMap                           bool
 	}{
-		{"semantic.propose", "ouf.semantic.propose", "semantic", "semantic/create", "9007199254740993"},
-		{"source.onboarding.create", "ouf.managed-source.onboarding.create", "onboarding", "managed.file/create", "itemReaderParams"},
-		{"source.onboarding.revision.prepare", "ouf.onboarding.revision.prepare", "onboarding", "source.revision/prepare", "items"},
+		{"semantic.propose", "ouf.semantic.propose", "semantic", "semantic/create", "9007199254740993", false},
+		{"semantic.propose", "ouf.semantic.propose", "semantic", "semantic/create", "", true},
+		{"source.onboarding.create", "ouf.managed-source.onboarding.create", "onboarding", "managed.file/create", "itemReaderParams", false},
+		{"source.onboarding.revision.prepare", "ouf.onboarding.revision.prepare", "onboarding", "source.revision/prepare", "items", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		testName := tc.name
+		if tc.valueMap {
+			testName += "/VALUE_MAP"
+		}
+		t.Run(testName, func(t *testing.T) {
 			data, err := os.ReadFile("testdata/value-types/" + tc.name + ".json")
 			if err != nil {
 				t.Fatal(err)
@@ -41,6 +47,36 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 			if err := json.Unmarshal(fixture.Arguments, &want); err != nil {
 				t.Fatal(err)
 			}
+			ownerCode := "OWNER_MAPPING_INVALID"
+			var invalid []string
+			if tc.valueMap {
+				ownerCode = "SEMANTIC_VALUE_MAP_INVALID"
+				want["artifactType"] = "VALUE_MAP"
+				want["definition"] = map[string]any{
+					"targetVocabulary": "urn:example:vocabulary@00000000-0000-4000-8000-000000000001",
+					"entries": []map[string]string{
+						{"code": "b", "concept": "urn:concept:1"},
+						{"code": "B", "concept": "urn:concept:1"},
+						{"code": "a", "concept": "urn:concept:2"},
+					},
+					"labels": map[string]string{"it": "Codici"},
+				}
+				data, err := json.Marshal(want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				args = string(data)
+				if err := json.Unmarshal(data, &want); err != nil {
+					t.Fatal(err)
+				}
+				invalid = []string{
+					strings.Replace(args, `"code":"a"`, `"code":"b"`, 1),
+					strings.Replace(args, `"code":"a"`, `"code":"private-source-value "`, 1),
+					strings.Replace(args, `"code":"a"`, `"code":"`+strings.Repeat("x", 129)+`"`, 1),
+				}
+			} else {
+				invalid = []string{strings.Replace(args, tc.replace, "private-source-value", 1)}
+			}
 			var calls atomic.Int32
 			var reject atomic.Bool
 			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,13 +89,13 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 					!reflect.DeepEqual(got, want) {
 					t.Error("owner routing or arguments changed")
 				}
-				if tc.name == "semantic.propose" && !strings.Contains(string(in.Arguments), "9007199254740993") {
+				if tc.name == "semantic.propose" && !tc.valueMap && !strings.Contains(string(in.Arguments), "9007199254740993") {
 					t.Error("owner received a rounded component bound")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				if reject.Load() {
 					w.WriteHeader(http.StatusUnprocessableEntity)
-					_ = json.NewEncoder(w).Encode(map[string]string{"code": "OWNER_MAPPING_INVALID", "detail": "private-source-value"})
+					_ = json.NewEncoder(w).Encode(map[string]string{"code": ownerCode, "detail": "private-source-value"})
 					return
 				}
 				if tc.name == "source.onboarding.revision.prepare" {
@@ -84,11 +120,12 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 				}
 				return result
 			}
-			invalid := strings.Replace(args, tc.replace, "private-source-value", 1)
-			rejected := call(invalid)
-			if !rejected.IsError || len(rejected.Content) != 1 || rejected.Content[0].(*mcp.TextContent).Text != `{"code":"INVALID_TOOL_ARGUMENTS","retryable":false}` ||
-				calls.Load() != 0 || admission.calls.Load() != 0 {
-				t.Fatal("invalid arguments must produce a safe code before admission")
+			for _, args := range invalid {
+				rejected := call(args)
+				if !rejected.IsError || len(rejected.Content) != 1 || rejected.Content[0].(*mcp.TextContent).Text != `{"code":"INVALID_TOOL_ARGUMENTS","retryable":false}` ||
+					calls.Load() != 0 || admission.calls.Load() != 0 {
+					t.Fatal("invalid arguments must produce a safe code before admission")
+				}
 			}
 			result := call(args)
 			if result.IsError || calls.Load() != 1 || admission.calls.Load() != 1 {
@@ -105,7 +142,7 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 				t.Fatal("missing owner rejection")
 			}
 			message := result.Content[0].(*mcp.TextContent).Text
-			if !strings.Contains(message, "OWNER_MAPPING_INVALID") || strings.Contains(message, "private-source-value") {
+			if !strings.Contains(message, ownerCode) || strings.Contains(message, "private-source-value") {
 				t.Fatal("owner rejection must preserve the code and omit source data")
 			}
 		})

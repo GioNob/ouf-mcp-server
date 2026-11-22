@@ -7,7 +7,9 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from scripts.generate_value_type_schemas import CONTRACT, DIGEST, MANIFEST, generate
+from scripts.generate_value_type_schemas import (
+    CONTRACT, DIGEST, MANIFEST, VALUE_MAP_CONTRACT, VALUE_MAP_DIGEST, generate,
+)
 
 
 PIN = "urn:example:address@00000000-0000-4000-8000-000000000001"
@@ -37,6 +39,14 @@ def dispatch_cases():
         else:
             args["compositions"][0]["components"][0]["items"] = [{}]
         yield tool, request, invalid
+    request = json.loads((FIXTURES / (SEMANTIC + ".json")).read_bytes())
+    request["Arguments"].update(artifactType="VALUE_MAP", definition={
+        "targetVocabulary": PIN,
+        "entries": [{"code": "A", "concept": "urn:concept"}],
+    })
+    invalid = deepcopy(request)
+    invalid["Arguments"]["definition"]["entries"][0]["code"] = "private-source-value "
+    yield SEMANTIC, request, invalid
 
 
 class ValueTypeSchemas(unittest.TestCase):
@@ -128,6 +138,64 @@ class ValueTypeSchemas(unittest.TestCase):
         turtle = {**self.proposal, "mediaType": "text/turtle", "rdfTurtle": "<urn:a> a <urn:b> ."}
         self.accepts(SEMANTIC, {**turtle, "artifactType": "ONTOLOGY"})
         self.accepts(SEMANTIC, turtle, False)
+
+    def test_value_map_contract_and_guidance(self):
+        self.assertEqual(hashlib.sha256(VALUE_MAP_CONTRACT.read_bytes()).hexdigest(), VALUE_MAP_DIGEST)
+        for tool, phrases in {
+            SEMANTIC: ("column of codes", "controlled vocabulary", "distinct codes", "source.file.profile",
+                       "semantic.search", "semantic.get", "only verified concepts", "THS", "publication",
+                       "transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
+            "source.file.profile": ("VALUE_MAP", "distinct codes", "source.file.preview"),
+            "semantic.search": ("published vocabulary", "published concepts", "VALUE_MAP"),
+            "semantic.get": ("published vocabulary", "concepts", "VALUE_MAP"),
+            CREATE: ("transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
+            REVISION: ("transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
+        }.items():
+            guidance = " ".join(self.tools[tool]["useWhen"])
+            for phrase in phrases:
+                with self.subTest(tool=tool, phrase=phrase):
+                    self.assertIn(phrase, guidance)
+
+    def test_value_map_definition(self):
+        proposal = {**self.proposal, "artifactType": "VALUE_MAP"}
+        definition = {"targetVocabulary": PIN, "entries": [{"code": "A", "concept": "urn:concept"}]}
+
+        def check(candidate, valid=True):
+            self.accepts(SEMANTIC, {**proposal, "definition": candidate}, valid)
+
+        check(definition)
+        check({**definition, "labels": {"it": "Codici", "en": "Codes"}})
+        entries = [{"code": f"{i:03x}", "concept": "urn:c"} for i in range(2001)]
+        check({**definition, "entries": entries[:2000]})
+        for invalid in (
+            {}, {"targetVocabulary": PIN}, {"entries": definition["entries"]},
+            {**definition, "targetVocabulary": "urn:vocabulary"},
+            {**definition, "targetVocabulary": "relative@" + UUID},
+            {**definition, "targetVocabulary": PIN + "\n"},
+            {**definition, "targetVocabulary": "urn:a\x00@" + UUID},
+            {**definition, "targetVocabulary": "urn:a%xx@" + UUID},
+            {**definition, "entries": []}, {**definition, "entries": entries},
+            {**definition, "labels": {"de": "Codes"}}, {**definition, "labels": "Codes"},
+            {**definition, "labels": {"en": ""}}, {**definition, "description": {}},
+        ):
+            check(invalid, False)
+        for code in ("a b", "A", "a", "\U0001F30D" * 128):
+            check({**definition, "entries": [{"code": code, "concept": "urn:c"}]})
+        for invalid in (
+            {"code": "", "concept": "urn:c"}, {"code": "x" * 129, "concept": "urn:c"},
+            {"code": "\U0001F30D" * 129, "concept": "urn:c"}, {"code": 7, "concept": "urn:c"},
+            {"code": "A"}, {"concept": "urn:c"}, {"code": "A", "concept": "urn:c", "extra": True},
+            {"code": "A", "concept": "relative"}, {"code": "A", "concept": "urn:c\n"},
+            {"code": "A", "concept": "urn:a%xx"},
+            *({"code": value, "concept": "urn:c"} for value in (" A", "A ", "A\u00a0", "\u2003A", "A\n",
+                                                              "A\tB", "A\x00B", "A\x7fB")),
+        ):
+            check({**definition, "entries": [invalid]}, False)
+        for kind in ("DATATYPE", "CONCEPT", "ONTOLOGY"):
+            self.accepts(SEMANTIC, {**proposal, "artifactType": kind, "definition": definition}, False)
+        self.accepts(SEMANTIC, {**proposal, "definition": definition, "extra": True}, False)
+        self.accepts(SEMANTIC, {**proposal, "definition": definition, "semanticId": "relative"}, False)
+        self.accepts(SEMANTIC, {**proposal, "rdfTurtle": "<urn:a> a <urn:b> .", "mediaType": "text/turtle"}, False)
 
     def test_component_constraint_forms(self):
         for kind, key, good, bad in [

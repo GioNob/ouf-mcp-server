@@ -1,20 +1,24 @@
 # D-080 · Ritorno al predecessore MCP
 
-Il check GitHub Actions `predecessor-return` prova il ritorno su un solo PostgreSQL 17 effimero. Per qualificare una coppia di immagini serve una run verde riferita al commit candidato e al digest effettivamente in esercizio. Il riepilogo della run registra questi riferimenti, gli ID Docker e le versioni dello schema.
+Il check GitHub Actions `predecessor-return` prova il ritorno su un solo PostgreSQL 17 effimero. Per qualificare una coppia di immagini serve una run verde riferita al commit candidato e all'immagine effettivamente in esercizio. Il riepilogo registra i commit, la run e l'ID dell'artefatto, lo SHA-256 dello ZIP, gli ID Docker e le versioni dello schema.
 
 ## Identità delle immagini
 
-Il predecessore predefinito è `843d22059e03bcd58569fff9960bb46ae552b2b2`, schema 15. La variabile di repository **`MCP_PREDECESSOR_IMAGES`** contiene un oggetto JSON che associa ogni SHA Git completo al riferimento OCI del suo artefatto in esercizio. La forma di una voce è la seguente, con valori segnaposto.
+Il predecessore predefinito è `843d22059e03bcd58569fff9960bb46ae552b2b2`, schema 15. Il workflow usa queste variabili di repository.
 
-```json
-{
-  "843d22059e03bcd58569fff9960bb46ae552b2b2": "<registro>/<immagine>@sha256:<64 cifre esadecimali>"
-}
-```
+| Variabile | Valore predefinito o fonte |
+|---|---|
+| `MCP_PREDECESSOR_COMMIT` | `843d22059e03bcd58569fff9960bb46ae552b2b2` |
+| `MCP_PREDECESSOR_RUN` | `44904141061` |
+| `MCP_PREDECESSOR_ARTIFACT_ID` | `14707905199` |
+| `MCP_PREDECESSOR_ZIP_SHA256` | `bcb6002c844e2e6e3c997f5e3bb10b79f63231ca49d3c1a66de952254b15a3ae` |
+| `MCP_PREDECESSOR_IMAGE_ID` | Obbligatorio. Usare la riga `sha256:…` in `image-id.txt` alla radice dello ZIP verificato di `acquisition-mcp-image-44904141061`. |
 
-Usare il digest registrato per il rilascio. Il commit da solo non identifica i byte distribuiti. La preparazione sul runner richiede un riferimento leggibile senza credenziali di progetto. Una voce assente, un tag o un digest irrecuperabile fa fallire il job. Il digest della distribuzione di `843d2205` non è attestato in questa worktree.
+Il passo **Retain qualified MCP image without target activation** di [`ci.yml`](../.github/workflows/ci.yml) scrive `build/acquisition-release/image-id.txt` con `docker image inspect --format '{{.Id}}' ouf-mcp:ci`. Lo stesso ID compare in `image-config.json` nel campo `.[0].Id`. L'ID da impostare è quello dell'immagine Docker attestata per il rilascio.
 
-Il workflow parte su push e pull request. Per un altro predecessore, selezionare `MCP predecessor return` in Actions e passare la chiave della mappa come input `predecessor` a `workflow_dispatch`. Il candidato è costruito con il Dockerfile del commit selezionato, cioè la testa della PR nel caso di `pull_request`. L'immagine precedente viene risolta una sola volta e le due istanze del suo server devono avere lo stesso ID Docker.
+Il job verifica i metadati dell'artefatto tramite l'API GitHub con `actions: read`, scarica lo ZIP per ID e ne confronta lo SHA-256 prima di estrarre i file. Verifica `source-commit.txt` e `image-id.txt`, carica `image.tar.gz` e controlla l'ID Docker. Entrambe le istanze del predecessore vengono avviate tramite quell'ID.
+
+Il workflow parte su push, pull request o avvio manuale. Per cambiare predecessore, aggiornare insieme le cinque variabili con i riferimenti del rilascio attestato. Il candidato è costruito con il Dockerfile del commit selezionato, cioè la testa della PR nel caso di `pull_request`.
 
 ## Sequenza e condizioni di successo
 
@@ -29,4 +33,4 @@ L'owner di prova serve soltanto bundle di autorizzazione, anteprime sintetiche e
 
 ## Domande aperte
 
-Per la prima run occorre associare al commit `843d2205` il digest della sua immagine in esercizio. Nel sorgente di quel commit `Store.Ready` legge `max(version)` e non impone un massimo supportato. Il candidato del task-25 ha le stesse 15 migrazioni. Se una coppia futura fallisce la readiness al ritorno, il job si ferma prima delle chiamate MCP, registra entrambe le versioni dello schema e mostra il log di avvio. Un rifiuto dello schema lascia aperta D-080 per quella coppia.
+Per qualificare il ritorno sull'immagine di `843d2205` occorrono `MCP_PREDECESSOR_IMAGE_ID`, la disponibilità dell'artefatto e una run verde. Se la readiness al ritorno fallisce, il job si ferma prima delle chiamate MCP, registra entrambe le versioni dello schema e mostra il log di avvio. Un rifiuto dello schema lascia aperta D-080 per quella coppia.

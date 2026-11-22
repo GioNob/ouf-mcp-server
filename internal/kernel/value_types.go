@@ -48,6 +48,9 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 		if json.Unmarshal(raw, &args) != nil || args == nil || input.Validate(args) != nil {
 			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 		}
+		if args["artifactType"] == "VALUE_MAP" && !uniqueValueMapCodes(args) {
+			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
+		}
 		if service == nil {
 			return errorResult("MCP_1A_BACKEND_NOT_BOUND", false), nil
 		}
@@ -79,4 +82,19 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 		result.StructuredContent = payload
 		return result, nil
 	})
+}
+
+// The input schema validates the shape first. JSON Schema cannot enforce
+// uniqueness by a single item property.
+func uniqueValueMapCodes(args map[string]any) bool {
+	entries := args["definition"].(map[string]any)["entries"].([]any)
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		code := entry.(map[string]any)["code"].(string)
+		if _, duplicate := seen[code]; duplicate {
+			return false
+		}
+		seen[code] = struct{}{}
+	}
+	return true
 }
