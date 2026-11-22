@@ -67,6 +67,7 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
 		"ouf.system.status",
+		"ouf.wait",
 		"semantic.approval.request",
 		"semantic.discovery.adopt",
 		"semantic.discovery.candidates",

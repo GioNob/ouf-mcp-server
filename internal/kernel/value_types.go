@@ -22,13 +22,9 @@ func isValueTypeTool(name string) bool {
 
 // Schema diagnostics may quote the offending value. Use the same advertised
 // schema for validation and expose only a stable code before owner dispatch.
-func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
-		panic(err)
-	}
-	input, err := schema.Resolve(nil)
-	if err != nil {
 		panic(err)
 	}
 	tool := &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{}}
@@ -41,16 +37,17 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 		maxObjects, maxBytes = 1, 65536
 		output := sourceRevisionReceiptSchema(snapshot)
 		tool.OutputSchema = output
+		var err error
 		receipt, err = output.Resolve(nil)
 		if err != nil {
 			panic(err)
 		}
 	}
 	checksum, _ := snapshot.Checksum()
-	server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	server.register(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
 		raw := req.Params.Arguments
-		if json.Unmarshal(raw, &args) != nil || args == nil || input.Validate(args) != nil {
+		if json.Unmarshal(raw, &args) != nil || args == nil {
 			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 		}
 		valueMap := c.ToolName == "semantic.propose" && args["artifactType"] == "VALUE_MAP"

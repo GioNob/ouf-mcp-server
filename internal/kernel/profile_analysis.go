@@ -13,12 +13,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerAnalysisTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if e := json.Unmarshal(c.InputSchema, &schema); e != nil {
 		panic(e)
 	}
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.ToolName == "source.analysis.read"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.ToolName == "source.analysis.read"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
 			return actorOrDelegationDenial(i, ok), nil, nil

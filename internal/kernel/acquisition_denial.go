@@ -3,6 +3,9 @@ package kernel
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"syscall"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,6 +25,11 @@ type acquisitionDenial struct {
 func governedCallErrorResult(err error) *mcp.CallToolResult {
 	if result := windowAdmissionErrorResult(err); result != nil {
 		return result
+	}
+	var timedOut net.Error
+	if (errors.As(err, &timedOut) && timedOut.Timeout()) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return errorResult("OWNER_NETWORK_INTERRUPTED", true)
 	}
 	var denied *orchestration.AuthorizationDeniedError
 	if !errors.As(err, &denied) {

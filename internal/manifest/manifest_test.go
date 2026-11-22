@@ -35,6 +35,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"ouf.operations.incidents",
 		"ouf.operations.summary",
 		"ouf.system.status",
+		"ouf.wait",
 		"semantic.approval.request",
 		"semantic.discovery.adopt",
 		"semantic.discovery.candidates",
@@ -82,10 +83,14 @@ func TestArbitraryQuerySurfaceIsRejected(t *testing.T) {
 }
 
 func validTestSnapshot() *Snapshot {
-	return &Snapshot{Version: "1", Capabilities: []Capability{{
+	return &Snapshot{Version: "1", NextPolicies: map[string]Policy{
+		"test": {Read: "test.safe", Rules: []Rule{{Action: "BLOCKED"}}},
+	}, Capabilities: []Capability{{
 		ToolName: "test.safe", CapabilityID: "test.safe", Purpose: "test", UseWhen: []string{"x"}, DoNotUseWhen: []string{"y"},
 		PreferredAlternatives: []string{"safe"}, OperationalLimits: json.RawMessage(`{"max":1}`), ResultSemantics: "none",
-		SecurityNotes: []string{"none"}, MCPClass: "MCP_TOOL", ToolEligible: true,
+		SecurityNotes: []string{"none"}, MCPClass: "MCP_TOOL", ToolEligible: true, NextPolicy: "test",
+		Owner: "mcp", OperationClass: "READ", PublicationState: "ACTIVE", RequiredAuthorization: "test.safe",
+		GatewayBindingRef: "capability://test.safe", BaseCostEnvelope: json.RawMessage(`{}`), ConditionalCost: json.RawMessage(`{}`),
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
 	}}}
 }
