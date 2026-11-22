@@ -178,6 +178,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
 	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
+	// Earlier semantic references could carry a URL supplied by Semantic.
+	if ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" {
+		return stop("OWNER_REVIEW_LINK_REQUIRED")
+	}
 	scope := string(binding)
 	if !w.admit(scope) {
 		return stop("WAIT_CAPACITY_REACHED")
@@ -273,7 +277,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			last = obs
 			changed := nextstep.Version(obs) != ref.Version
 			if changed || (!linkEnd.IsZero() && !time.Now().Before(linkEnd)) {
-				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], ref.Args, body, false)
+				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
 				return waitResult(changed, obs, next)
 			}
 		}

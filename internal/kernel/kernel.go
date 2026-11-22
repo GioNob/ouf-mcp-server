@@ -120,7 +120,7 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 		return nil, err
 	}
 	if service != nil {
-		if err := server.bindRecoveryLink(service); err != nil {
+		if err := server.bindTHSLinks(service); err != nil {
 			return nil, err
 		}
 	}

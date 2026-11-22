@@ -83,7 +83,7 @@ func TestWaitUnchangedCoalescesAndExpires(t *testing.T) {
 		owner := nextstep.Object{"reviewUrl": "https://fixture.invalid/review", "expiresAt": time.Now().Add(time.Minute).Format(time.RFC3339),
 			"lockVersion": 1, "observationVersion": version}
 		next := s.waits.signer.Issue(waitBinding(ctx), manifest.Rule{Tool: name, Reason: "SOURCE_REVIEW", Decision: "APPROVE_OR_REJECT"},
-			nextstep.Object{"sourceId": "teatri", "onboardingVersionId": id}, owner, time.Now())
+			nextstep.Object{"sourceId": "teatri", "onboardingVersionId": id}, owner, nil, time.Now())
 		token := next["arguments"].(nextstep.Object)["waitRef"].(string)
 		var req mcp.CallToolRequest
 		if err := json.Unmarshal([]byte(`{"params":{"name":"ouf.wait","arguments":{}}}`), &req); err != nil || req.Params == nil {

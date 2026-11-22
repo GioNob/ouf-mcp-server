@@ -18,15 +18,16 @@ import (
 )
 
 type WaitRef struct {
-	Read     string `json:"r"`
-	Args     Object `json:"a"`
-	Version  string `json:"v"`
-	Resource string `json:"i,omitempty"`
-	Deadline string `json:"d"`
-	URL      string `json:"u"`
-	Decision string `json:"k"`
-	Reason   string `json:"c"`
-	LinkEnd  string `json:"e,omitempty"`
+	Read      string `json:"r"`
+	Args      Object `json:"a"`
+	Version   string `json:"v"`
+	Resource  string `json:"i,omitempty"`
+	Deadline  string `json:"d"`
+	URL       string `json:"u"`
+	Decision  string `json:"k"`
+	Reason    string `json:"c"`
+	LinkEnd   string `json:"e,omitempty"`
+	LinkOwner string `json:"o,omitempty"`
 }
 
 type Signer struct{ cipher cipher.AEAD }
@@ -51,6 +52,7 @@ func Version(obs Object) string {
 	if v, ok := get(obs, nil, "observationVersion|version").(string); ok && v != "" {
 		return v
 	}
+	obs = recoveryObservation(obs)
 	version := get(obs, nil, "stateVersion|lockVersion|rowVersion|expectedRowVersion|expectedVersion|control_version|revision")
 	if version == nil {
 		return ""
@@ -95,13 +97,19 @@ func (r WaitRef) Block(reason, message string) Object {
 	return s
 }
 
-func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now time.Time) Object {
-	link, _ := get(obs, nil, "currentChallenge.reviewUrl|reviewUrl|approvalPath").(string)
-	u, err := url.Parse(link)
-	linkEnd, _ := obs["linkExpiresAt"].(string)
+func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs, onboardingLink Object, now time.Time) Object {
 	run := r.Tool == "ouf.ingestion.status"
+	semantic := r.Tool == "semantic.proposal.read"
+	var link, linkEnd string
+	if run || semantic {
+		link, _ = onboardingLink["reviewUrl"].(string)
+		linkEnd, _ = onboardingLink["expiresAt"].(string)
+	} else {
+		link, _ = get(obs, nil, "currentChallenge.reviewUrl|reviewUrl|approvalPath").(string)
+	}
+	u, err := url.Parse(link)
 	linkExpiry, parseErr := time.Parse(time.RFC3339Nano, linkEnd)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (run && (parseErr != nil || !now.Before(linkExpiry))) {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || ((run || semantic) && (parseErr != nil || !now.Before(linkExpiry))) {
 		s := Block("OWNER_REVIEW_LINK_REQUIRED", r.Tool, "Recupera il collegamento di revisione dalla capability di lettura.")
 		s["alternatives"].([]Object)[0]["arguments"] = args
 		if r.Actor != "" {
@@ -129,6 +137,9 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now ti
 		return blocked
 	}
 	exp := get(obs, nil, "currentChallenge.expiresAt|expiresAt|expires_at|deadline")
+	if semantic && exp == nil {
+		exp = linkEnd
+	}
 	if run {
 		exp = obs["decisionDeadline"]
 	}
@@ -138,7 +149,11 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now ti
 	deadline, err := time.Parse(time.RFC3339Nano, fmt.Sprint(exp))
 	version := Version(obs)
 	if err == nil && !now.Before(deadline) {
-		return Block("WAIT_DEADLINE_EXPIRED", r.Tool, "La finestra è scaduta. Verifica lo stato corrente.")
+		closed := (WaitRef{Read: r.Tool, Args: args}).Block("WAIT_DEADLINE_EXPIRED", "La finestra è scaduta. Verifica lo stato corrente.")
+		if r.Actor != "" {
+			closed["actor"] = r.Actor
+		}
+		return closed
 	}
 	if r.Action == "BLOCKED" {
 		return manual(r.Reason, r.Message)
@@ -149,7 +164,14 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now ti
 	if s == nil || len(binding) == 0 {
 		return manual("WAIT_CONFIGURATION_REQUIRED", "Verifica la configurazione dell’attesa e l’identità del chiamante.")
 	}
-	ref := WaitRef{r.Tool, args, version, Resource(obs), deadline.UTC().Format(time.RFC3339Nano), link, r.Decision, r.Reason, linkEnd}
+	ref := WaitRef{
+		Read: r.Tool, Args: args, Version: version, Resource: Resource(obs),
+		Deadline: deadline.UTC().Format(time.RFC3339Nano), URL: link,
+		Decision: r.Decision, Reason: r.Reason, LinkEnd: linkEnd,
+	}
+	if semantic {
+		ref.LinkOwner = "onboarding"
+	}
 	if run {
 		ref.Deadline = obs["decisionDeadline"].(string)
 	}

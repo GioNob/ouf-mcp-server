@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
-	"maps"
 	"strings"
 	"time"
 
@@ -34,7 +33,7 @@ type workflowServer struct {
 	manifest *manifest.Snapshot
 	tools    map[string]registeredTool
 	waits    *waitService
-	runLink  func(context.Context, nextstep.Object) nextstep.Object
+	thsLinks map[string]func(context.Context, nextstep.Object) nextstep.Object
 	key      []byte
 }
 
@@ -201,23 +200,26 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
 		}
-		if r.Tool == "ouf.ingestion.status" {
-			var link nextstep.Object
-			if s.runLink != nil {
+		var link nextstep.Object
+		switch r.Tool {
+		case "ouf.ingestion.status":
+			if fetch := s.thsLinks[recoveryLinkID]; fetch != nil {
 				version := obs["expectedVersion"]
 				if version == nil {
 					version = obs["control_version"]
 				}
-				link = s.runLink(ctx, nextstep.Object{"sourceId": args["sourceId"], "runId": nextstep.Resource(obs), "expectedVersion": version})
+				link = fetch(ctx, nextstep.Object{"sourceId": args["sourceId"], "runId": nextstep.Resource(obs), "expectedVersion": version})
 			}
-			// Only Onboarding can supply this URL. Keep both owner receipts intact.
-			obs = maps.Clone(obs)
-			delete(obs, "currentChallenge")
-			delete(obs, "approvalPath")
-			obs["reviewUrl"] = link["reviewUrl"]
-			obs["linkExpiresAt"] = link["expiresAt"]
+		case "semantic.proposal.read":
+			if fetch := s.thsLinks[semanticLinkID]; fetch != nil {
+				challenge := obs
+				if current, ok := obs["currentChallenge"].(nextstep.Object); ok {
+					challenge = current
+				}
+				link = fetch(ctx, nextstep.Object{"challengeId": challenge["challengeId"]})
+			}
 		}
-		return s.waits.signer.Issue(waitBinding(ctx), r, args, obs, time.Now())
+		return s.waits.signer.Issue(waitBinding(ctx), r, args, obs, link, time.Now())
 	}, CommandKey: func(tool string, args, obs, input nextstep.Object) string {
 		return s.commandKey(ctx, tool, args, obs, input)
 	}, AnalysisID: func(asset, profile string) string {

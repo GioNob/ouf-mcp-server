@@ -155,7 +155,7 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 		run := nextstep.Object{"source_ref": "teatri", "runId": "22222222-2222-4222-8222-222222222222", "expectedVersion": 8, "runState": "COMPLETED", "recoveryAction": "TERMINAL", "udpHandoffConfirmed": true, "typeCode": "TEATRO"}
 		if g.runReads.Add(1) == 1 {
 			run["runState"], run["recoveryAction"], run["expectedVersion"] = "PAUSED", "HUMAN_RESUME_OR_ABORT", 7
-			run["decisionDeadline"], run["reviewUrl"] = g.deadline, "https://unused.invalid/legacy"
+			run["decisionDeadline"] = g.deadline
 		}
 		obs = nextstep.Object{"partial": false, "items": []nextstep.Object{run}}
 	case recoveryLinkID:
@@ -223,6 +223,147 @@ func TestNextOnlyFromReviewToObjectSearch(t *testing.T) {
 	}
 }
 
+func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
+	const challenge = "11111111-1111-4111-8111-111111111111"
+	const revision = "22222222-2222-4222-8222-222222222222"
+	const reviewURL = "https://onboarding.invalid/review/1"
+	const semanticURL = "https://semantic.invalid/unused"
+	version := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name                                      string
+		atPrepare, ownerURL, noDeadline, denyLink bool
+	}{
+		{name: "approval with Onboarding URL only"},
+		{name: "current challenge during prepare", atPrepare: true, ownerURL: true, noDeadline: true},
+		{name: "Onboarding denies link despite Semantic URL", ownerURL: true, denyLink: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deadline := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+			linkEnd := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
+			var links, reads atomic.Int32
+			var pendingKey atomic.Value
+			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req orchestration.GatewayRequest
+				var args nextstep.Object
+				if r.Method != http.MethodPost || r.Header.Get("X-OUF-Delegation") != "human-proof" ||
+					json.NewDecoder(r.Body).Decode(&req) != nil || json.Unmarshal(req.Arguments, &args) != nil {
+					t.Error("invalid delegated dispatch")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				obs := nextstep.Object{"revisionId": revision, "rowVersion": 4}
+				switch r.URL.Path {
+				case "/internal/capabilities/v1/execute/semantic/create":
+					obs["state"], obs["allowedActions"] = "DRAFT", []string{"PREPARE_REVIEW"}
+				case "/internal/capabilities/v1/execute/semantic/validate":
+					if !tc.atPrepare {
+						obs["state"], obs["allowedActions"] = "VALIDATED", []string{"REQUEST_APPROVAL"}
+						obs["currentValidationRunId"] = revision
+						break
+					}
+					fallthrough
+				case "/internal/capabilities/v1/execute/semantic/review":
+					pendingKey.Store(req.IdempotencyKey)
+					current := nextstep.Object{"challengeId": challenge}
+					if !tc.noDeadline {
+						current["expiresAt"] = deadline
+					}
+					if tc.ownerURL {
+						current["reviewUrl"], obs["reviewUrl"] = semanticURL, semanticURL
+					}
+					obs["currentChallenge"], obs["version"] = current, version
+					obs["state"], obs["allowedActions"] = "UNDER_REVIEW", []string{"WAIT_HUMAN_DECISION"}
+				case "/internal/capabilities/v1/execute/" + semanticLinkID:
+					links.Add(1)
+					if req.CapabilityID != semanticLinkID || req.Owner != "onboarding" || req.OperationClass != "READ" ||
+						req.Identity.ActorType != "HUMAN" || !reflect.DeepEqual(args, nextstep.Object{"challengeId": challenge}) {
+						t.Error("incorrect semantic link request", args)
+					}
+					if tc.denyLink {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+					obs = nextstep.Object{"reviewUrl": reviewURL, "expiresAt": linkEnd}
+				case "/internal/capabilities/v1/execute/semantic/read":
+					reads.Add(1)
+					if req.CapabilityID != "ouf.semantic.proposal.read" || args["expectedVersion"] != version || args["commandKey"] != pendingKey.Load() {
+						t.Error("wait did not re-read the same proposal conditionally", args)
+					}
+					obs["state"], obs["version"], obs["changed"] = "APPROVED", strings.Repeat("b", 64), true
+				default:
+					t.Error("unexpected dispatch", r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(obs)
+			}))
+			defer gateway.Close()
+			endpoint, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+			service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &statusAdmission{}, FingerprintKey: make([]byte, 32),
+				Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("fixture")}}
+			session := revisionSession(t, service, "ouf.semantic.propose ouf.semantic.review.prepare ouf.semantic.approval.request ouf.semantic.proposal.read "+semanticLinkID)
+			contract := nextContract(t)
+			tool := "semantic.propose"
+			args := nextstep.Object{"commandKey": "draft-1", "semanticId": "ouf:test:Place", "artifactType": "CLASS", "namespace": "ouf", "localName": "Place",
+				"ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0", "labels": nextstep.Object{"it": "Luogo"}, "definition": nextstep.Object{}}
+			steps := []string{"semantic.review.prepare"}
+			if !tc.atPrepare {
+				steps = append(steps, "semantic.approval.request")
+			}
+			steps = append(steps, "ouf.wait")
+			if !tc.denyLink {
+				steps = append(steps, "semantic.proposal.read")
+			}
+			for _, target := range steps {
+				result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+				if err != nil {
+					t.Fatal(err)
+				}
+				next := checkNext(t, contract, result)
+				if result.IsError {
+					t.Fatal(tool, next)
+				}
+				if target == "ouf.wait" {
+					if tc.denyLink {
+						alts := next["alternatives"].([]any)
+						if next["action"] != "BLOCKED" || next["human"] != nil || len(alts) != 1 {
+							t.Fatal("expected a read after link denial", next)
+						}
+						alt := alts[0].(nextstep.Object)
+						if alt["tool"] != "semantic.proposal.read" || !reflect.DeepEqual(alt["arguments"], nextstep.Object{"commandKey": args["commandKey"]}) {
+							t.Fatal("lost proposal selector", alt)
+						}
+						break
+					}
+					end := deadline
+					if tc.noDeadline {
+						end = linkEnd
+					}
+					human := nextstep.Object{"decisionKind": "APPROVE_OR_REJECT", "reviewUrl": reviewURL, "expiresAt": linkEnd}
+					if next["action"] != "WAIT_FOR_HUMAN" || !reflect.DeepEqual(next["human"], human) || next["deadline"] != end {
+						t.Fatal("incorrect semantic wait", next)
+					}
+				} else if tool == "ouf.wait" {
+					body := result.StructuredContent.(nextstep.Object)
+					if body["changed"] != true || body["observation"].(nextstep.Object)["state"] != "APPROVED" || next["action"] != "POLL" {
+						t.Fatal("lost human decision", body)
+					}
+				} else if next["action"] != "CALL_TOOL" {
+					t.Fatal(next)
+				}
+				if next["tool"] != target {
+					t.Fatal("unexpected continuation", next)
+				}
+				tool, args = next["tool"].(string), next["arguments"].(nextstep.Object)
+			}
+			if links.Load() != 1 || (!tc.denyLink && reads.Load() != 1) || (tc.denyLink && reads.Load() != 0) {
+				t.Fatal("unexpected Onboarding or Semantic read count", links.Load(), reads.Load())
+			}
+		})
+	}
+}
+
 func TestRecoveryLinkDenialOffersStatusRead(t *testing.T) {
 	owner := &nextGateway{deadline: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), linkError: true}
 	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +373,7 @@ func TestRecoveryLinkDenialOffersStatusRead(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if req.CapabilityID == recoveryLinkID && (r.Method != http.MethodPost || r.URL.Path != "/ths-links/ingestion-run-recovery" || r.Header.Get("X-OUF-Delegation") != "human-proof") {
+		if req.CapabilityID == recoveryLinkID && (r.Method != http.MethodPost || r.URL.Path != "/internal/capabilities/v1/execute/"+recoveryLinkID || r.Header.Get("X-OUF-Delegation") != "human-proof") {
 			t.Error("incorrect recovery link dispatch")
 		}
 		req.Identity.Delegation = r.Header.Get("X-OUF-Delegation")
@@ -242,7 +383,7 @@ func TestRecoveryLinkDenialOffersStatusRead(t *testing.T) {
 		_, _ = w.Write(response.Body)
 	}))
 	defer gateway.Close()
-	endpoint, _ := url.Parse(gateway.URL)
+	endpoint, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
 	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &statusAdmission{}, FingerprintKey: make([]byte, 32),
 		Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("fixture")}}
 	session := revisionSession(t, service, "ingestion.operations.read "+recoveryLinkID)

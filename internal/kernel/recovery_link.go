@@ -12,15 +12,23 @@ import (
 	"github.com/google/uuid"
 )
 
-const recoveryLinkID = "ouf.onboarding.ths-links.ingestion-run-recovery"
+const (
+	recoveryLinkID = "ouf.onboarding.ths-links.ingestion-run-recovery"
+	semanticLinkID = "ouf.onboarding.ths-links.semantic-review"
+)
 
-func (s *workflowServer) bindRecoveryLink(service *orchestration.Service) error {
+func (s *workflowServer) bindTHSLinks(service *orchestration.Service) error {
+	checksum, err := s.manifest.Checksum()
+	if err != nil {
+		return err
+	}
+	s.thsLinks = make(map[string]func(context.Context, nextstep.Object) nextstep.Object)
 	for _, c := range s.manifest.Capabilities {
-		if c.CapabilityID != recoveryLinkID {
+		if c.CapabilityID != recoveryLinkID && c.CapabilityID != semanticLinkID {
 			continue
 		}
-		if c.ToolEligible || c.Owner != "onboarding" || c.OperationClass != "READ" || c.PublicationState != "ACTIVE" {
-			return fmt.Errorf("invalid recovery link capability")
+		if c.ToolEligible || c.MCPClass != "MCP_INTERNAL" || c.Owner != "onboarding" || c.OperationClass != "READ" || c.PublicationState != "ACTIVE" {
+			return fmt.Errorf("invalid THS link capability %s", c.CapabilityID)
 		}
 		var schema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
@@ -30,11 +38,7 @@ func (s *workflowServer) bindRecoveryLink(service *orchestration.Service) error 
 		if err != nil {
 			return err
 		}
-		checksum, err := s.manifest.Checksum()
-		if err != nil {
-			return err
-		}
-		s.runLink = func(ctx context.Context, args nextstep.Object) nextstep.Object {
+		s.thsLinks[c.CapabilityID] = func(ctx context.Context, args nextstep.Object) nextstep.Object {
 			identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 			if !ok || identity.ActorType != "HUMAN" || identity.Delegation == "" {
 				return nil
@@ -44,16 +48,17 @@ func (s *workflowServer) bindRecoveryLink(service *orchestration.Service) error 
 			if err != nil || json.Unmarshal(raw, &normalized) != nil || input.Validate(normalized) != nil {
 				return nil
 			}
-			source := args["sourceId"].(string)
-			run := args["runId"].(string)
 			if identity.CorrelationID == "" {
 				identity.CorrelationID = uuid.NewString()
 			}
-			resource := orchestration.ResourceContext{
-				ResourceType: "source",
-				ResourceID:   source,
-				TenantID:     identity.TenantID,
-				Attributes:   map[string]string{"runId": run},
+			resource := orchestration.ResourceContext{TenantID: identity.TenantID}
+			if c.CapabilityID == recoveryLinkID {
+				resource.ResourceType = "source"
+				resource.ResourceID = args["sourceId"].(string)
+				resource.Attributes = map[string]string{"runId": args["runId"].(string)}
+			} else {
+				resource.ResourceType = "semantic.challenge"
+				resource.ResourceID = args["challengeId"].(string)
 			}
 			response, err := service.Call(ctx, orchestration.Invocation{
 				Identity:                  identity.Identity,
@@ -78,7 +83,9 @@ func (s *workflowServer) bindRecoveryLink(service *orchestration.Service) error 
 			}
 			return link
 		}
-		return nil
 	}
-	return fmt.Errorf("missing recovery link capability")
+	if len(s.thsLinks) != 2 {
+		return fmt.Errorf("missing internal THS link capability")
+	}
+	return nil
 }

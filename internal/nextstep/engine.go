@@ -3,6 +3,7 @@ package nextstep
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -221,6 +222,9 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 	if failed {
 		return e.failure(c, policy, input, obs)
 	}
+	if c.ToolName == "ouf.ingestion.status" {
+		obs = recoveryObservation(obs)
+	}
 	if obs["replay"] == true {
 		tool, _ := obs["readTool"].(string)
 		args, _ := obs["readArguments"].(Object)
@@ -249,13 +253,16 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		switch r.Action {
 		case "BLOCKED":
-			if r.Decision != "" && e.Issue != nil {
+			s := Block(r.Reason, r.Tool, r.Message)
+			if len(r.Args) > 0 {
 				args := e.project(r, obs, input)
 				if e.Valid(r.Tool, args) {
-					return e.Issue(r, args, obs)
+					if r.Decision != "" && e.Issue != nil {
+						return e.Issue(r, args, obs)
+					}
+					s["alternatives"].([]Object)[0]["arguments"] = args
 				}
 			}
-			s := Block(r.Reason, r.Tool, r.Message)
 			if r.Actor != "" {
 				s["actor"] = r.Actor
 			}
@@ -332,6 +339,20 @@ func Observation(tool string, args, body Object) Object {
 }
 
 var reasonPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,79}$`)
+
+// A status row can describe a run and a schedule. A run recovery takes
+// precedence. Otherwise use the schedule's action and its associated clock.
+func recoveryObservation(obs Object) Object {
+	schedule, action := obs["scheduleRecoveryAction"], obs["recoveryAction"]
+	if schedule == nil || schedule == "NONE" || (action != nil && action != "NONE") {
+		return obs
+	}
+	row := maps.Clone(obs)
+	row["recoveryAction"] = schedule
+	row["decisionDeadline"] = obs["scheduleDecisionDeadline"]
+	row["retryAt"] = get(obs, nil, "scheduleRetryAt|retryAt")
+	return row
+}
 
 func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Object) Object {
 	code, _ := get(obs, nil, "reasonCode|code|Code").(string)

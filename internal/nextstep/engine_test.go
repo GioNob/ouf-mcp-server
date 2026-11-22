@@ -63,13 +63,14 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	}
 	binding := []byte("tenant/principal")
 	now := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	var onboardingLink Object
 	e := Engine{
 		Errors: s.NextErrors,
 		Valid: func(name string, args Object) bool {
 			return inputs[name] != nil && inputs[name].Validate(asJSON(t, args)) == nil
 		},
 		Issue: func(r manifest.Rule, args, obs Object) Object {
-			return signer.Issue(binding, r, args, obs, now)
+			return signer.Issue(binding, r, args, obs, onboardingLink, now)
 		},
 		Now: func() time.Time { return now },
 		AnalysisID: func(asset, profile string) string {
@@ -78,7 +79,8 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	}
 	var cases []struct {
 		Name, Tool, Action, Target, Reason, Decision string
-		Input, Owner, Arguments                      Object
+		Input, Owner, Arguments, Link, Alternative   Object
+		Actor, Outcome                               string
 		Failed, NewCommand                           bool
 		Delay                                        int
 	}
@@ -88,6 +90,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
+			onboardingLink = tc.Link
 			c := caps[tc.Tool]
 			result := asJSON(t, e.Evaluate(c, s.NextPolicies[c.NextPolicy], tc.Input, tc.Owner, tc.Failed))
 			if err := contract.Validate(result); err != nil {
@@ -101,9 +104,20 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 				human := alts[0].(Object)
 				read := alts[1].(Object)
 				if result["actor"] != "HUMAN_THS" || human["action"] != "WAIT_FOR_HUMAN" ||
-					human["human"].(Object)["reviewUrl"] != lookup(tc.Owner, "items.0.reviewUrl") ||
+					human["human"].(Object)["reviewUrl"] != tc.Link["reviewUrl"] ||
 					read["tool"] != "ouf.ingestion.status" || !e.Valid("ouf.ingestion.status", read["arguments"].(Object)) {
 					t.Fatal("missing abort-only human alternative or scoped status read", result)
+				}
+			}
+			if tc.Actor != "" && result["actor"] != tc.Actor || tc.Outcome != "" && result["outcome"] != tc.Outcome {
+				t.Fatal("incorrect actor or outcome", result)
+			}
+			if tc.Alternative != nil {
+				alt := result["alternatives"].([]any)[0].(Object)
+				tool := tc.Alternative["tool"].(string)
+				args, ok := alt["arguments"].(Object)
+				if !ok || alt["tool"] != tool || !reflect.DeepEqual(args, tc.Alternative["arguments"]) || !e.Valid(tool, args) {
+					t.Fatal("incorrect alternative", alt)
 				}
 			}
 			if tc.Target != "" {

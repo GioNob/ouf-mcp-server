@@ -182,8 +182,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
-	case "ouf.onboarding.ths-links.ingestion-run-recovery":
-		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/ths-links/ingestion-run-recovery"
+	case "ouf.onboarding.ths-links.ingestion-run-recovery", "ouf.onboarding.ths-links.semantic-review":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.onboarding.revision.prepare":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/source.revision/prepare"
 	case "ouf.onboarding.revision.read":
