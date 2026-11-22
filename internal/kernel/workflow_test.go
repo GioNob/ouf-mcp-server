@@ -133,6 +133,7 @@ type nextGateway struct {
 }
 
 func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
+	const canonicalType = "https://w3id.org/italia/onto/POI/PointOfInterest"
 	var args nextstep.Object
 	_ = json.Unmarshal(req.Arguments, &args)
 	obs := nextstep.Object{"sourceId": "teatri", "onboardingVersionId": "11111111-1111-4111-8111-111111111111"}
@@ -153,7 +154,7 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 		g.reads.Add(1)
 		obs["state"], obs["lockVersion"] = "ACTIVE", 3
 	case "ouf.ingestion.status":
-		run := nextstep.Object{"source_ref": "teatri", "runId": "22222222-2222-4222-8222-222222222222", "expectedVersion": 8, "runState": "COMPLETED", "recoveryAction": "TERMINAL", "udpHandoffConfirmed": true, "typeCode": "TEATRO"}
+		run := nextstep.Object{"source_ref": "teatri", "runId": "22222222-2222-4222-8222-222222222222", "expectedVersion": 8, "runState": "COMPLETED", "recoveryAction": "TERMINAL", "udpHandoffConfirmed": true, "typeCode": "FILE", "canonicalType": canonicalType}
 		if source, ok := args["sourceId"].(string); ok {
 			run["source_ref"] = source
 		}
@@ -171,7 +172,10 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 		}
 		obs = nextstep.Object{"reviewUrl": "https://fixture.invalid/run-recovery", "expiresAt": g.linkEnd}
 	case "urban.object.search":
-		obs = nextstep.Object{"outcome": "COMPLETE", "items": []nextstep.Object{{"type": "TEATRO"}}}
+		if args["type"] != canonicalType {
+			return orchestration.GatewayResponse{Status: 400, Problem: &orchestration.Problem{Status: 400}}, nil
+		}
+		obs = nextstep.Object{"outcome": "COMPLETE", "items": []nextstep.Object{{"type": canonicalType}}}
 	default:
 		return orchestration.GatewayResponse{Status: 400, Problem: &orchestration.Problem{Status: 400}}, nil
 	}

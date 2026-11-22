@@ -117,7 +117,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	var cases []struct {
 		Name, Tool, Action, Target, Reason, Decision string
 		Input, Owner, Arguments, Link, Alternative   Object
-		Actor, Outcome                               string
+		Actor, Outcome, UserMessage                  string
 		DeniedCapability, RetryAfter                 string
 		Failed, NewCommand                           bool
 		Delay                                        int
@@ -168,6 +168,9 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			}
 			if tc.Actor != "" && result["actor"] != tc.Actor || tc.Outcome != "" && result["outcome"] != tc.Outcome {
 				t.Fatal("incorrect actor or outcome", result)
+			}
+			if tc.UserMessage != "" && result["userMessage"] != tc.UserMessage {
+				t.Fatal("incorrect user message", result)
 			}
 			if tc.Alternative != nil {
 				alt := result["alternatives"].([]any)[0].(Object)

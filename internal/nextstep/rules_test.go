@@ -24,7 +24,7 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	}
 	const id = "11111111-1111-4111-8111-111111111111"
 	fixture := Object{
-		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "TEATRO",
+		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "FILE", "canonicalType": "urn:example:teatro",
 		"lockVersion": 1, "rowVersion": 2, "revisionId": id, "currentValidationRunId": id,
 		"assetId": id, "profileId": id, "jobId": id, "resultRef": id, "proposalId": id, "handoffId": id,
 		"onboardingVersionId": id, "runId": id, "nextLineageId": id, "nextHandoffId": id, "requestId": id,
