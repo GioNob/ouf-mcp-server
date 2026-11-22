@@ -1,5 +1,5 @@
 {
-  "version": "1.13.0-source-revision-and-discovery-adoption",
+  "version": "1.14.0-value-types",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -2583,7 +2583,8 @@
       "capabilityId": "ouf.semantic.propose",
       "purpose": "Create one native semantic DRAFT or bounded Turtle ontology DRAFT with a durable caller-scoped receipt",
       "useWhen": [
-        "preparing authorized native semantic proposals for human review"
+        "preparing authorized native semantic proposals for human review",
+        "Choose base types from the controlled vocabulary. If no published type fits structured data, propose a DATATYPE combining base types or pinned published DATATYPEs. Use it only after a human approves it in the THS and the Semantic Registry publishes it"
       ],
       "doNotUseWhen": [
         "approving, publishing, activating, adopting external terms or bypassing owner decisions"
@@ -2648,7 +2649,8 @@
               "RELATIONSHIP",
               "VOCABULARY",
               "CONCEPT",
-              "ONTOLOGY"
+              "ONTOLOGY",
+              "DATATYPE"
             ]
           },
           "namespace": {
@@ -2707,6 +2709,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+              "components": { "$ref": "#/$defs/datatypeComponents" },
               "description": {
                 "type": "object",
                 "additionalProperties": false,
@@ -2795,6 +2798,104 @@
             "const": "text/turtle"
           }
         },
+        "$defs": {
+          "datatypeComponents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                "type": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "string",
+                        "integer",
+                        "decimal",
+                        "boolean",
+                        "date",
+                        "datetime",
+                        "geometry",
+                        "concept"
+                      ]
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                      "maxLength": 1024
+                    }
+                  ]
+                },
+                "cardinality": {"enum": ["ONE", "MANY"]},
+                "required": {"type": "boolean"},
+                "labels": {"$ref": "#/properties/labels"},
+                "constraints": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "minInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
+                    "maxInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
+                    "maxLength": {"type": "integer", "minimum": 0},
+                    "vocabularyRef": {"type": "string", "minLength": 1, "maxLength": 1024}
+                  }
+                }
+              },
+              "required": ["name", "type", "cardinality", "required"],
+              "allOf": [
+                {
+                  "if": {
+                    "required": ["type"],
+                    "properties": {"type": {"enum": ["integer", "decimal", "date", "datetime"]}}
+                  },
+                  "then": {
+                    "properties": {"constraints": {"propertyNames": {"enum": ["minInclusive", "maxInclusive"]}}}
+                  }
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["string"]}}},
+                  "then": {"properties": {"constraints": {"propertyNames": {"enum": ["maxLength"]}}}}
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["concept"]}}},
+                  "then": {"properties": {"constraints": {"propertyNames": {"enum": ["vocabularyRef"]}}}}
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "type": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
+                          },
+                          {"enum": ["boolean", "geometry"]}
+                        ]
+                      }
+                    }
+                  },
+                  "then": {"properties": {"constraints": {"maxProperties": 0}}}
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "description": "Use unique component names. The Semantic Registry resolves published pins and checks cycles, depth (4) and total leaf components (256)."
+          }
+        },
+        "if": { "properties": { "artifactType": { "const": "DATATYPE" } } },
+        "then": {
+          "required": ["definition"],
+          "properties": {
+            "semanticId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
+            "definition": {
+              "required": ["components"],
+              "propertyNames": { "enum": ["description", "components"] }
+            }
+          }
+        },
+        "else": { "properties": { "definition": { "not": { "required": ["components"] } } } },
         "oneOf": [
           {
             "required": [
@@ -3410,7 +3511,8 @@
       "capabilityId": "ouf.managed-source.onboarding.create",
       "purpose": "Create an idempotent INTERNAL_MANAGED onboarding DRAFT from a reviewed file profile and pinned semantic references",
       "useWhen": [
-        "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions"
+        "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions",
+        "Choose a reader for each base type from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, use semantic.propose to combine base types or pinned published types into a DATATYPE. Use it only after human approval in the THS and publication"
       ],
       "doNotUseWhen": [
         "the user has no governed asset and profile IDs, or requests approval or activation"
@@ -3460,7 +3562,362 @@
           "sourceObjectKeyFields",
           "fields"
         ],
+        "$defs": {
+          "reader": {
+            "enum": [
+              "IDENTITY",
+              "TEXT_NFC_TRIM_V1",
+              "INTEGER_V1",
+              "INTEGER_GROUP_DOT_V1",
+              "DECIMAL_DOT_V1",
+              "DECIMAL_COMMA_V1",
+              "DECIMAL_GROUP_DOT_COMMA_V1",
+              "DECIMAL_GROUP_COMMA_DOT_V1",
+              "BOOLEAN_IT_V1",
+              "DATE_ISO_V1",
+              "DATE_DMY_V1",
+              "DATE_DMY_DASH_V1",
+              "DATETIME_ISO_OFFSET_V1",
+              "DATETIME_LOCAL_ROME_V1",
+              "GEOJSON_V1",
+              "WKT_V1",
+              "VALUE_MAP_V1"
+            ]
+          },
+          "transformParams": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$", "maxLength": 512},
+              "valueMapRef": {"type": "string", "maxLength": 512, "minLength": 1},
+              "separator": {"type": "string", "minLength": 1, "maxLength": 8},
+              "itemReader": {"$ref": "#/$defs/reader"}
+            }
+          },
+          "fieldReaderParams": {
+            "allOf": [
+              {
+                "if": {"required": ["transform"], "properties": {"transform": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["transform"], "properties": {"transform": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "anyOf": [
+                    {
+                      "required": ["transformParams"],
+                      "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                    },
+                    {"required": ["valueMapRef"], "properties": {"valueMapRef": {"minLength": 1}}}
+                  ]
+                }
+              }
+            ]
+          },
+          "constructorInput": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "role": {"type": "string", "minLength": 1, "maxLength": 64},
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["role", "fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructor": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1", "LIST_SPLIT_V1"]},
+              "inputs": {"type": "array", "items": {"$ref": "#/$defs/constructorInput"}},
+              "params": {"type": "object"}
+            },
+            "required": ["constructorId", "inputs", "params"],
+            "allOf": [{"$ref": "#/$defs/constructorRules"}]
+          },
+          "constructorRules": {
+            "allOf": [
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["POINT_FROM_LAT_LON_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {"properties": {"role": {"enum": ["lat", "lon"]}}},
+                      "allOf": [
+                        {
+                          "contains": {"properties": {"role": {"const": "lat"}}},
+                          "minContains": 1,
+                          "maxContains": 1
+                        },
+                        {
+                          "contains": {"properties": {"role": {"const": "lon"}}},
+                          "minContains": 1,
+                          "maxContains": 1
+                        }
+                      ]
+                    },
+                    "params": {"type": "object", "additionalProperties": false, "properties": {}}
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["TEXT_JOIN_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 2,
+                      "maxItems": 8,
+                      "items": {"properties": {"role": {"enum": ["part"]}}}
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {"separator": {"type": "string", "minLength": 1, "maxLength": 8}},
+                      "required": ["separator"]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["LIST_SPLIT_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 1,
+                      "maxItems": 1,
+                      "items": {"properties": {"role": {"enum": ["value"]}}}
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "separator": {"type": "string", "minLength": 1, "maxLength": 8},
+                        "itemReader": {"$ref": "#/$defs/reader"}
+                      },
+                      "required": ["separator", "itemReader"]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "fieldComponent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["component", "fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructorComponent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+              "constructor": {"$ref": "#/$defs/constructor"}
+            },
+            "required": ["component", "constructor"]
+          },
+          "structured4": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [{"$ref": "#/$defs/fieldComponent"}, {"$ref": "#/$defs/constructorComponent"}]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "structured3": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "structured": {"$ref": "#/$defs/structured4"}
+                      },
+                      "required": ["component", "structured"]
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "structured2": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "structured": {"$ref": "#/$defs/structured3"}
+                      },
+                      "required": ["component", "structured"]
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "compositions": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {"const": "CONSTRUCTOR"},
+                    "targetPropertyIri": {"type": "string", "format": "uri", "maxLength": 512},
+                    "dataAccessLabel": {"enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"]},
+                    "constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1", "LIST_SPLIT_V1"]},
+                    "inputs": {"type": "array", "items": {"$ref": "#/$defs/constructorInput"}},
+                    "params": {"type": "object"}
+                  },
+                  "required": ["kind", "targetPropertyIri", "dataAccessLabel", "constructorId", "inputs", "params"],
+                  "allOf": [{"$ref": "#/$defs/constructorRules"}]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {"const": "STRUCTURED"},
+                    "targetPropertyIri": {"type": "string", "format": "uri", "maxLength": 512},
+                    "dataAccessLabel": {"enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"]},
+                    "typeRef": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                      "maxLength": 512
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {"$ref": "#/$defs/fieldComponent"},
+                          {"$ref": "#/$defs/constructorComponent"},
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                              "structured": {"$ref": "#/$defs/structured2"}
+                            },
+                            "required": ["component", "structured"]
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 32,
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": ["kind", "targetPropertyIri", "dataAccessLabel", "typeRef", "components"]
+                }
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 1024,
+            "description": "Use INCLUDE fields from this file. Onboarding resolves pinned DATATYPEs and checks component names, output types and the limit of 256 leaves per structured value."
+          }
+        },
         "properties": {
+          "compositions": { "$ref": "#/$defs/compositions" },
           "assetId": {
             "type": "string",
             "format": "uuid"
@@ -3525,6 +3982,7 @@
                 "extractionDecision",
                 "dataAccessLabel"
               ],
+              "allOf": [{ "$ref": "#/$defs/fieldReaderParams" }],
               "properties": {
                 "fieldName": {
                   "type": "string",
@@ -3551,10 +4009,8 @@
                   "format": "uri",
                   "maxLength": 512
                 },
-                "transform": {
-                  "type": "string",
-                  "maxLength": 512
-                },
+                "transform": { "$ref": "#/$defs/reader" },
+                "transformParams": { "$ref": "#/$defs/transformParams" },
                 "vocabularyId": {
                   "type": "string",
                   "minLength": 1,
@@ -3643,7 +4099,8 @@
               "RELATIONSHIP",
               "VOCABULARY",
               "CONCEPT",
-              "ONTOLOGY"
+              "ONTOLOGY",
+              "DATATYPE"
             ]
           },
           "namespace": {
@@ -4248,8 +4705,10 @@
       "purpose": "Prepare a revision of an ACTIVE source for native human review",
       "useWhen": [
         "the user wants to revise property policies on the current file using changes",
+        "the user wants to revise compositions on the active file",
         "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
-        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one"
+        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one",
+        "Choose readers from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, propose a DATATYPE combining base types or pinned published types. Use it only after human approval in the THS and publication"
       ],
       "doNotUseWhen": [
         "the file belongs to a new source. Use source.onboarding.create",
@@ -4298,9 +4757,367 @@
           "publicationEffect"
         ],
         "if": { "required": ["assetRef"] },
+        "$defs": {
+          "reader": {
+            "enum": [
+              "IDENTITY",
+              "TEXT_NFC_TRIM_V1",
+              "INTEGER_V1",
+              "INTEGER_GROUP_DOT_V1",
+              "DECIMAL_DOT_V1",
+              "DECIMAL_COMMA_V1",
+              "DECIMAL_GROUP_DOT_COMMA_V1",
+              "DECIMAL_GROUP_COMMA_DOT_V1",
+              "BOOLEAN_IT_V1",
+              "DATE_ISO_V1",
+              "DATE_DMY_V1",
+              "DATE_DMY_DASH_V1",
+              "DATETIME_ISO_OFFSET_V1",
+              "DATETIME_LOCAL_ROME_V1",
+              "GEOJSON_V1",
+              "WKT_V1",
+              "VALUE_MAP_V1"
+            ]
+          },
+          "transformParams": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$", "maxLength": 512},
+              "valueMapRef": {"type": "string", "maxLength": 512, "minLength": 1},
+              "separator": {"type": "string", "minLength": 1, "maxLength": 8},
+              "itemReader": {"$ref": "#/$defs/reader"}
+            }
+          },
+          "fieldReaderParams": {
+            "allOf": [
+              {
+                "if": {"required": ["transform"], "properties": {"transform": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["transform"], "properties": {"transform": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "anyOf": [
+                    {
+                      "required": ["transformParams"],
+                      "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                    },
+                    {"required": ["valueMapRef"], "properties": {"valueMapRef": {"minLength": 1}}}
+                  ]
+                }
+              }
+            ]
+          },
+          "constructorInput": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "role": {"type": "string", "minLength": 1, "maxLength": 64},
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["role", "fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructor": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1", "LIST_SPLIT_V1"]},
+              "inputs": {"type": "array", "items": {"$ref": "#/$defs/constructorInput"}},
+              "params": {"type": "object"}
+            },
+            "required": ["constructorId", "inputs", "params"],
+            "allOf": [{"$ref": "#/$defs/constructorRules"}]
+          },
+          "constructorRules": {
+            "allOf": [
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["POINT_FROM_LAT_LON_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {"properties": {"role": {"enum": ["lat", "lon"]}}},
+                      "allOf": [
+                        {
+                          "contains": {"properties": {"role": {"const": "lat"}}},
+                          "minContains": 1,
+                          "maxContains": 1
+                        },
+                        {
+                          "contains": {"properties": {"role": {"const": "lon"}}},
+                          "minContains": 1,
+                          "maxContains": 1
+                        }
+                      ]
+                    },
+                    "params": {"type": "object", "additionalProperties": false, "properties": {}}
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["TEXT_JOIN_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 2,
+                      "maxItems": 8,
+                      "items": {"properties": {"role": {"enum": ["part"]}}}
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {"separator": {"type": "string", "minLength": 1, "maxLength": 8}},
+                      "required": ["separator"]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": ["constructorId"],
+                  "properties": {"constructorId": {"enum": ["LIST_SPLIT_V1"]}}
+                },
+                "then": {
+                  "properties": {
+                    "inputs": {
+                      "minItems": 1,
+                      "maxItems": 1,
+                      "items": {"properties": {"role": {"enum": ["value"]}}}
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "separator": {"type": "string", "minLength": 1, "maxLength": 8},
+                        "itemReader": {"$ref": "#/$defs/reader"}
+                      },
+                      "required": ["separator", "itemReader"]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "fieldComponent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["component", "fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructorComponent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+              "constructor": {"$ref": "#/$defs/constructor"}
+            },
+            "required": ["component", "constructor"]
+          },
+          "structured4": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [{"$ref": "#/$defs/fieldComponent"}, {"$ref": "#/$defs/constructorComponent"}]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "structured3": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "structured": {"$ref": "#/$defs/structured4"}
+                      },
+                      "required": ["component", "structured"]
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "structured2": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "typeRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                "maxLength": 512
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "structured": {"$ref": "#/$defs/structured3"}
+                      },
+                      "required": ["component", "structured"]
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+              }
+            },
+            "required": ["typeRef", "components"]
+          },
+          "compositions": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {"const": "CONSTRUCTOR"},
+                    "targetPropertyIri": {"type": "string", "format": "uri", "maxLength": 512},
+                    "dataAccessLabel": {"enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"]},
+                    "constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1", "LIST_SPLIT_V1"]},
+                    "inputs": {"type": "array", "items": {"$ref": "#/$defs/constructorInput"}},
+                    "params": {"type": "object"}
+                  },
+                  "required": ["kind", "targetPropertyIri", "dataAccessLabel", "constructorId", "inputs", "params"],
+                  "allOf": [{"$ref": "#/$defs/constructorRules"}]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {"const": "STRUCTURED"},
+                    "targetPropertyIri": {"type": "string", "format": "uri", "maxLength": 512},
+                    "dataAccessLabel": {"enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"]},
+                    "typeRef": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                      "maxLength": 512
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {"$ref": "#/$defs/fieldComponent"},
+                          {"$ref": "#/$defs/constructorComponent"},
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                              "structured": {"$ref": "#/$defs/structured2"}
+                            },
+                            "required": ["component", "structured"]
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 32,
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": ["kind", "targetPropertyIri", "dataAccessLabel", "typeRef", "components"]
+                }
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 1024,
+            "description": "Use INCLUDE fields from this file. Onboarding resolves pinned DATATYPEs and checks component names, output types and the limit of 256 leaves per structured value."
+          }
+        },
         "then": { "not": { "required": ["changes"] } },
-        "else": { "required": ["changes"], "not": { "required": ["newColumns"] } },
+        "else": {
+          "anyOf": [{ "required": ["changes"] }, { "required": ["compositions"] }],
+          "not": { "required": ["newColumns"] }
+        },
         "properties": {
+          "compositions": { "$ref": "#/$defs/compositions" },
           "sourceId": {
             "type": "string",
             "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
@@ -4359,9 +5176,11 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["propertyIri", "transform", "reconciliation"],
+                  "allOf": [{ "$ref": "#/$defs/fieldReaderParams" }],
                   "properties": {
                     "propertyIri": { "type": "string", "format": "iri", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
-                    "transform": { "enum": ["IDENTITY", "DECIMAL_DOT_V1", "DECIMAL_COMMA_V1", "DATE_ISO_V1", "DATE_DMY_V1"] },
+                    "transform": { "$ref": "#/$defs/reader" },
+                    "transformParams": { "$ref": "#/$defs/transformParams" },
                     "reconciliation": {
                       "type": "object",
                       "additionalProperties": false,

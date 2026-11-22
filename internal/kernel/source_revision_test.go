@@ -183,18 +183,22 @@ func TestSourceRevisionReceiptSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	columns := func(schema any) any {
+	mapping := func(schema any) map[string]any {
+		t.Helper()
 		object, _ := schema.(map[string]any)
 		properties, _ := object["properties"].(map[string]any)
-		return properties["newColumns"]
+		if properties["newColumns"] == nil || properties["compositions"] == nil || object["$defs"] == nil {
+			t.Fatal("revision schema is missing mapping properties or their referenced definitions")
+		}
+		return map[string]any{"newColumns": properties["newColumns"], "compositions": properties["compositions"], "$defs": object["$defs"]}
 	}
 	var input, prepareReceipt, readReceipt any
 	for _, tool := range list.Tools {
 		switch tool.Name {
 		case "source.onboarding.revision.prepare":
-			input, prepareReceipt = columns(tool.InputSchema), columns(tool.OutputSchema)
+			input, prepareReceipt = mapping(tool.InputSchema), mapping(tool.OutputSchema)
 		case "source.onboarding.revision.read":
-			readReceipt = columns(tool.OutputSchema)
+			readReceipt = mapping(tool.OutputSchema)
 		}
 	}
 	if input == nil || !reflect.DeepEqual(input, prepareReceipt) || !reflect.DeepEqual(input, readReceipt) {

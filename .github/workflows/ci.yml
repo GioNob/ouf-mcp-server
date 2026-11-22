@@ -72,6 +72,7 @@ jobs:
       - run: go mod download
       - run: node scripts/test_picker_portability.mjs
       - run: pip install -r .pairwise/gateway/requirements-dev.txt
+      - run: python3 -m unittest -v scripts.test_value_type_schemas
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/adapter/httpclient -run TestMCPGatewayUDPPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/evidence -run TestGatewayEvidenceIngressPairwise -v
       - run: GATEWAY_PAIRWISE_ROOT="$PWD/.pairwise/gateway" go test ./internal/deployment -run TestMCPGatewayDeploymentSecurityPairwise -v

@@ -124,8 +124,10 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			}
 			continue
 		}
-		if isSourceRevisionCapability(capability.CapabilityID) {
-			registerSourceRevisionTool(server, capability, snapshot, service)
+		if isValueTypeTool(capability.ToolName) {
+			registerValueTypeTool(server, capability, snapshot, service)
+		} else if capability.ToolName == "source.onboarding.revision.read" {
+			registerSourceRevisionRead(server, capability, snapshot, service)
 		} else if service == nil {
 			registerUnavailableTool(server, capability)
 		} else {
@@ -308,7 +310,7 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return
 	}
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
@@ -472,7 +474,16 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
 			return revisionCSVError(result.Body), nil, nil
 		}
-		body, _ := json.Marshal(result.Problem)
+		problem := result.Problem
+		if isValueTypeTool(c.ToolName) && (problem.Status == http.StatusBadRequest || problem.Status == http.StatusUnprocessableEntity) {
+			// Owner validation details can contain source data. Preserve the
+			// stable problem fields and the existing error envelope.
+			problem = &orchestration.Problem{Status: problem.Status, Code: problem.Code, RetryAfter: problem.RetryAfter}
+			if problem.Code == "" {
+				problem.Code = "OWNER_ARGUMENTS_REJECTED"
+			}
+		}
+		body, _ := json.Marshal(problem)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	}
 	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
