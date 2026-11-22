@@ -93,6 +93,32 @@ def replay(phase, original):
     assert result["readArguments"] == {"requestId": original}
 
 
+# An analysis is bound to the capability manifest that planned it (manifest checksum fence).
+# A version reading an analysis planned under a different manifest must refuse it with this
+# stable, non-retryable code and leave it untouched; it never returns a changed view.
+FENCED = {"code": "ANALYSIS_NOT_FOUND_OR_SCOPE_CHANGED", "retryable": False}
+
+
+def read_analysis(analysis_id):
+    result = rpc("tools/call", name="source.analysis.read", arguments={"analysisId": analysis_id})
+    payload = json.loads(result["content"][0]["text"])
+    return bool(result.get("isError")), payload
+
+
+def verify_analysis(written_by, read_by, own):
+    saved = json.loads(Path(f"/tmp/{written_by}.json").read_text())
+    refused, view = read_analysis(saved["view"]["analysisId"])
+    if not refused:
+        assert view == saved["view"], f"changed {written_by} analysis on {read_by}"
+        outcome = "identical"
+    else:
+        assert not own, f"{read_by} refused its own analysis: {view}"
+        assert view == FENCED, f"unexpected refusal of {written_by} analysis on {read_by}: {view}"
+        outcome = "fenced (planned under another manifest)"
+    print(f"Analysis written by {written_by}, read by {read_by}: {outcome}", flush=True)
+    return saved
+
+
 def verify_return():
     names = {entry["name"] for entry in rpc("tools/list")["tools"]}
     assert {"source.analysis.read", "semantic.discovery.request"} <= names
@@ -100,9 +126,7 @@ def verify_return():
                      {**IDENTITY, "X-OUF-Authorization-Decision-Ref": "d080:1:ouf.system.status"})
     assert status["module"] == "MCP" and status["status"] == "HEALTHY" and status["partial"] is False
     for phase in ("predecessor", "candidate"):
-        saved = json.loads(Path(f"/tmp/{phase}.json").read_text())
-        view = tool("source.analysis.read", analysisId=saved["view"]["analysisId"])
-        assert view == saved["view"], f"changed {phase} analysis"
+        saved = verify_analysis(phase, "predecessor-return", own=phase == "predecessor")
         replay(phase, saved["requestId"])
     receipt = discovery("return")
     assert receipt["status"] == "PENDING"
@@ -118,6 +142,8 @@ if __name__ == "__main__":
             wait_ready(sys.argv[1] == "wait-owner")
         case ["seed", phase] if phase in ("predecessor", "candidate"):
             seed(phase)
+        case ["read-predecessor"]:
+            verify_analysis("predecessor", "candidate", own=False)
         case ["return"]:
             verify_return()
         case _:

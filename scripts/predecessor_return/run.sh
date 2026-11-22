@@ -98,6 +98,7 @@ migrate "$NEW_IMAGE"
 after=$(schema)
 echo "Candidate schema $after"
 start "$NEW_IMAGE" candidate
+probe read-predecessor
 probe seed candidate
 new_witness=$(witness candidate)
 stop
