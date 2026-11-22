@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -153,6 +154,9 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 		obs["state"], obs["lockVersion"] = "ACTIVE", 3
 	case "ouf.ingestion.status":
 		run := nextstep.Object{"source_ref": "teatri", "runId": "22222222-2222-4222-8222-222222222222", "expectedVersion": 8, "runState": "COMPLETED", "recoveryAction": "TERMINAL", "udpHandoffConfirmed": true, "typeCode": "TEATRO"}
+		if source, ok := args["sourceId"].(string); ok {
+			run["source_ref"] = source
+		}
 		if g.runReads.Add(1) == 1 {
 			run["runState"], run["recoveryAction"], run["expectedVersion"] = "PAUSED", "HUMAN_RESUME_OR_ABORT", 7
 			run["decisionDeadline"] = g.deadline
@@ -326,14 +330,7 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 				}
 				if target == "ouf.wait" {
 					if tc.denyLink {
-						alts := next["alternatives"].([]any)
-						if next["action"] != "BLOCKED" || next["human"] != nil || len(alts) != 1 {
-							t.Fatal("expected a read after link denial", next)
-						}
-						alt := alts[0].(nextstep.Object)
-						if alt["tool"] != "semantic.proposal.read" || !reflect.DeepEqual(alt["arguments"], nextstep.Object{"commandKey": args["commandKey"]}) {
-							t.Fatal("lost proposal selector", alt)
-						}
+						checkPermissionAlternatives(t, next, semanticLinkID, "OWNER_AUTHORIZATION_DENIED")
 						break
 					}
 					end := deadline
@@ -364,7 +361,28 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 	}
 }
 
-func TestRecoveryLinkDenialOffersStatusRead(t *testing.T) {
+func checkPermissionAlternatives(t *testing.T, next nextstep.Object, capability, reason string) {
+	t.Helper()
+	if next["action"] != "BLOCKED" || next["actor"] != "HUMAN_THS" || next["reasonCode"] != reason ||
+		next["human"] != nil || !strings.Contains(next["userMessage"].(string), capability) {
+		t.Fatal("incorrect permission diagnosis", next)
+	}
+	alts := next["alternatives"].([]any)
+	if len(alts) != 2 {
+		t.Fatal("missing permission alternatives", next)
+	}
+	for i, view := range []string{"CAPABILITIES", "ROLES"} {
+		alt := alts[i].(nextstep.Object)
+		if alt["action"] != "CALL_TOOL" || alt["tool"] != "authorization.permissions.read" || !reflect.DeepEqual(alt["arguments"], nextstep.Object{"view": view}) {
+			t.Fatal("incorrect permission lookup", alt)
+		}
+	}
+	if !strings.Contains(alts[1].(nextstep.Object)["userMessage"].(string), "authorization.permissions.propose") {
+		t.Fatal("missing proposal preparation", alts)
+	}
+}
+
+func TestRecoveryLinkOwnerDenialOffersPermissionReads(t *testing.T) {
 	owner := &nextGateway{deadline: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), linkError: true}
 	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req orchestration.GatewayRequest
@@ -392,12 +410,57 @@ func TestRecoveryLinkDenialOffersStatusRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := checkNext(t, nextContract(t), res)
-	if next["action"] != "BLOCKED" || next["reasonCode"] != "OWNER_REVIEW_LINK_REQUIRED" || owner.links.Load() != 1 {
-		t.Fatal(next)
+	checkPermissionAlternatives(t, next, recoveryLinkID, "OWNER_AUTHORIZATION_DENIED")
+	if owner.links.Load() != 1 {
+		t.Fatal("missing owner link attempt")
 	}
-	alt := next["alternatives"].([]any)[0].(nextstep.Object)
-	if alt["tool"] != "ouf.ingestion.status" || !reflect.DeepEqual(alt["arguments"], nextstep.Object{"sourceId": "teatri"}) || next["human"] != nil {
-		t.Fatal(next)
+}
+
+type denyRecoveryLink struct{}
+
+func (denyRecoveryLink) Authorize(ctx context.Context, req orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	if req.CapabilityID == recoveryLinkID {
+		return orchestration.AuthorizationDecision{DecisionCode: "NO_APPLICABLE_GRANT"}, nil
+	}
+	return (analysisSDKAuth{}).Authorize(ctx, req)
+}
+
+func TestRecoveryLinkPreAdmissionDenial(t *testing.T) {
+	owner := &nextGateway{deadline: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
+	admission := &statusAdmission{}
+	service := &orchestration.Service{RequireDelegation: true, Auth: denyRecoveryLink{}, Admission: admission, Gateway: owner, FingerprintKey: make([]byte, 32)}
+	session := revisionSession(t, service, "ingestion.operations.read")
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "ouf.ingestion.status", Arguments: nextstep.Object{"sourceId": "edicole-trieste"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPermissionAlternatives(t, checkNext(t, nextContract(t), res), recoveryLinkID, "NO_APPLICABLE_GRANT")
+	if res.IsError || owner.runReads.Load() != 1 || owner.links.Load() != 0 || admission.calls.Load() != 1 {
+		t.Fatal("link denial crossed admission or changed the successful status result")
+	}
+}
+
+func TestTHSLinkFailureClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result orchestration.Result
+		err    error
+		want   nextstep.LinkResult
+	}{
+		{"owner throttle", orchestration.Result{Problem: &orchestration.Problem{Status: 429, RetryAfter: "23"}}, nil, nextstep.LinkResult{Status: nextstep.LinkTransient, RetryAfter: "23"}},
+		{"owner outage", orchestration.Result{Problem: &orchestration.Problem{Status: 503}}, nil, nextstep.LinkResult{Status: nextstep.LinkTransient}},
+		{"owner permanent", orchestration.Result{Problem: &orchestration.Problem{Status: 503}, Body: []byte(`{"retryable":false}`)}, nil, nextstep.LinkResult{}},
+		{"invalid selector", orchestration.Result{Problem: &orchestration.Problem{Status: 422}}, nil, nextstep.LinkResult{}},
+		{"network timeout", orchestration.Result{}, context.DeadlineExceeded, nextstep.LinkResult{Status: nextstep.LinkTransient}},
+		{"unknown failure", orchestration.Result{}, errors.New("private diagnostic"), nextstep.LinkResult{}},
+		{"insecure URL", orchestration.Result{Body: []byte(`{"reviewUrl":"http://fixture.invalid","expiresAt":"2099-01-01T00:00:00Z"}`)}, nil, nextstep.LinkResult{}},
+		{"stale link", orchestration.Result{Body: []byte(`{"reviewUrl":"https://fixture.invalid","expiresAt":"2001-01-01T00:00:00Z"}`)}, nil, nextstep.LinkResult{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyLink(semanticLinkID, tc.result, tc.err); got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 

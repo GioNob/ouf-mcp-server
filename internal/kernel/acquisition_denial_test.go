@@ -136,6 +136,9 @@ func TestAcquisitionDenialDiagnosisSDK(t *testing.T) {
 					if diagnosis.ReasonCode != scenario.reason || diagnosis.EvaluatedPolicyVersion != scenario.version || diagnosis.Retryable || diagnosis.AuthorizationPhase != "MCP_PRE_ADMISSION" || diagnosis.Code != "authorization denied" {
 						t.Fatalf("wrong diagnosis: %+v", diagnosis)
 					}
+					if scenario.reason == "NO_APPLICABLE_GRANT" {
+						checkPermissionAlternatives(t, checkNext(t, nextContract(t), result), permission, scenario.reason)
+					}
 				} else {
 					if calls.Load() != 1 || admission.calls.Load() != 1 || strings.Contains(string(raw), "MCP_PRE_ADMISSION") {
 						t.Fatal("owner outcome relabelled as preflight or automatic replay")

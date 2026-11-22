@@ -97,25 +97,70 @@ func (r WaitRef) Block(reason, message string) Object {
 	return s
 }
 
-func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs, onboardingLink Object, now time.Time) Object {
+type LinkStatus uint8
+
+const (
+	LinkPermanent LinkStatus = iota // Missing configuration or invalid owner response.
+	LinkAvailable
+	LinkDenied
+	LinkTransient
+)
+
+type LinkResult struct {
+	Status     LinkStatus
+	Capability string
+	Reason     string
+	RetryAfter string
+	URL        string
+	ExpiresAt  string
+}
+
+func validReviewURL(link string) bool {
+	u, err := url.Parse(link)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
+func OwnerLink(link, end string, now time.Time) LinkResult {
+	exp, err := time.Parse(time.RFC3339Nano, end)
+	if !validReviewURL(link) || err != nil || !now.Before(exp) {
+		return LinkResult{}
+	}
+	return LinkResult{Status: LinkAvailable, URL: link, ExpiresAt: end}
+}
+
+func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboardingLink LinkResult, now time.Time) Object {
 	run := r.Tool == "ouf.ingestion.status"
 	semantic := r.Tool == "semantic.proposal.read"
 	var link, linkEnd string
 	if run || semantic {
-		link, _ = onboardingLink["reviewUrl"].(string)
-		linkEnd, _ = onboardingLink["expiresAt"].(string)
+		switch onboardingLink.Status {
+		case LinkDenied:
+			return PermissionDenied(onboardingLink.Capability, onboardingLink.Reason)
+		case LinkTransient:
+			delay, ok := retryDelay(Object{"RetryAfter": onboardingLink.RetryAfter}, now)
+			if !ok {
+				return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Chiedi all’operatore di verificare la finestra di ripresa.", "OPERATOR")
+			}
+			next := call("POLL", "OWNER_REVIEW_LINK_UNAVAILABLE", r.Tool, args)
+			next["userMessage"] = "Il collegamento di revisione è temporaneamente indisponibile. Attendi prima di rileggere lo stato."
+			next["pollAfterSeconds"], next["terminalStates"] = delay, []string{"WAIT_FOR_HUMAN", "BLOCKED", "DONE", "CALL_TOOL"}
+			if raw := get(obs, nil, "decisionDeadline|currentChallenge.expiresAt|expiresAt"); raw != nil {
+				exp, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+				if err != nil || !now.Add(time.Duration(delay)*time.Second).Before(exp) {
+					return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la decisione nella THS. La finestra disponibile non consente un’altra lettura.", "HUMAN_THS")
+				}
+				next["deadline"] = exp.UTC().Format(time.RFC3339Nano)
+			}
+			return next
+		case LinkAvailable:
+			link, linkEnd = onboardingLink.URL, onboardingLink.ExpiresAt
+		}
 	} else {
 		link, _ = get(obs, nil, "currentChallenge.reviewUrl|reviewUrl|approvalPath").(string)
 	}
-	u, err := url.Parse(link)
 	linkExpiry, parseErr := time.Parse(time.RFC3339Nano, linkEnd)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || ((run || semantic) && (parseErr != nil || !now.Before(linkExpiry))) {
-		s := Block("OWNER_REVIEW_LINK_REQUIRED", r.Tool, "Recupera il collegamento di revisione dalla capability di lettura.")
-		s["alternatives"].([]Object)[0]["arguments"] = args
-		if r.Actor != "" {
-			s["actor"] = r.Actor
-		}
-		return s
+	if !validReviewURL(link) || ((run || semantic) && (parseErr != nil || !now.Before(linkExpiry))) {
+		return ManualBlock("OWNER_REVIEW_LINK_REQUIRED", "Apri la THS e verifica la decisione con il responsabile della revisione.", "HUMAN_THS")
 	}
 	manual := func(code, message string) Object {
 		blocked := Block(code, r.Tool, message)
@@ -215,6 +260,20 @@ func (r WaitRef) Next(token string) Object {
 		s["human"].(Object)["expiresAt"] = r.LinkEnd
 	}
 	s["userMessage"] = "Apri il collegamento di revisione. La chat attenderà la decisione."
+	return s
+}
+
+func (r WaitRef) Poll(token string) Object {
+	s := call("POLL", r.Reason, "ouf.wait", Object{"waitRef": token})
+	s["pollAfterSeconds"], s["terminalStates"] = 5, []string{"CALL_TOOL", "WAIT_FOR_HUMAN", "BLOCKED", "DONE"}
+	s["deadline"] = r.Deadline
+	s["userMessage"] = "La decisione è ancora in attesa. Ricontrolla dopo l’intervallo indicato."
+	return s
+}
+
+func (r WaitRef) Refresh() Object {
+	s := call("CALL_TOOL", "REFRESH_REVIEW_OBSERVATION", r.Read, r.Args)
+	s["userMessage"] = "Rileggi la decisione per aggiornare il collegamento di revisione."
 	return s
 }
 

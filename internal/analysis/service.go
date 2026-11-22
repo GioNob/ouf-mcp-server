@@ -35,7 +35,7 @@ func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, ca
 		return e
 	}
 	if !d.Allowed || d.DecisionRef == "" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion}
+		return &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
 	}
 	return nil
 }
@@ -81,7 +81,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		return View{}, e
 	}
 	if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return View{}, &OwnerDenial{ReasonCode: r.Problem.Code}
+		return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
 	}
 	if r.Replay || r.Problem != nil {
 		return View{}, ErrScope
@@ -192,12 +192,12 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return finished, callErr
 	}
 	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return finished, &OwnerDenial{ReasonCode: r.Problem.Code}
+		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.CapabilityID}
 	}
 	return finished, err
 }
 
-type OwnerDenial struct{ ReasonCode string }
+type OwnerDenial struct{ ReasonCode, CapabilityID string }
 
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 

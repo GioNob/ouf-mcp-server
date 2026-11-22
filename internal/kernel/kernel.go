@@ -279,7 +279,7 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 			if result.Replay {
 				return replayResult(c, args, result), nil, nil
 			}
-			if denial := ownerDenialResult(result.Problem); denial != nil {
+			if denial := ownerDenialResult(result.Problem, c.RequiredAuthorization); denial != nil {
 				return denial, nil, nil
 			}
 			if result.Problem != nil {
@@ -497,7 +497,7 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if result.Replay {
 		return replayResult(c, args, result), nil, nil
 	}
-	if denial := ownerDenialResult(result.Problem); denial != nil {
+	if denial := ownerDenialResult(result.Problem, c.RequiredAuthorization); denial != nil {
 		return denial, nil, nil
 	}
 	if result.Problem != nil {

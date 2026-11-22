@@ -69,7 +69,7 @@ func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, 
 		}
 		return errorResult("SEMANTIC_ADOPTION_UNAVAILABLE", false)
 	case result.Problem != nil:
-		if denial := ownerDenialResult(result.Problem); denial != nil {
+		if denial := ownerDenialResult(result.Problem, in.AuthorizationCapabilityID); denial != nil {
 			return denial
 		}
 		return errorResult(result.Problem.Code, false)
@@ -107,7 +107,7 @@ func readDiscoveryAdoptionReceipt(ctx context.Context, service *orchestration.Se
 	if wait := windowAdmissionErrorResult(err); wait != nil {
 		return wait
 	}
-	if denial := ownerDenialResult(lookup.Problem); denial != nil {
+	if denial := ownerDenialResult(lookup.Problem, read.AuthorizationCapabilityID); denial != nil {
 		return denial
 	}
 	var snapshot struct {

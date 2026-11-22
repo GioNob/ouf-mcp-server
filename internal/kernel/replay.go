@@ -20,9 +20,12 @@ func replayResult(c manifest.Capability, args []byte, r orchestration.Result) *m
 	case "FAILED":
 		body["code"] = "ATTEMPT_FAILED"
 	case "SUCCEEDED":
-		var selectors struct{ AssetID, SourceID, HandoffID string }
+		var selectors struct{ AssetID, SourceID, HandoffID, CommandKey string }
 		_ = json.Unmarshal(args, &selectors)
 		switch c.ToolName {
+		case "semantic.review.prepare", "semantic.approval.request":
+			body["readTool"] = "semantic.proposal.read"
+			body["readArguments"] = map[string]string{"commandKey": selectors.CommandKey}
 		case "source.file.profile":
 			if r.ResultID != nil {
 				body["readTool"] = "source.file.preview"

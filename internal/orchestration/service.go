@@ -35,6 +35,7 @@ var (
 type AuthorizationDeniedError struct {
 	ReasonCode    string
 	PolicyVersion int64
+	CapabilityID  string
 }
 
 func (e *AuthorizationDeniedError) Error() string { return ErrUnauthorized.Error() }
@@ -282,7 +283,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 				AuthorizationDecisionRef: decision.DecisionRef,
 			})
 		}
-		return Result{}, &AuthorizationDeniedError{ReasonCode: decision.DecisionCode, PolicyVersion: decision.BundleVersion}
+		return Result{}, &AuthorizationDeniedError{ReasonCode: decision.DecisionCode, PolicyVersion: decision.BundleVersion, CapabilityID: authorizationCapability}
 	}
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
@@ -399,6 +400,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		code := "STATUS_UNAVAILABLE"
 		if response.Status == 401 || response.Status == 403 {
 			code = "NOT_AUTHORIZED"
+			if response.Problem != nil && response.Problem.Code == "NO_APPLICABLE_GRANT" {
+				code = "NO_APPLICABLE_GRANT"
+			}
 		}
 		response.Body = nil
 		response.Problem = &Problem{Status: response.Status, Code: code, Title: code}

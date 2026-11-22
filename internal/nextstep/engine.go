@@ -2,8 +2,11 @@
 package nextstep
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math/big"
 	"net/http"
 	"regexp"
 	"slices"
@@ -218,10 +221,115 @@ func call(action, reason, tool string, args Object) Object {
 }
 
 func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
-	obs := Observation(c.ToolName, input, owner)
-	if failed {
-		return e.failure(c, policy, input, obs)
+	return ensureProgress(c.ToolName, input, e.evaluate(c, policy, input, owner, failed))
+}
+
+// Compare decoded JSON numbers by value, including 1, 1.0 and 1e0.
+// Float64 would also merge distinct integer versions above 2^53.
+func sameJSON(a, b any) bool {
+	switch x := a.(type) {
+	case Object:
+		y, ok := b.(Object)
+		return ok && maps.EqualFunc(x, y, sameJSON)
+	case []any:
+		y, ok := b.([]any)
+		return ok && slices.EqualFunc(x, y, sameJSON)
+	case json.Number:
+		y, ok := b.(json.Number)
+		if !ok || x == y {
+			return ok
+		}
+		left, ok := new(big.Rat).SetString(x.String())
+		right, valid := new(big.Rat).SetString(y.String())
+		return ok && valid && left.Cmp(right) == 0
+	default:
+		return a == b
 	}
+}
+
+func wireArgumentsEqual(input Object, args any) bool {
+	decode := func(v any) (Object, error) {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		var obj Object
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		err = decoder.Decode(&obj)
+		return obj, err
+	}
+	a, err := decode(input)
+	b, otherErr := decode(args)
+	return err != nil || otherErr != nil || sameJSON(a, b)
+}
+
+// A missing argument list on a same-tool hint cannot identify a different
+// request. Compare wire values so typed maps, integers and decoded JSON agree.
+func ensureProgress(tool string, input, next Object) Object {
+	same := func(target Object) bool {
+		if target["tool"] != tool {
+			return false
+		}
+		delay, _ := target["pollAfterSeconds"].(int)
+		states, _ := target["terminalStates"].([]string)
+		if target["action"] == "POLL" && delay > 0 && len(states) > 0 {
+			return false
+		}
+		if target["arguments"] == nil {
+			return true
+		}
+		return wireArgumentsEqual(input, target["arguments"])
+	}
+	reason := next["reasonCode"].(string)
+	if same(next) {
+		return ManualBlock(reason, "Il passo indicato ripete la richiesta. Chiedi all’operatore di verificare lo stato.", "OPERATOR")
+	}
+	if alts, ok := next["alternatives"].([]Object); ok {
+		remaining := slices.DeleteFunc(alts, same)
+		if len(alts) > 0 && len(remaining) == 0 {
+			actor, _ := next["actor"].(string)
+			if actor == "AGENT" {
+				actor = "OPERATOR"
+			}
+			message := next["userMessage"].(string)
+			return ManualBlock(reason, message, actor)
+		}
+		next["alternatives"] = remaining
+	}
+	return next
+}
+
+func ManualBlock(reason, message, actor string) Object {
+	s := Block(reason, "", message)
+	s["actor"] = actor
+	s["alternatives"] = []Object{{"action": "WAIT_FOR_HUMAN", "reasonCode": reason, "userMessage": message}}
+	return s
+}
+
+// Neither a denial nor a catalogue entry supplies a user's grant interval,
+// grant ID or intended role changes. Read the complete role catalogue before
+// preparing a role proposal, preserving unrelated entries and assignments.
+func PermissionDenied(capability, reason string) Object {
+	message := "Manca il permesso per " + capability + ". Verifica la configurazione dei permessi nella THS."
+	s := Block(reason, "", message)
+	s["actor"] = "HUMAN_THS"
+	read := func(view, instruction string) Object {
+		return Object{"action": "CALL_TOOL", "tool": "authorization.permissions.read", "arguments": Object{"view": view},
+			"reasonCode": reason, "userMessage": instruction}
+	}
+	s["alternatives"] = []Object{
+		read("CAPABILITIES", "Verifica se il catalogo include il permesso "+capability+"."),
+		read("ROLES", "Leggi ruoli e assegnazioni per preparare la modifica con authorization.permissions.propose."),
+	}
+	return s
+}
+
+func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
+	if failed {
+		return e.failure(c, policy, input, owner)
+	}
+	obs := Observation(c.ToolName, input, owner)
 	if c.ToolName == "ouf.ingestion.status" {
 		obs = recoveryObservation(obs)
 	}
@@ -296,7 +404,16 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		if r.Action == "WAIT_FOR_HUMAN" {
 			if e.Issue != nil {
-				return e.Issue(r, args, obs)
+				next := e.Issue(r, args, obs)
+				// Both semantic review commands bind admission and owner
+				// deduplication to commandKey. Poll the original invocation;
+				// a replay receipt continues with its authorized read.
+				if next["action"] == "POLL" && next["reasonCode"] == "OWNER_REVIEW_LINK_UNAVAILABLE" &&
+					(c.ToolName == "semantic.review.prepare" || c.ToolName == "semantic.approval.request") &&
+					input["commandKey"] != nil && e.Valid(c.ToolName, input) {
+					next["tool"], next["arguments"] = c.ToolName, input
+				}
+				return next
 			}
 			return Block("WAIT_UNAVAILABLE", r.Tool, "Consulta lo stato della decisione.")
 		}
@@ -375,6 +492,16 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			target = c.ToolName
 		}
 		if r.Action == "BLOCKED" {
+			if code == "NO_APPLICABLE_GRANT" && target == "authorization.permissions.propose" {
+				capability := c.RequiredAuthorization
+				if required, ok := obs["requiredCapability"].(string); ok && (obs["authorizationPhase"] == "MCP_PRE_ADMISSION" || obs["authorizationPhase"] == "OWNER") {
+					capability = required
+				}
+				if c.ToolName == "authorization.permissions.read" {
+					return ManualBlock(code, "Manca il permesso per "+capability+". Chiedi a un responsabile autorizzato di preparare la modifica con authorization.permissions.propose.", "HUMAN_THS")
+				}
+				return PermissionDenied(capability, code)
+			}
 			return Block(code, target, r.Message)
 		}
 		projected := e.project(r, obs, args)

@@ -3,6 +3,7 @@ package nextstep
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -58,6 +59,34 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 			}
 		}
 	}
+
+	// Exercise every rule in isolation, including rules normally shadowed
+	// by earlier matches. Feed its own projected target arguments back as
+	// the producer input (e.g. an owner repeats a pagination cursor).
+	engine := Engine{Now: time.Now, Valid: func(name string, args Object) bool {
+		return schemas[name] != nil && schemas[name].Validate(asJSON(t, args)) == nil
+	}}
+	for _, c := range s.ToolEligible() {
+		p := s.NextPolicies[c.NextPolicy]
+		for _, rule := range p.Rules {
+			t.Run(c.ToolName+"/"+rule.Reason, func(t *testing.T) {
+				rule.When = nil
+				input := asJSON(t, engine.project(rule, fixture, fixture))
+				policy := manifest.Policy{Read: p.Read, Rules: []manifest.Rule{rule}}
+				result := engine.Evaluate(c, policy, input, fixture, false)
+				assertProgress(t, c.ToolName, input, asJSON(t, result))
+			})
+		}
+		for _, rule := range s.NextErrors {
+			t.Run(c.ToolName+"/error/"+rule.Reason, func(t *testing.T) {
+				rule.When = nil
+				engine.Errors = []manifest.Rule{rule}
+				input := asJSON(t, engine.project(rule, fixture, fixture))
+				result := engine.Evaluate(c, p, input, Object{"code": rule.Reason}, true)
+				assertProgress(t, c.ToolName, input, asJSON(t, result))
+			})
+		}
+	}
 }
 
 // Owner enums checked against 50b ManagedMcpObservation, 50c RecoveryAction,
@@ -88,6 +117,32 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 		for _, state := range known {
 			if !seen[state] {
 				t.Errorf("%s: missing %s", family.policy, state)
+			}
+		}
+	}
+}
+
+func TestNoApplicableGrantRoutesEveryToolToPermissionProposal(t *testing.T) {
+	s, err := manifest.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := Engine{Errors: s.NextErrors}
+	for _, c := range s.ToolEligible() {
+		for _, field := range []string{"reasonCode", "code", "Code"} {
+			next := engine.Evaluate(c, s.NextPolicies[c.NextPolicy], Object{"view": "ROLES"}, Object{field: "NO_APPLICABLE_GRANT"}, true)
+			if next["action"] != "BLOCKED" || next["actor"] != "HUMAN_THS" || next["reasonCode"] != "NO_APPLICABLE_GRANT" ||
+				!strings.Contains(next["userMessage"].(string), c.RequiredAuthorization) {
+				t.Fatalf("%s/%s: %v", c.ToolName, field, next)
+			}
+			found := false
+			for _, alt := range next["alternatives"].([]Object) {
+				if strings.Contains(alt["userMessage"].(string), "authorization.permissions.propose") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s/%s: missing next step for permission proposal", c.ToolName, field)
 			}
 		}
 	}

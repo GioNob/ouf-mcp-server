@@ -83,7 +83,7 @@ func TestWaitUnchangedCoalescesAndExpires(t *testing.T) {
 		owner := nextstep.Object{"reviewUrl": "https://fixture.invalid/review", "expiresAt": time.Now().Add(time.Minute).Format(time.RFC3339),
 			"lockVersion": 1, "observationVersion": version}
 		next := s.waits.signer.Issue(waitBinding(ctx), manifest.Rule{Tool: name, Reason: "SOURCE_REVIEW", Decision: "APPROVE_OR_REJECT"},
-			nextstep.Object{"sourceId": "teatri", "onboardingVersionId": id}, owner, nil, time.Now())
+			nextstep.Object{"sourceId": "teatri", "onboardingVersionId": id}, owner, nextstep.LinkResult{}, time.Now())
 		token := next["arguments"].(nextstep.Object)["waitRef"].(string)
 		var req mcp.CallToolRequest
 		if err := json.Unmarshal([]byte(`{"params":{"name":"ouf.wait","arguments":{}}}`), &req); err != nil || req.Params == nil {
@@ -97,7 +97,8 @@ func TestWaitUnchangedCoalescesAndExpires(t *testing.T) {
 		for range 2 {
 			body := ownerObject(<-results)
 			again := body["next"].(nextstep.Object)
-			if body["changed"] != false || again["arguments"].(nextstep.Object)["waitRef"] != token {
+			if body["changed"] != false || again["action"] != "POLL" || again["pollAfterSeconds"].(json.Number).String() != "5" ||
+				len(again["terminalStates"].([]any)) == 0 || again["deadline"] != owner["expiresAt"] || again["arguments"].(nextstep.Object)["waitRef"] != token {
 				t.Fatal("wait extended or replaced an unchanged reference")
 			}
 		}

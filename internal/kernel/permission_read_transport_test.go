@@ -43,6 +43,8 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if args["view"] == "CAPABILITIES" {
 			io.WriteString(w, `[{"capabilityId":"ingestion.run.read","operation":"READ","requiredScope":"ingestion.run.read","allowedActors":["HUMAN"]}]`)
+		} else if args["view"] == "ROLES" {
+			io.WriteString(w, `{"roles":[],"assignments":[]}`)
 		} else {
 			io.WriteString(w, `{"grants":[],"nextAfter":""}`)
 		}
@@ -87,6 +89,10 @@ func TestPermissionReadSelectorsRoundTripThroughRealMCPTransport(t *testing.T) {
 			if scope == capID {
 				if result.IsError || calls.Load() != before+1 {
 					t.Fatalf("read selector failed: %+v", result)
+				}
+				next := checkNext(t, nextContract(t), result)
+				if next["action"] != "DONE" || next["outcome"] != "SUCCEEDED" || next["reasonCode"] != "PERMISSIONS_READ" {
+					t.Fatal("successful permission read did not finish", next)
 				}
 				if args["view"] == "CAPABILITIES" {
 					raw, _ := json.Marshal(result)

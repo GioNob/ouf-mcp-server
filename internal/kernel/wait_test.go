@@ -47,6 +47,7 @@ func TestWaitReauthorizesAfterRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := checkNext(t, contract, result)
+	checkPermissionAlternatives(t, next, "ouf.managed-source.onboarding.read", "NO_APPLICABLE_GRANT")
 	if next["reasonCode"] != "NO_APPLICABLE_GRANT" || auth.checks.Load() <= before || owner.reads.Load() != 0 {
 		t.Fatal("revocation did not fence the owner read", next)
 	}

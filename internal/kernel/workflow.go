@@ -33,7 +33,7 @@ type workflowServer struct {
 	manifest *manifest.Snapshot
 	tools    map[string]registeredTool
 	waits    *waitService
-	thsLinks map[string]func(context.Context, nextstep.Object) nextstep.Object
+	thsLinks map[string]linkLookup
 	key      []byte
 }
 
@@ -131,6 +131,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 	if !strings.HasSuffix(tool.Description, manifest.FollowNext) {
 		tool.Description += " " + manifest.FollowNext
 	}
+	c.ToolName = name
 	t := registeredTool{c, input, manifest.InputForms(raw), budget.HardMaxResultBytes, run}
 	s.tools[name] = t
 	s.Server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -155,7 +156,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			_ = decoder.Decode(&args)
 		}
 		if name == "ouf.wait" && result.StructuredContent != nil {
-			out := boundedResult(result, t.limit, s.manifest.NextPolicies[c.NextPolicy].Read)
+			out := s.boundedResult(result, t)
 			if out != result {
 				body := out.StructuredContent.(map[string]any)
 				body["changed"], body["observation"] = false, nil
@@ -200,7 +201,7 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
 		}
-		var link nextstep.Object
+		var link nextstep.LinkResult
 		switch r.Tool {
 		case "ouf.ingestion.status":
 			if fetch := s.thsLinks[recoveryLinkID]; fetch != nil {
@@ -241,7 +242,9 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured[k] = v
 	}
 	if result.IsError && obs["reasonCode"] == "NO_APPLICABLE_GRANT" {
-		structured["requiredCapability"] = c.RequiredAuthorization
+		if structured["requiredCapability"] == nil {
+			structured["requiredCapability"] = c.RequiredAuthorization
+		}
 		if isAcquisitionRead(c.CapabilityID) {
 			identity, _ := ctx.Value(identityKey{}).(requestIdentity)
 			raw, _ := json.Marshal(args)
@@ -265,7 +268,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
-	out := boundedResult(result, t.limit, p.Read)
+	out := s.boundedResult(result, t)
 	if out != result && !result.IsError && c.ToolName == "source.file.preview" {
 		// A wave-2 column page can occupy 768 KiB on its own. Keep the
 		// complete structured page when duplicating it as text exceeds the
@@ -274,7 +277,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		if args["distinctValuesCursor"] != nil || next["reasonCode"] == "DISTINCT_VALUES_PAGE" || hasPagedValues(obs) {
 			page := *result
 			page.Content = []mcp.Content{&mcp.TextContent{Text: "La pagina completa dei valori e il passo successivo sono in structuredContent."}}
-			return boundedResult(&page, t.limit, p.Read)
+			return s.boundedResult(&page, t)
 		}
 	}
 	return out
@@ -293,12 +296,18 @@ func hasPagedValues(obs nextstep.Object) bool {
 
 // Measure the final wire result (including escaping and legacy text) before
 // release. A command whose owner effect already happened must be reconciled.
-func boundedResult(result *mcp.CallToolResult, limit int, read string) *mcp.CallToolResult {
-	if body, err := json.Marshal(result); err == nil && len(body) <= limit {
+func (s *workflowServer) boundedResult(result *mcp.CallToolResult, t registeredTool) *mcp.CallToolResult {
+	if body, err := json.Marshal(result); err == nil && len(body) <= t.limit {
 		return result
 	}
 	small := errorResult("TOOL_RESULT_LIMIT", false)
-	small.StructuredContent = map[string]any{"next": nextstep.Block("TOOL_RESULT_LIMIT", read, "Consulta la risorsa con una lettura circoscritta.")}
+	const message = "Consulta la risorsa con una lettura circoscritta."
+	read := s.manifest.NextPolicies[t.capability.NextPolicy].Read
+	next := nextstep.Block("TOOL_RESULT_LIMIT", read, message)
+	if read == t.capability.ToolName {
+		next = nextstep.ManualBlock("TOOL_RESULT_LIMIT", message, "OPERATOR")
+	}
+	small.StructuredContent = map[string]any{"next": next}
 	return small
 }
 

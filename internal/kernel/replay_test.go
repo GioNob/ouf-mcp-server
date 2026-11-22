@@ -36,6 +36,8 @@ func TestReplayNamesOriginalAttemptAndAuthorizedRead(t *testing.T) {
 		{"source.onboarding.create", "COMMAND", "source.onboarding.read", "onboardingVersionId"},
 		{"semantic.discovery.request", "COMMAND", "semantic.discovery.status", "requestId"},
 		{"source.file.upload", "COMMAND", "", "assetId"},
+		{"semantic.review.prepare", "COMMAND", "semantic.proposal.read", "commandKey"},
+		{"semantic.approval.request", "COMMAND", "semantic.proposal.read", "commandKey"},
 		{"semantic.discovery.candidates", "READ", "semantic.discovery.candidates", ""},
 	} {
 		for _, state := range []string{"ADMITTED", "RUNNING", "FAILED", "SUCCEEDED"} {
@@ -48,7 +50,7 @@ func TestReplayNamesOriginalAttemptAndAuthorizedRead(t *testing.T) {
 			if !ok {
 				t.Fatal(tc.tool)
 			}
-			args := []byte(`{"assetId":"asset","sourceId":"source","idempotencyKey":"owner-command-key"}`)
+			args := []byte(`{"assetId":"asset","sourceId":"source","idempotencyKey":"owner-command-key","commandKey":"owner-command-key"}`)
 			var got *mcp.CallToolResult
 			if tc.tool == "source.file.upload" {
 				got = replayResult(cap, args, in)
@@ -78,6 +80,10 @@ func TestReplayNamesOriginalAttemptAndAuthorizedRead(t *testing.T) {
 				if tc.tool == "source.file.upload" {
 					if body.AssetID != ref.String() {
 						t.Fatal("upload asset lost", raw)
+					}
+				} else if tc.selector == "commandKey" {
+					if body.ReadArguments[tc.selector] != "owner-command-key" {
+						t.Fatal("lost original command key", raw)
 					}
 				} else if body.ReadArguments[tc.selector] != ref.String() {
 					t.Fatal("wrong exact read", raw)

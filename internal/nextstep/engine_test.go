@@ -41,6 +41,43 @@ func asJSON(t *testing.T, value any) Object {
 	return obj
 }
 
+// Check the serialized contract independently of the producer, including
+// hints that omit arguments and might otherwise repeat the current request.
+func assertProgress(t *testing.T, tool string, input, next Object) {
+	t.Helper()
+	check := func(target Object) {
+		t.Helper()
+		if target["tool"] != tool {
+			return
+		}
+		if args, supplied := target["arguments"]; supplied && !reflect.DeepEqual(args, input) {
+			return
+		}
+		delay, _ := target["pollAfterSeconds"].(float64)
+		states, _ := target["terminalStates"].([]any)
+		if target["action"] != "POLL" || delay <= 0 || len(states) == 0 {
+			t.Fatalf("%s %v repeated by %v", tool, input, target)
+		}
+	}
+	check(next)
+	if alts, ok := next["alternatives"].([]any); ok {
+		for _, alt := range alts {
+			check(alt.(Object))
+		}
+	}
+}
+
+func TestSameToolNumericArguments(t *testing.T) {
+	input := Object{"offset": json.Number("1e0")}
+	next := call("CALL_TOOL", "COLUMN_PAGE", "source.file.preview", Object{"offset": 1})
+	if ensureProgress("source.file.preview", input, next)["action"] != "BLOCKED" {
+		t.Fatal("equivalent page offset allowed a self call")
+	}
+	if wireArgumentsEqual(Object{"version": json.Number("9007199254740992")}, Object{"version": json.Number("9007199254740993")}) {
+		t.Fatal("distinct versions were merged")
+	}
+}
+
 func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	s, err := manifest.Load()
 	if err != nil {
@@ -63,7 +100,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	}
 	binding := []byte("tenant/principal")
 	now := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
-	var onboardingLink Object
+	var onboardingLink LinkResult
 	e := Engine{
 		Errors: s.NextErrors,
 		Valid: func(name string, args Object) bool {
@@ -81,6 +118,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 		Name, Tool, Action, Target, Reason, Decision string
 		Input, Owner, Arguments, Link, Alternative   Object
 		Actor, Outcome                               string
+		DeniedCapability, RetryAfter                 string
 		Failed, NewCommand                           bool
 		Delay                                        int
 	}
@@ -90,9 +128,17 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			onboardingLink = tc.Link
+			link, _ := tc.Link["reviewUrl"].(string)
+			end, _ := tc.Link["expiresAt"].(string)
+			onboardingLink = OwnerLink(link, end, now)
+			if tc.DeniedCapability != "" {
+				onboardingLink = LinkResult{Status: LinkDenied, Capability: tc.DeniedCapability, Reason: "NO_APPLICABLE_GRANT"}
+			} else if tc.RetryAfter != "" {
+				onboardingLink = LinkResult{Status: LinkTransient, RetryAfter: tc.RetryAfter}
+			}
 			c := caps[tc.Tool]
 			result := asJSON(t, e.Evaluate(c, s.NextPolicies[c.NextPolicy], tc.Input, tc.Owner, tc.Failed))
+			assertProgress(t, tc.Tool, tc.Input, result)
 			if err := contract.Validate(result); err != nil {
 				t.Fatal(err)
 			}
@@ -102,11 +148,22 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			if tc.Reason == "HUMAN_ABORT_REQUIRED" {
 				alts := result["alternatives"].([]any)
 				human := alts[0].(Object)
-				read := alts[1].(Object)
-				if result["actor"] != "HUMAN_THS" || human["action"] != "WAIT_FOR_HUMAN" ||
-					human["human"].(Object)["reviewUrl"] != tc.Link["reviewUrl"] ||
-					read["tool"] != "ouf.ingestion.status" || !e.Valid("ouf.ingestion.status", read["arguments"].(Object)) {
-					t.Fatal("missing abort-only human alternative or scoped status read", result)
+				if len(alts) != 1 || result["actor"] != "HUMAN_THS" || human["action"] != "WAIT_FOR_HUMAN" ||
+					human["human"].(Object)["reviewUrl"] != tc.Link["reviewUrl"] {
+					t.Fatal("missing abort-only human alternative", result)
+				}
+			}
+			if tc.DeniedCapability != "" {
+				alts := result["alternatives"].([]any)
+				if len(alts) != 2 || !strings.Contains(result["userMessage"].(string), tc.DeniedCapability) {
+					t.Fatal("incomplete permission diagnosis", result)
+				}
+				for i, view := range []string{"CAPABILITIES", "ROLES"} {
+					alt := alts[i].(Object)
+					args := alt["arguments"].(Object)
+					if alt["action"] != "CALL_TOOL" || alt["tool"] != "authorization.permissions.read" || args["view"] != view || !e.Valid("authorization.permissions.read", args) {
+						t.Fatal("invalid permission alternative", alt)
+					}
 				}
 			}
 			if tc.Actor != "" && result["actor"] != tc.Actor || tc.Outcome != "" && result["outcome"] != tc.Outcome {
@@ -180,6 +237,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 				}
 				c := caps[tool]
 				result := asJSON(t, e.Evaluate(c, s.NextPolicies[c.NextPolicy], args, tc.Owner, false))
+				assertProgress(t, tool, args, result)
 				if err := contract.Validate(result); err != nil || result["action"] != tc.Action {
 					t.Fatalf("%s: %v %v", tool, result, err)
 				}
@@ -207,6 +265,12 @@ func TestUnknownOwnerState(t *testing.T) {
 	for _, c := range s.ToolEligible() {
 		p := s.NextPolicies[c.NextPolicy]
 		next := (Engine{}).Evaluate(c, p, nil, Object{"state": "FUTURE_STATE"}, false)
+		if c.ToolName == "authorization.permissions.read" {
+			if next["action"] != "DONE" || next["outcome"] != "SUCCEEDED" {
+				t.Fatalf("%s: %v", c.ToolName, next)
+			}
+			continue
+		}
 		if next["action"] != "BLOCKED" || next["reasonCode"] != "OWNER_STATE_UNKNOWN" || len(next["alternatives"].([]Object)) == 0 {
 			t.Fatalf("%s: %v", c.ToolName, next)
 		}

@@ -178,9 +178,11 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
 	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
-	// Earlier semantic references could carry a URL supplied by Semantic.
-	if ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" {
-		return stop("OWNER_REVIEW_LINK_REQUIRED")
+	// Refresh from a complete authorized observation before exposing a new
+	// link. Earlier semantic references could carry a URL supplied by Semantic.
+	refreshLink := func() bool {
+		return ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" ||
+			!linkEnd.IsZero() && !time.Now().Before(linkEnd)
 	}
 	scope := string(binding)
 	if !w.admit(scope) {
@@ -206,6 +208,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	defer cancel()
 
 	args := ref.ReadArgs()
+	if refreshLink() {
+		args = ref.Args
+	}
 	if !s.valid(ref.Read, args) {
 		return stop("WAIT_READ_SCHEMA_CHANGED")
 	}
@@ -238,10 +243,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			if last == nil || ctx.Err() == context.Canceled {
 				return stop("WAIT_OBSERVATION_UNAVAILABLE")
 			}
-			if !linkEnd.IsZero() && !time.Now().Before(linkEnd) {
-				return stop("OWNER_REVIEW_LINK_REQUIRED")
+			if refreshLink() {
+				return waitResult(false, last, ref.Refresh())
 			}
-			return waitResult(false, last, ref.Next(token))
+			return waitResult(false, last, ref.Poll(token))
 		}
 		ch := w.group.DoChan(key, func() (any, error) {
 			if err := w.reads.Wait(ctx); err != nil {
@@ -276,7 +281,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			}
 			last = obs
 			changed := nextstep.Version(obs) != ref.Version
-			if changed || (!linkEnd.IsZero() && !time.Now().Before(linkEnd)) {
+			if refreshLink() && (obs["unchanged"] == true || obs["changed"] == false) && len(args) != len(ref.Args) {
+				return waitResult(changed, obs, ref.Refresh())
+			}
+			if changed || refreshLink() {
 				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
 				return waitResult(changed, obs, next)
 			}
