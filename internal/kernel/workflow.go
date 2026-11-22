@@ -3,13 +3,19 @@ package kernel
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
+	"maps"
 	"strings"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -28,6 +34,8 @@ type workflowServer struct {
 	manifest *manifest.Snapshot
 	tools    map[string]registeredTool
 	waits    *waitService
+	runLink  func(context.Context, nextstep.Object) nextstep.Object
+	key      []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -35,7 +43,27 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if err != nil {
 		return nil, err
 	}
-	return &workflowServer{sdk, snapshot, map[string]registeredTool{}, waits}, nil
+	if len(installationKey) < 32 {
+		installationKey = make([]byte, 32)
+		rand.Read(installationKey)
+	}
+	return &workflowServer{Server: sdk, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+}
+
+// A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
+// after a lost read response must not open a second owner command.
+func (s *workflowServer) commandKey(ctx context.Context, tool string, args, obs, input nextstep.Object) string {
+	mac := hmac.New(sha256.New, s.key)
+	seed := []any{"ouf.next-step.v1/command-key", waitBinding(ctx), tool, args}
+	if tool != "source.analysis.plan" && tool != "source.analysis.step" {
+		seed = append(seed, nextstep.Version(obs), obs["challengeId"], input["commandKey"])
+	}
+	_ = json.NewEncoder(mac).Encode(seed)
+	var id uuid.UUID
+	copy(id[:], mac.Sum(nil))
+	id[6] = id[6]&0x0f | 0x40
+	id[8] = id[8]&0x3f | 0x80
+	return id.String()
 }
 
 func (s *workflowServer) valid(name string, args nextstep.Object) bool {
@@ -152,7 +180,11 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 		return nil
 	}
 	if trimmed := bytes.TrimSpace(raw); trimmed[0] == '[' {
-		return nextstep.Object{"legacyList": true}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) == nil {
+			return nextstep.Object{"legacyList": true, "items": items}
+		}
+		return nil
 	}
 	var obj map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -169,7 +201,32 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
 		}
+		if r.Tool == "ouf.ingestion.status" {
+			var link nextstep.Object
+			if s.runLink != nil {
+				version := obs["expectedVersion"]
+				if version == nil {
+					version = obs["control_version"]
+				}
+				link = s.runLink(ctx, nextstep.Object{"sourceId": args["sourceId"], "runId": nextstep.Resource(obs), "expectedVersion": version})
+			}
+			// Only Onboarding can supply this URL. Keep both owner receipts intact.
+			obs = maps.Clone(obs)
+			delete(obs, "currentChallenge")
+			delete(obs, "approvalPath")
+			obs["reviewUrl"] = link["reviewUrl"]
+			obs["linkExpiresAt"] = link["expiresAt"]
+		}
 		return s.waits.signer.Issue(waitBinding(ctx), r, args, obs, time.Now())
+	}, CommandKey: func(tool string, args, obs, input nextstep.Object) string {
+		return s.commandKey(ctx, tool, args, obs, input)
+	}, AnalysisID: func(asset, profile string) string {
+		identity, _ := ctx.Value(identityKey{}).(requestIdentity)
+		scope := analysis.IdentityScope(identity.Identity)
+		if !scope.Valid() {
+			return ""
+		}
+		return analysis.AnalysisID(scope, analysis.Profile{AssetID: asset, ProfileID: profile})
 	}}
 }
 
@@ -178,7 +235,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	p := s.manifest.NextPolicies[c.NextPolicy]
 	obs := ownerObject(result)
 	structured := map[string]any{}
-	if (result.StructuredContent != nil || c.ToolName == "source.file.upload") && obs != nil {
+	if obs != nil {
 		for k, v := range obs {
 			structured[k] = v
 		}
@@ -208,7 +265,30 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
-	return boundedResult(result, t.limit, p.Read)
+	out := boundedResult(result, t.limit, p.Read)
+	if out != result && !result.IsError && c.ToolName == "source.file.preview" {
+		// A wave-2 column page can occupy 768 KiB on its own. Keep the
+		// complete structured page when duplicating it as text exceeds the
+		// wire limit. Older, unpaged owner receipts keep their text form.
+		next := structured["next"].(nextstep.Object)
+		if args["distinctValuesCursor"] != nil || next["reasonCode"] == "DISTINCT_VALUES_PAGE" || hasPagedValues(obs) {
+			page := *result
+			page.Content = []mcp.Content{&mcp.TextContent{Text: "La pagina completa dei valori e il passo successivo sono in structuredContent."}}
+			return boundedResult(&page, t.limit, p.Read)
+		}
+	}
+	return out
+}
+
+func hasPagedValues(obs nextstep.Object) bool {
+	columns, _ := obs["columns"].([]any)
+	for _, item := range columns {
+		column, _ := item.(nextstep.Object)
+		if _, ok := column["distinctValuesComplete"].(bool); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Measure the final wire result (including escaping and legacy text) before

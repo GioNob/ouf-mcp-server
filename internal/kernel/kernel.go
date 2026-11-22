@@ -119,6 +119,11 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	if err != nil {
 		return nil, err
 	}
+	if service != nil {
+		if err := server.bindRecoveryLink(service); err != nil {
+			return nil, err
+		}
+	}
 	for _, capability := range snapshot.ToolEligible() {
 		if capability.ToolName == "ouf.wait" {
 			server.registerWait(capability)
@@ -329,6 +334,16 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		}
 		checksum, _ := snapshot.Checksum()
 		addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+			if inputSchema.Properties["analysisId"] != nil {
+				delete(input, "analysisId")
+			}
+			if key, ok := input["commandKey"].(string); ok && c.ToolName == "source.file.profile" {
+				if identity, present := ctx.Value(identityKey{}).(requestIdentity); present {
+					identity.IdempotencyKey = key
+					ctx = context.WithValue(ctx, identityKey{}, identity)
+				}
+				delete(input, "commandKey")
+			}
 			args, _ := json.Marshal(input)
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {

@@ -24,12 +24,13 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	const id = "11111111-1111-4111-8111-111111111111"
 	fixture := Object{
 		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "TEATRO",
+		"lockVersion": 1, "rowVersion": 2, "revisionId": id, "currentValidationRunId": id,
 		"assetId": id, "profileId": id, "jobId": id, "resultRef": id, "proposalId": id, "handoffId": id,
 		"onboardingVersionId": id, "runId": id, "nextLineageId": id, "nextHandoffId": id, "requestId": id,
-		"nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
+		"offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
 		"commandKey": "fixture-review-1", "analysisId": strings.Repeat("a", 64),
-		"columns": []any{Object{"name": "tipologia"}}, "result": Object{"requestId": id},
-		"tasks": []any{Object{"taskId": strings.Repeat("b", 64)}},
+		"columns": []any{Object{"name": "tipologia", "distinctValuesComplete": false, "distinctValuesCursor": "opaque"}}, "result": Object{"requestId": id},
+		"tasks": []any{Object{"taskId": strings.Repeat("b", 64), "state": "READY"}},
 		"items": []any{Object{"assetId": id, "latestProfileId": id, "semanticId": "urn:example:teatro", "publicationSetId": id, "revisionId": id}},
 	}
 	for name, p := range s.NextPolicies {
@@ -40,7 +41,7 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 			switch r.Action {
 			case "CALL_TOOL", "POLL", "WAIT_FOR_HUMAN":
 				target := schemas[r.Tool]
-				args := asJSON(t, project(r, fixture, fixture))
+				args := asJSON(t, (Engine{}).project(r, fixture, fixture))
 				if target == nil {
 					t.Fatalf("%s/%s: missing target %s", name, r.Reason, r.Tool)
 				}
@@ -67,11 +68,11 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, family := range []struct{ policy, field, states string }{
-		{"onboarding", "state", "DRAFT IN_REVIEW APPROVED ACTIVE SUPERSEDED REJECTED REVOKED CHANGES_REQUESTED"},
+		{"onboarding", "workflowState|state", "DRAFT IN_REVIEW APPROVED ACTIVE SUPERSEDED REJECTED REVOKED CHANGES_REQUESTED COMMAND_ABSENT ERROR"},
 		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED"},
 		{"semanticDecision", "state", "DRAFT VALIDATED VALIDATION_FAILED UNDER_REVIEW APPROVED REJECTED EXPIRED ACTIVE DEPRECATED RETIRED UNKNOWN"},
-		{"ingestion", "run_state", "AWAITING_START READY PREFLIGHT RUNNING DRAINING RETRY_WAIT SUCCEEDED COMPLETED COMPLETED_WITH_WARNINGS FAILED PAUSED ABORTED DISABLED BLOCKED"},
-		{"ingestion", "recoveryAction", "NONE AUTOMATIC_RETRY AUTOMATIC_RECONCILIATION HUMAN_RESUME_OR_ABORT HUMAN_ABORT_REQUIRED HUMAN_QUARANTINE_REVIEW HUMAN_SCHEDULE_REVIEW WAITING_FOR_PUBLICATION_VERIFICATION NEW_PUBLICATION_REQUIRED TERMINAL"},
+		{"ingestion", "runState|run_state", "AWAITING_START READY PREFLIGHT RUNNING DRAINING RETRY_WAIT SUCCEEDED COMPLETED COMPLETED_WITH_WARNINGS FAILED PAUSED ABORTED DISABLED BLOCKED"},
+		{"ingestion", "recoveryAction", "NONE AUTOMATIC_RETRY AUTOMATIC_RECONCILIATION HUMAN_RESUME_OR_ABORT HUMAN_ABORT_REQUIRED HUMAN_QUARANTINE_REVIEW HUMAN_SCHEDULE_REVIEW WAITING_FOR_PUBLICATION_VERIFICATION NEW_PUBLICATION_REQUIRED TERMINAL HUMAN_RESUME_REQUIRED ABORT_REQUIRED"},
 		{"udp", "outcome", "NO_OBJECTS MATERIALIZATION_PENDING PARTIAL COMPLETE INCOMPLETE"},
 		{"urban.acquisition.read", "outcome", "NO_OBJECTS MATERIALIZATION_PENDING PARTIAL COMPLETE INCOMPLETE"},
 	} {

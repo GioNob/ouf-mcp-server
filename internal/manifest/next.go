@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step."
+const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key."
 
 const PickerStatusInputSchema = `{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`
 

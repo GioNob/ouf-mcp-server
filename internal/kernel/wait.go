@@ -177,6 +177,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	if err != nil || !time.Now().Before(exp) {
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
+	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
 	scope := string(binding)
 	if !w.admit(scope) {
 		return stop("WAIT_CAPACITY_REACHED")
@@ -233,6 +234,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			if last == nil || ctx.Err() == context.Canceled {
 				return stop("WAIT_OBSERVATION_UNAVAILABLE")
 			}
+			if !linkEnd.IsZero() && !time.Now().Before(linkEnd) {
+				return stop("OWNER_REVIEW_LINK_REQUIRED")
+			}
 			return waitResult(false, last, ref.Next(token))
 		}
 		ch := w.group.DoChan(key, func() (any, error) {
@@ -267,9 +271,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 				return stop("WAIT_RESOURCE_CHANGED")
 			}
 			last = obs
-			if nextstep.Version(obs) != ref.Version {
+			changed := nextstep.Version(obs) != ref.Version
+			if changed || (!linkEnd.IsZero() && !time.Now().Before(linkEnd)) {
 				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], ref.Args, body, false)
-				return waitResult(true, obs, next)
+				return waitResult(changed, obs, next)
 			}
 		}
 	}

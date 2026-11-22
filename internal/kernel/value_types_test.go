@@ -73,6 +73,8 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				invalid = []string{
+					strings.Replace(args, `"it":"Codici"`, `"it":"Co\ud800dici"`, 1),
+					strings.Replace(args, `"it":"Codici"`, `"it":"Codici","\u0069t":"Codici"`, 1),
 					strings.Replace(args, `"code":"a"`, `"code":"b"`, 1),
 					strings.Replace(args, `"code":"a"`, `"code":"private-source-value "`, 1),
 					strings.Replace(args, `"code":"a"`, `"code":"A\u009fB"`, 1),
@@ -138,11 +140,11 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 			if result.IsError || calls.Load() != 1 || admission.calls.Load() != 1 {
 				t.Fatal("valid arguments must reach their owner exactly once")
 			}
+			body := map[string]any{"state": "DRAFT"}
 			if tc.name == "source.onboarding.revision.prepare" {
-				if !reflect.DeepEqual(result.StructuredContent, map[string]any{"newColumns": want["newColumns"], "compositions": want["compositions"]}) {
-					t.Fatal("revision receipt lost mapping details")
-				}
+				body = map[string]any{"newColumns": want["newColumns"], "compositions": want["compositions"]}
 			}
+			checkOwnerAndNext(t, result, body)
 			reject.Store(true)
 			result = call(args)
 			if !result.IsError || len(result.Content) != 1 || calls.Load() != 2 {
@@ -212,9 +214,11 @@ func TestValueMapProposalByteLimits(t *testing.T) {
 	entries[0]["code"] = "0000&<>\u2028\u2029" + `\u2028` + strings.Repeat("a", 113)
 	const extraGoEscapeBytes = 3*5 + 2*3
 	labels["it"] = ""
-	labels["it"] = strings.Repeat("A", definitionLimit-len(encode(definition))+extraGoEscapeBytes)
+	const controls = "\b\f\n\r\t\x00\x0b\x1f"
+	const canonicalControls = `\b\f\n\r\t\u0000\u000b\u001f`
+	labels["it"] = controls + strings.Repeat("A", definitionLimit-len(encode(definition))+extraGoEscapeBytes-len(canonicalControls))
 	valid := encode(args)
-	wantDefinitionBytes := len(encode(definition)) - extraGoEscapeBytes
+	wantDefinitionBytes := len(encode(definition)) - extraGoEscapeBytes - (len(encode(controls)) - 2 - len(canonicalControls))
 	if wantDefinitionBytes != definitionLimit || len(valid) >= argumentLimit {
 		t.Fatal("invalid canonical boundary fixture")
 	}
@@ -254,6 +258,9 @@ func TestValueMapProposalByteLimits(t *testing.T) {
 		}
 		if got := len(sent.Definition); got != definitionLimit {
 			t.Errorf("Gateway definition has %d bytes, want %d", got, definitionLimit)
+		}
+		if !strings.Contains(string(sent.Definition), canonicalControls) {
+			t.Error("Gateway definition changed RFC 8785 control escapes")
 		}
 		if !strings.Contains(string(sent.Definition), `&<>`+"\u2028\u2029"+`\\u2028`) {
 			t.Error("Gateway definition changed the UTF-8 or literal escape bytes")

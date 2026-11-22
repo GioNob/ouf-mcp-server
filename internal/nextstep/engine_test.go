@@ -2,14 +2,17 @@ package nextstep
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
 )
 
 func resolve(t *testing.T, raw []byte) *jsonschema.Resolved {
@@ -69,11 +72,14 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			return signer.Issue(binding, r, args, obs, now)
 		},
 		Now: func() time.Time { return now },
+		AnalysisID: func(asset, profile string) string {
+			return analysis.AnalysisID(analysis.Scope{Service: "service", Principal: "reader", Tenant: "tenant"}, analysis.Profile{AssetID: asset, ProfileID: profile})
+		},
 	}
 	var cases []struct {
 		Name, Tool, Action, Target, Reason, Decision string
 		Input, Owner, Arguments                      Object
-		Failed                                       bool
+		Failed, NewCommand                           bool
 		Delay                                        int
 	}
 	raw, err = os.ReadFile("testdata/transitions.json")
@@ -90,13 +96,41 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			if result["action"] != tc.Action || (tc.Reason != "" && tc.Reason != result["reasonCode"]) {
 				t.Fatalf("unexpected transition %v", result)
 			}
+			if tc.Reason == "HUMAN_ABORT_REQUIRED" {
+				alts := result["alternatives"].([]any)
+				human := alts[0].(Object)
+				read := alts[1].(Object)
+				if result["actor"] != "HUMAN_THS" || human["action"] != "WAIT_FOR_HUMAN" ||
+					human["human"].(Object)["reviewUrl"] != lookup(tc.Owner, "items.0.reviewUrl") ||
+					read["tool"] != "ouf.ingestion.status" || !e.Valid("ouf.ingestion.status", read["arguments"].(Object)) {
+					t.Fatal("missing abort-only human alternative or scoped status read", result)
+				}
+			}
 			if tc.Target != "" {
 				args, ok := result["arguments"].(Object)
 				if !ok || result["tool"] != tc.Target || !e.Valid(tc.Target, args) {
 					t.Fatalf("invalid target %s %v", tc.Target, args)
 				}
-				if tc.Arguments != nil && !reflect.DeepEqual(tc.Arguments, args) {
-					t.Fatalf("arguments = %v, want %v", args, tc.Arguments)
+				if tc.NewCommand {
+					key, _ := args["commandKey"].(string)
+					id, err := uuid.Parse(key)
+					if err != nil || id.Version() != 4 || id.Variant() != uuid.RFC4122 || key == tc.Input["commandKey"] {
+						t.Fatal("missing fresh UUIDv4", args)
+					}
+					target := caps[tc.Target]
+					retry := e.Evaluate(target, s.NextPolicies[target.NextPolicy], args, Object{"Status": 503}, true)
+					if retry["action"] != "POLL" || !reflect.DeepEqual(retry["arguments"], args) {
+						t.Fatal("retry changed command arguments", retry)
+					}
+				}
+				if tc.Arguments != nil {
+					want := maps.Clone(tc.Arguments)
+					if tc.NewCommand {
+						want["commandKey"] = args["commandKey"]
+					}
+					if !reflect.DeepEqual(want, args) {
+						t.Fatalf("arguments = %v, want %v", args, want)
+					}
 				}
 				if tc.Decision != "" {
 					token := args["waitRef"].(string)
@@ -120,7 +154,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	t.Run("next only from upload to candidate selection", func(t *testing.T) {
 		tool := "source.file.upload"
 		args := Object{}
-		for _, name := range []string{"uploaded asset", "profile queued", "job has immutable profile", "preview plans metadata discovery", "durable plan", "planned discovery submitted", "owner requests poll", "discovery candidates", "candidate selection"} {
+		for _, name := range []string{"uploaded asset", "profile queued", "job has immutable profile", "preview incomplete second column", "column cursor exhausted", "durable plan", "planned discovery submitted", "owner requests poll", "discovery candidates", "candidate selection"} {
 			found := false
 			for _, tc := range cases {
 				if tc.Name != name {

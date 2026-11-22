@@ -26,6 +26,7 @@ type WaitRef struct {
 	URL      string `json:"u"`
 	Decision string `json:"k"`
 	Reason   string `json:"c"`
+	LinkEnd  string `json:"e,omitempty"`
 }
 
 type Signer struct{ cipher cipher.AEAD }
@@ -56,7 +57,7 @@ func Version(obs Object) string {
 	}
 	// Activation phases and human eligibility can change at the same lock version.
 	fields := []any{version}
-	for _, field := range []string{"state", "status", "challengeId", "challengeStatus", "lifecycleStatus", "run_state", "recoveryAction", "error_code", "allowedActions", "activationProgress.readiness_phase", "activationProgress.readiness_generation", "activationProgress.humanRecheckAllowed"} {
+	for _, field := range []string{"state", "status", "challengeId", "challengeStatus", "lifecycleStatus", "runState", "run_state", "decisionDeadline", "recoveryAction", "error_code", "allowedActions", "activationProgress.readiness_phase", "activationProgress.readiness_generation", "activationProgress.humanRecheckAllowed"} {
 		fields = append(fields, lookup(obs, field))
 	}
 	raw, _ := json.Marshal(fields)
@@ -97,20 +98,40 @@ func (r WaitRef) Block(reason, message string) Object {
 func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now time.Time) Object {
 	link, _ := get(obs, nil, "currentChallenge.reviewUrl|reviewUrl|approvalPath").(string)
 	u, err := url.Parse(link)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return Block("OWNER_REVIEW_LINK_REQUIRED", r.Tool, "Recupera il collegamento di revisione dalla capability di lettura.")
+	linkEnd, _ := obs["linkExpiresAt"].(string)
+	run := r.Tool == "ouf.ingestion.status"
+	linkExpiry, parseErr := time.Parse(time.RFC3339Nano, linkEnd)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (run && (parseErr != nil || !now.Before(linkExpiry))) {
+		s := Block("OWNER_REVIEW_LINK_REQUIRED", r.Tool, "Recupera il collegamento di revisione dalla capability di lettura.")
+		s["alternatives"].([]Object)[0]["arguments"] = args
+		if r.Actor != "" {
+			s["actor"] = r.Actor
+		}
+		return s
 	}
 	manual := func(code, message string) Object {
 		blocked := Block(code, r.Tool, message)
 		blocked["actor"] = "HUMAN_THS"
 		alts := blocked["alternatives"].([]Object)
+		alts[0]["arguments"] = args
+		human := Object{"reviewUrl": link, "decisionKind": r.Decision}
+		if linkEnd != "" {
+			human["expiresAt"] = linkEnd
+		}
+		instruction := "Apri la pagina indicata per esaminare la decisione."
+		if r.Action == "BLOCKED" {
+			instruction = r.Message
+		}
 		blocked["alternatives"] = append([]Object{{
-			"action": "WAIT_FOR_HUMAN", "reasonCode": r.Reason, "userMessage": "Apri la pagina indicata per esaminare la decisione.",
-			"human": Object{"reviewUrl": link, "decisionKind": r.Decision},
+			"action": "WAIT_FOR_HUMAN", "reasonCode": r.Reason, "userMessage": instruction,
+			"human": human,
 		}}, alts...)
 		return blocked
 	}
 	exp := get(obs, nil, "currentChallenge.expiresAt|expiresAt|expires_at|deadline")
+	if run {
+		exp = obs["decisionDeadline"]
+	}
 	if r.Decision == "RECHECK" && lookup(obs, "activationProgress.budgetExpiresAt") != nil {
 		exp = lookup(obs, "activationProgress.budgetExpiresAt")
 	}
@@ -119,13 +140,19 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, now ti
 	if err == nil && !now.Before(deadline) {
 		return Block("WAIT_DEADLINE_EXPIRED", r.Tool, "La finestra è scaduta. Verifica lo stato corrente.")
 	}
+	if r.Action == "BLOCKED" {
+		return manual(r.Reason, r.Message)
+	}
 	if err != nil || version == "" || (r.Tool == "ouf.ingestion.status" && Resource(obs) == "") {
 		return manual("WAIT_OBSERVATION_REQUIRED", "Verifica versione, risorsa e scadenza della decisione.")
 	}
 	if s == nil || len(binding) == 0 {
 		return manual("WAIT_CONFIGURATION_REQUIRED", "Verifica la configurazione dell’attesa e l’identità del chiamante.")
 	}
-	ref := WaitRef{r.Tool, args, version, Resource(obs), deadline.UTC().Format(time.RFC3339Nano), link, r.Decision, r.Reason}
+	ref := WaitRef{r.Tool, args, version, Resource(obs), deadline.UTC().Format(time.RFC3339Nano), link, r.Decision, r.Reason, linkEnd}
+	if run {
+		ref.Deadline = obs["decisionDeadline"].(string)
+	}
 	body, err := json.Marshal(ref)
 	if err != nil {
 		return Block("WAIT_REFERENCE_INVALID", r.Tool, "Recupera una nuova osservazione.")
@@ -162,6 +189,9 @@ func (r WaitRef) Next(token string) Object {
 	s := call("WAIT_FOR_HUMAN", r.Reason, "ouf.wait", Object{"waitRef": token})
 	s["deadline"] = r.Deadline
 	s["human"] = Object{"reviewUrl": r.URL, "decisionKind": r.Decision, "expiresAt": r.Deadline}
+	if r.LinkEnd != "" {
+		s["human"].(Object)["expiresAt"] = r.LinkEnd
+	}
 	s["userMessage"] = "Apri il collegamento di revisione. La chat attenderà la decisione."
 	return s
 }

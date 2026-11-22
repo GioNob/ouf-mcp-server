@@ -23,6 +23,12 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
 			return actorOrDelegationDenial(i, ok), nil, nil
 		}
+		if key, supplied := input["commandKey"]; supplied {
+			delete(input, "commandKey")
+			if key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
+				return errorResult("IDEMPOTENCY_KEY_REUSE", false), nil, nil
+			}
+		}
 		store, ok := service.Admission.(analysis.Store)
 		if !ok {
 			return errorResult("ANALYSIS_STORE_NOT_BOUND", false), nil, nil

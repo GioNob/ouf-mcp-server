@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -53,7 +55,7 @@ func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapsh
 		valueMap := c.ToolName == "semantic.propose" && args["artifactType"] == "VALUE_MAP"
 		if valueMap {
 			definition := args["definition"].(map[string]any)
-			if !validValueMapDefinition(definition) {
+			if !validValueMapDefinition(definition) || !validJCSInput(raw) {
 				return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 			}
 			if len(raw) > maxValueMapArgumentsBytes {
@@ -97,6 +99,70 @@ func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapsh
 	})
 }
 
+// encoding/json accepts duplicate keys and replaces invalid Unicode with U+FFFD.
+// Neither transformation may silently change a VALUE_MAP before measuring it.
+// The caller has already checked JSON syntax and the closed VALUE_MAP schema.
+func validJCSInput(raw []byte) bool {
+	if !utf8.Valid(raw) {
+		return false
+	}
+	for rest := raw; len(rest) > 0; {
+		i := bytes.IndexByte(rest, '\\')
+		if i < 0 {
+			break
+		}
+		rest = rest[i+1:]
+		if rest[0] != 'u' {
+			rest = rest[1:]
+			continue
+		}
+		unit, _ := strconv.ParseUint(string(rest[1:5]), 16, 16)
+		rest = rest[5:]
+		if unit < 0xd800 || unit > 0xdfff {
+			continue
+		}
+		if unit > 0xdbff || len(rest) < 6 || rest[0] != '\\' || rest[1] != 'u' {
+			return false
+		}
+		low, err := strconv.ParseUint(string(rest[2:6]), 16, 16)
+		if err != nil || low < 0xdc00 || low > 0xdfff {
+			return false
+		}
+		rest = rest[6:]
+	}
+	return uniqueJSONMembers(json.NewDecoder(bytes.NewReader(raw)))
+}
+
+func uniqueJSONMembers(d *json.Decoder) bool {
+	token, err := d.Token()
+	if err != nil {
+		return false
+	}
+	delim, compound := token.(json.Delim)
+	if !compound {
+		return true
+	}
+	var keys map[string]bool
+	if delim == '{' {
+		keys = make(map[string]bool)
+	}
+	for d.More() {
+		if keys != nil {
+			key, err := d.Token()
+			name, ok := key.(string)
+			if err != nil || !ok || keys[name] {
+				return false
+			}
+			keys[name] = true
+		}
+		if !uniqueJSONMembers(d) {
+			return false
+		}
+	}
+	_, err = d.Token()
+	return err == nil
+}
+
 // The input schema validates the shape first. Definition size and uniqueness
 // by code are checked here because JSON Schema cannot express them.
 func validValueMapDefinition(definition map[string]any) bool {
@@ -113,9 +179,10 @@ func validValueMapDefinition(definition map[string]any) bool {
 	return err == nil && len(encoded) <= maxValueMapDefinitionBytes
 }
 
-// Go's compact JSON escapes HTML and script separators. Emit those characters
-// directly for UTF-8 byte limits, preserving literal backslashes and other
-// required escapes. Sorting entries would leave the byte count unchanged.
+// VALUE_MAP definitions have only closed ASCII property names, arrays and
+// strings. JSON's key order therefore coincides with JCS UTF-16 order here.
+// RFC 8785 requires five short control escapes, lowercase hex for the other
+// controls and literal UTF-8 for HTML characters and line separators.
 func marshalValueMapJSON(value any) ([]byte, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -135,6 +202,16 @@ func marshalValueMapJSON(value any) ([]byte, error) {
 			continue
 		}
 		switch string(encoded[:6]) {
+		case `\u0008`:
+			compact = append(compact, `\b`...)
+		case `\u0009`:
+			compact = append(compact, `\t`...)
+		case `\u000a`:
+			compact = append(compact, `\n`...)
+		case `\u000c`:
+			compact = append(compact, `\f`...)
+		case `\u000d`:
+			compact = append(compact, `\r`...)
 		case `\u0026`:
 			compact = append(compact, '&')
 		case `\u003c`:

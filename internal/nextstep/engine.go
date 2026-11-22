@@ -12,6 +12,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/google/uuid"
 )
 
 type Object = map[string]any
@@ -19,10 +20,12 @@ type Object = map[string]any
 const Contract = "ouf.next-step.v1"
 
 type Engine struct {
-	Errors []manifest.Rule
-	Valid  func(string, Object) bool
-	Issue  func(manifest.Rule, Object, Object) Object
-	Now    func() time.Time
+	Errors     []manifest.Rule
+	Valid      func(string, Object) bool
+	Issue      func(manifest.Rule, Object, Object) Object
+	Now        func() time.Time
+	AnalysisID func(string, string) string
+	CommandKey func(string, Object, Object, Object) string
 }
 
 func step(action, reason, message string) Object {
@@ -58,7 +61,59 @@ func lookup(obj Object, path string) any {
 	return value
 }
 
+func incompleteColumn(obs Object) Object {
+	find := func(container Object) Object {
+		columns, _ := container["columns"].([]any)
+		for _, item := range columns {
+			column, _ := item.(Object)
+			if column["distinctValuesComplete"] == false {
+				return column
+			}
+		}
+		return nil
+	}
+	if column := find(obs); column != nil {
+		return column
+	}
+	layers, _ := lookup(obs, "metadata.layers").([]any)
+	for _, item := range layers {
+		layer, _ := item.(Object)
+		if column := find(layer); column != nil {
+			return column
+		}
+	}
+	return nil
+}
+
 func get(obs, input Object, paths string) any {
+	switch paths {
+	case "#incompleteColumn":
+		return incompleteColumn(obs) != nil
+	case "#distinctCursor":
+		// An absent continuation must fail the cursor branch even though
+		// a fresh COLUMNS request would otherwise validate without it.
+		cursor, _ := incompleteColumn(obs)["distinctValuesCursor"].(string)
+		return cursor
+	case "#afterCursorColumn":
+		// A distinct-values page always reports hasMore=false, even when
+		// subsequent columns remain in the immutable flat profile.
+		offset, e1 := strconv.Atoi(fmt.Sprint(obs["offset"]))
+		count, e2 := strconv.Atoi(fmt.Sprint(obs["columnCount"]))
+		if e1 == nil && e2 == nil && offset >= 0 && count > 0 && count <= 1024 && offset < count-1 {
+			return offset + 1
+		}
+		return nil
+	case "#readyTask":
+		tasks, _ := obs["tasks"].([]any)
+		for _, item := range tasks {
+			task, _ := item.(Object)
+			switch task["state"] {
+			case "PLANNED", "READY", "PENDING":
+				return task["taskId"]
+			}
+		}
+		return nil
+	}
 	for _, path := range strings.Split(paths, "|") {
 		if strings.HasPrefix(path, "=") {
 			return path[1:]
@@ -106,24 +161,36 @@ func discoveryWork(obs Object) any {
 		return nil
 	}
 	work := make([]Object, 0, len(columns))
+	offset := 0
+	if raw := obs["offset"]; raw != nil {
+		var err error
+		offset, err = strconv.Atoi(fmt.Sprint(raw))
+		if err != nil || offset < 0 || offset > 1024-len(columns) {
+			return nil
+		}
+	}
 	for i, col := range columns {
 		column, _ := col.(Object)
 		name, ok := column["name"].(string)
 		if !ok || strings.TrimSpace(name) == "" || len(name) > 2000 {
 			return nil
 		}
-		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{i}, "arguments": Object{
+		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{offset + i}, "arguments": Object{
 			"intent": name, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY",
 		}})
 	}
 	return work
 }
 
-func project(r manifest.Rule, obs, input Object) Object {
+func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 	args := Object{}
 	for k, selector := range r.Args {
 		value := get(obs, input, selector)
 		switch selector {
+		case "#true":
+			value = true
+		case "#uuid":
+			continue
 		case "#zero":
 			value = 0
 		case "#discovery":
@@ -131,6 +198,13 @@ func project(r manifest.Rule, obs, input Object) Object {
 		}
 		if value != nil {
 			args[k] = value
+		}
+	}
+	if r.Args["commandKey"] == "#uuid" {
+		if e.CommandKey != nil {
+			args["commandKey"] = e.CommandKey(r.Tool, args, obs, input)
+		} else {
+			args["commandKey"] = uuid.NewString()
 		}
 	}
 	return args
@@ -156,10 +230,16 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		return Block("READ_ORIGINAL_RECEIPT", policy.Read, "Consulta la ricevuta del comando originale.")
 	}
 	for path, allowed := range policy.Vocabulary {
-		if v := lookup(obs, path); v != nil {
-			state, ok := v.(string)
-			if !ok || !slices.Contains(allowed, state) {
-				return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+		if path == "activationProgress.readiness_phase" && obs["allowedActions"] != nil {
+			continue
+		}
+		for _, field := range strings.Split(path, "|") {
+			if v := lookup(obs, field); v != nil {
+				state, ok := v.(string)
+				if !ok || !slices.Contains(allowed, state) {
+					return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+				}
+				break
 			}
 		}
 	}
@@ -169,6 +249,12 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		switch r.Action {
 		case "BLOCKED":
+			if r.Decision != "" && e.Issue != nil {
+				args := e.project(r, obs, input)
+				if e.Valid(r.Tool, args) {
+					return e.Issue(r, args, obs)
+				}
+			}
 			s := Block(r.Reason, r.Tool, r.Message)
 			if r.Actor != "" {
 				s["actor"] = r.Actor
@@ -186,7 +272,18 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			s["outcome"] = r.Outcome
 			return s
 		}
-		args := project(r, obs, input)
+		args := e.project(r, obs, input)
+		if r.Tool == "source.analysis.read" && args["analysisId"] == nil && e.AnalysisID != nil {
+			for _, pair := range []any{obs["nextAction"], obs["assetRef"], obs, input["assetRef"], input} {
+				source, _ := pair.(Object)
+				asset, _ := source["assetId"].(string)
+				profile, _ := source["profileId"].(string)
+				if uuid.Validate(asset) == nil && uuid.Validate(profile) == nil {
+					args["analysisId"] = e.AnalysisID(asset, profile)
+					break
+				}
+			}
+		}
 		if !e.Valid(r.Tool, args) {
 			return Block(r.Reason, r.Tool, "Recupera gli argomenti mancanti per il passo indicato.")
 		}
@@ -259,7 +356,7 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		if r.Action == "BLOCKED" {
 			return Block(code, target, r.Message)
 		}
-		projected := project(r, obs, args)
+		projected := e.project(r, obs, args)
 		if r.Action == "POLL" {
 			projected = args
 		}
@@ -287,6 +384,9 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 
 func retryDelay(obs Object, now time.Time) (int, bool) {
 	raw := get(obs, nil, "RetryAfter|retryAfterSeconds|pollAfterSeconds")
+	if obs["recoveryAction"] != nil && obs["retryAt"] != nil && obs["RetryAfter"] == nil {
+		raw = nil
+	}
 	if raw == nil {
 		if at := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt"); at != nil {
 			t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(at))

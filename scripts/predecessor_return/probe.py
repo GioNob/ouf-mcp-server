@@ -99,15 +99,19 @@ def replay(phase, original):
 FENCED = {"code": "ANALYSIS_NOT_FOUND_OR_SCOPE_CHANGED", "retryable": False}
 
 
-def read_analysis(analysis_id):
+def read_analysis(analysis_id, read_by):
     result = rpc("tools/call", name="source.analysis.read", arguments={"analysisId": analysis_id})
     payload = json.loads(result["content"][0]["text"])
+    if read_by == "candidate":
+        structured = dict(result["structuredContent"])
+        assert structured.pop("next")["contract"] == "ouf.next-step.v1"
+        assert structured == payload, "candidate changed the owner view or refusal"
     return bool(result.get("isError")), payload
 
 
 def verify_analysis(written_by, read_by, own):
     saved = json.loads(Path(f"/tmp/{written_by}.json").read_text())
-    refused, view = read_analysis(saved["view"]["analysisId"])
+    refused, view = read_analysis(saved["view"]["analysisId"], read_by)
     if not refused:
         assert view == saved["view"], f"changed {written_by} analysis on {read_by}"
         outcome = "identical"
