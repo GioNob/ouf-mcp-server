@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import unittest
 from copy import deepcopy
+from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
@@ -13,6 +15,28 @@ UUID = "00000000-0000-4000-8000-000000000002"
 CREATE = "source.onboarding.create"
 REVISION = "source.onboarding.revision.prepare"
 SEMANTIC = "semantic.propose"
+FIXTURES = MANIFEST.parents[1] / "kernel/testdata/value-types"
+GATEWAY_SCHEMAS = {
+    SEMANTIC: "mcp-gateway-semantic-proposals-v1.json",
+    CREATE: "mcp-gateway-managed-file-dispatch-v1.json",
+    REVISION: "mcp-gateway-source-revision-prepare-dispatch-v1.json",
+}
+
+
+def dispatch_cases():
+    for tool in GATEWAY_SCHEMAS:
+        request = json.loads((FIXTURES / (tool + ".json")).read_bytes())
+        invalid = deepcopy(request)
+        args = invalid["Arguments"]
+        if tool == SEMANTIC:
+            price = next(c for c in args["definition"]["components"] if c["name"] == "price")
+            price["constraints"]["minInclusive"] = 1
+        elif tool == CREATE:
+            split = next(c for c in args["compositions"] if c["kind"] == "CONSTRUCTOR")
+            split["params"]["itemReaderParams"] = {"valueMapRef": PIN}
+        else:
+            args["compositions"][0]["components"][0]["items"] = [{}]
+        yield tool, request, invalid
 
 
 class ValueTypeSchemas(unittest.TestCase):
@@ -105,6 +129,25 @@ class ValueTypeSchemas(unittest.TestCase):
         self.accepts(SEMANTIC, {**turtle, "artifactType": "ONTOLOGY"})
         self.accepts(SEMANTIC, turtle, False)
 
+    def test_component_constraint_forms(self):
+        for kind, key, good, bad in [
+            ("integer", "minInclusive", "-9007199254740993", [1, "01", "-0", "1e2"]),
+            ("decimal", "maxInclusive", "-0.005", [1.5, "+1", "1.00", "01.5", "1E3"]),
+            ("date", "minInclusive", "2024-02-29",
+             [20260101, "01/01/2026", "2026-13-01", "1900-02-29", "2024-04-31"]),
+            ("datetime", "maxInclusive", "2026-01-01T00:00:00.000000001Z",
+             [0, "2026-01-01", "2026-01-01T01:00:00+01:00"]),
+            ("string", "maxLength", 12, ["12", 1.5, True]),
+            ("concept", "vocabularyRef", "https://example.org/vocabolario/città",
+             [42, "/vocabolario", "urn:due parole", "urn:bad%xx"]),
+        ]:
+            for value in [good, *bad]:
+                with self.subTest(kind=kind, value=value):
+                    component = {"name": "entry", "type": kind, "required": True,
+                                 "cardinality": "ONE", "constraints": {key: value}}
+                    self.accepts(SEMANTIC, {**self.proposal, "definition": {"components": [component]}},
+                                 value == good)
+
     def field(self, mapping, valid=True):
         field = {"fieldName": "value", "extractionDecision": "INCLUDE", "dataAccessLabel": "OPEN"}
         self.accepts(CREATE, {**self.create, "fields": [{**field, **mapping}]}, valid)
@@ -118,6 +161,8 @@ class ValueTypeSchemas(unittest.TestCase):
         self.accepts(REVISION, {**self.revision, "newColumns": [decision]}, valid)
 
     def test_readers_and_parameters(self):
+        self.accepts(CREATE, {**self.create, "fields": [{"fieldName": "value", "extractionDecision": "INCLUDE",
+                                                        "dataAccessLabel": "OPEN", "targetPropertyIri": "urn:p"}]})
         for reader in self.contract["readers"]:
             with self.subTest(reader=reader["id"]):
                 params = {k: {"crs": "EPSG:4326", "valueMapRef": PIN}[k] for k in reader.get("params", {})}
@@ -155,6 +200,61 @@ class ValueTypeSchemas(unittest.TestCase):
         self.compositions([split], False)
         self.compositions([{**split, "params": {"separator": ",", "itemReader": "INTEGER_V1"}}])
         self.compositions([{**split, "params": {"separator": ",", "itemReader": "UNKNOWN"}}], False)
+
+    def test_list_split_item_reader_params(self):
+        split = {"kind": "CONSTRUCTOR", "constructorId": "LIST_SPLIT_V1",
+                 "targetPropertyIri": "urn:list", "dataAccessLabel": "OPEN",
+                 "inputs": [{"role": "value", "fieldName": "via", "reader": "IDENTITY"}]}
+        for reader, options, valid in [
+            ("WKT_V1", {"crs": "EPSG:3003"}, True),
+            ("VALUE_MAP_V1", {"valueMapRef": PIN}, True),
+            ("IDENTITY", {}, True),
+            ("WKT_V1", None, False), ("VALUE_MAP_V1", {}, False),
+            ("WKT_V1", {"crs": "4326"}, False),
+            ("VALUE_MAP_V1", {"crs": "EPSG:4326"}, False),
+            ("WKT_V1", {"crs": "EPSG:4326", "unexpected": 1}, False),
+            ("IDENTITY", {"crs": "EPSG:4326"}, False), ("IDENTITY", [], False),
+        ]:
+            with self.subTest(reader=reader, options=options):
+                params = {"itemReader": reader, "separator": ";"}
+                if options is not None:
+                    params["itemReaderParams"] = options
+                self.compositions([{**split, "params": params}], valid)
+
+    def test_many_item_builders(self):
+        point, address = self.contract["mappingShape"]["example"]["compositions"]
+        ctor = {k: point[k] for k in ("constructorId", "inputs", "params")}
+        field = {"fieldName": "via", "reader": "IDENTITY"}
+        nested = {k: address[k] for k in ("typeRef", "components")}
+        for items, valid in [
+            ([field, field], True), ([{"constructor": ctor}], True), ([{"structured": nested}], True),
+            ({"fieldName": "via"}, False), ([], True), ([{}], False), ([{"items": [field]}], False),
+            ([{**field, "constructor": ctor}], False), ([{"fieldName": "via"}], False),
+            ([{"constructor": {"constructorId": "LIST_SPLIT_V1", "params": {
+                "separator": ";", "itemReader": "IDENTITY"}, "inputs": [{"role": "value", **field}]}}], False),
+        ]:
+            with self.subTest(items=items):
+                self.compositions([{**address, "components": [{"component": "parts", "items": items}]}], valid)
+        for depth in range(2, 6):
+            nested = {"typeRef": PIN, "components": [{"component": "parts", "items": [{"structured": nested}]}]}
+            self.compositions([{**address, **nested}], depth <= 4)
+
+    def test_dispatch_fixtures(self):
+        for tool, request, invalid in dispatch_cases():
+            with self.subTest(tool=tool):
+                self.accepts(tool, request["Arguments"])
+                self.accepts(tool, invalid["Arguments"], False)
+
+    @unittest.skipUnless(os.environ.get("GATEWAY_PAIRWISE_ROOT"), "requires a task-46 Gateway checkout")
+    def test_gateway_value_types_pairwise(self):
+        schemas = Path(os.environ["GATEWAY_PAIRWISE_ROOT"]) / "schemas"
+        for tool, request, invalid in dispatch_cases():
+            with self.subTest(tool=tool):
+                schema = json.loads((schemas / GATEWAY_SCHEMAS[tool]).read_bytes())
+                Draft202012Validator.check_schema(schema)
+                validator = Draft202012Validator(schema)
+                self.assertTrue(validator.is_valid(request), "D-084 request rejected")
+                self.assertFalse(validator.is_valid(invalid), "invalid D-084 request accepted")
 
     def test_nested_structured_shapes(self):
         point, address = deepcopy(self.contract["mappingShape"]["example"]["compositions"])

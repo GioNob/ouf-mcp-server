@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "contracts/ouf-value-types-v1.json"
 MANIFEST = ROOT / "internal/manifest/capabilities.json"
-DIGEST = "c046646c3030f1bcf4460741bbd09351f9bb501cb054d8ed45ce2e7d98dd4247"
+DIGEST = "4b90e85ecd1573404612ef0a0ee627feffaa9c189fe4363e82079bd07824c333"
 NAME = {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"}
 # publicationSetId is the UUID used by semantic.get and by Onboarding.
 PIN = {"type": "string", "pattern": (
@@ -45,8 +45,20 @@ def ids(entries):
 
 def datatype_defs(contract):
     text = {"type": "string", "minLength": 1, "maxLength": 1024}
-    # These four base types have lexical canonical values. Semantic's
-    # DATATYPE fixtures use those strings for inclusive bounds as well.
+    # Format is an annotation in JSON Schema 2020-12 by default. Check the
+    # proleptic Gregorian calendar even on validators that ignore annotations.
+    leap_year = r"([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)"
+    ordinary = (r"[0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])"
+                r"|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)")
+    date = "(" + ordinary + "|" + leap_year + "-02-29)"
+    bound_forms = {
+        "integer": {"pattern": r"^(0|-?[1-9][0-9]*)$"},
+        "decimal": {"pattern": r"^(0|-?[1-9][0-9]*|-?(0|[1-9][0-9]*)\.[0-9]*[1-9])$"},
+        "date": {"format": "date", "pattern": "^" + date + "$"},
+        "datetime": {"format": "date-time", "pattern": (
+            "^" + date + r"T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,9})?Z$"
+        )},
+    }
     bounds = {"minInclusive": text, "maxInclusive": text}
     component = obj({
         "name": NAME,
@@ -55,7 +67,9 @@ def datatype_defs(contract):
         "required": {"type": "boolean"},
         "labels": {"$ref": "#/properties/labels"},
         "constraints": obj({**bounds, "maxLength": {"type": "integer", "minimum": 0},
-                            "vocabularyRef": text}),
+                            "vocabularyRef": {**text, "format": "iri", "pattern": (
+                                r"^[A-Za-z][A-Za-z0-9+.-]*:([^\s\x00-\x1F\x7F<>\"{}`|\\^%]|%[A-Fa-f0-9]{2})+$"
+                            )}}),
     }, ["name", "type", "cardinality", "required"])
     # Enforce the closed sets of constraint keys. Comparing bounds, resolving
     # the type graph and checking distinct component names belong to Semantic.
@@ -64,11 +78,15 @@ def datatype_defs(contract):
             "propertyNames": {"enum": keys}
         }}})
         for types, keys in [
-            (["integer", "decimal", "date", "datetime"], list(bounds)),
             (["string"], ["maxLength"]),
             (["concept"], ["vocabularyRef"]),
         ]
     ]
+    for kind, form in bound_forms.items():
+        component["allOf"].append(conditional("type", [kind], {"properties": {"constraints": {
+            "propertyNames": {"enum": list(bounds)},
+            "properties": {key: form for key in bounds},
+        }}}))
     component["allOf"].append({
         "if": {"properties": {"type": {"anyOf": [PIN, {"enum": ["boolean", "geometry"]}]}}},
         "then": {"properties": {"constraints": {"maxProperties": 0}}},
@@ -110,7 +128,8 @@ def mapping_defs(contract, fields):
     input_schema = obj({"role": {"type": "string", "minLength": 1, "maxLength": 64}, **source},
                        ["role", "fieldName", "reader"])
     leaf = obj({"component": NAME, **source}, ["component", "fieldName", "reader"])
-    for schema in (input_schema, leaf):
+    field_item = obj(source, ["fieldName", "reader"])
+    for schema in (input_schema, leaf, field_item):
         schema.update(reader_rules(readers, "reader"))
 
     # Each constructor's arity, role vocabulary and required parameters come
@@ -130,9 +149,25 @@ def mapping_defs(contract, fields):
                  "minContains": i.get("min", 1), "maxContains": i.get("max", 1)}
                 for i in inputs
             ]
+        param_types = {**params, "itemReaderParams": {"type": "object"}}
+        ctor_params = obj({k: param_types[k] for k in keys},
+                          [k for k, rule in keys.items() if rule.startswith("required")])
+        if "itemReaderParams" in keys:
+            plain = [reader["id"] for reader in readers if not reader.get("params")]
+            ctor_params["allOf"] = [conditional("itemReader", plain, {
+                "properties": {"itemReaderParams": obj({})},
+            })]
+            for reader in readers:
+                reader_keys = reader.get("params", {})
+                if reader_keys:
+                    ctor_params["allOf"].append(conditional("itemReader", [reader["id"]], {
+                        "required": ["itemReaderParams"],
+                        "properties": {"itemReaderParams": obj({k: params[k] for k in reader_keys},
+                                                               reader_keys)},
+                    }))
         variants.append(conditional("constructorId", [ctor["id"]], {"properties": {
             "inputs": input_rules,
-            "params": obj({k: params[k] for k in keys}, keys),
+            "params": ctor_params,
         }}))
     ctor_fields = {"constructorId": ids(constructors),
                    "inputs": {"type": "array", "items": ref("constructorInput")},
@@ -150,6 +185,13 @@ def mapping_defs(contract, fields):
         "constructorInput": input_schema, "constructor": constructor,
         "constructorRules": {"allOf": variants},
         "fieldComponent": leaf,
+        "fieldItem": field_item,
+        "constructorItem": obj({"constructor": {
+            "$ref": "#/$defs/constructor",
+            "properties": {"constructorId": {"enum": [
+                ctor["id"] for ctor in constructors if ctor["output"] != "list"
+            ]}},
+        }}, ["constructor"]),
         "constructorComponent": obj({"component": NAME, "constructor": ref("constructor")},
                                     ["component", "constructor"]),
     }
@@ -157,9 +199,14 @@ def mapping_defs(contract, fields):
     # a level-four structured object has no further structured alternative.
     for depth in range(4, 0, -1):
         alternatives = [ref("fieldComponent"), ref("constructorComponent")]
+        item_builders = [ref("fieldItem"), ref("constructorItem")]
         if depth < 4:
+            item_builders.append(obj({"structured": ref(f"structured{depth+1}")}, ["structured"]))
             alternatives.append(obj({"component": NAME, "structured": ref(f"structured{depth+1}")},
                                     ["component", "structured"]))
+        alternatives.append(obj({"component": NAME, "items": {
+            "type": "array", "items": {"oneOf": item_builders},
+        }}, ["component", "items"]))
         structured = {"typeRef": {**PIN, "maxLength": 512},
                       "components": {**array({"oneOf": alternatives}, 1, 32), "uniqueItems": True}}
         if depth == 1:
@@ -169,8 +216,11 @@ def mapping_defs(contract, fields):
             defs[f"structured{depth}"] = obj(structured, structured)
     defs["compositions"] = array({"oneOf": [ctor_mapping, structured_mapping]}, 0, fields["maxItems"])
     defs["compositions"]["description"] = (
-        "Use INCLUDE fields from this file. Onboarding resolves pinned DATATYPEs and checks "
-        "component names, output types and the limit of 256 leaves per structured value."
+        "Use INCLUDE fields from this file. Build MANY with ordered items or LIST_SPLIT_V1. "
+        "Onboarding checks component cardinality, output types and the limit of 256 leaves. "
+        "New preparations require ACTIVE DATATYPE pins at every level. Published bundles may "
+        "resolve ACTIVE, DEPRECATED or RETIRED pins. Concept membership requires a pinned CONCEPT "
+        "of the vocabulary or a pinned value map targeting it."
     )
     return defs
 

@@ -2837,21 +2837,18 @@
                     "minInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
                     "maxInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
                     "maxLength": {"type": "integer", "minimum": 0},
-                    "vocabularyRef": {"type": "string", "minLength": 1, "maxLength": 1024}
+                    "vocabularyRef": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "format": "iri",
+                      "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+$"
+                    }
                   }
                 }
               },
               "required": ["name", "type", "cardinality", "required"],
               "allOf": [
-                {
-                  "if": {
-                    "required": ["type"],
-                    "properties": {"type": {"enum": ["integer", "decimal", "date", "datetime"]}}
-                  },
-                  "then": {
-                    "properties": {"constraints": {"propertyNames": {"enum": ["minInclusive", "maxInclusive"]}}}
-                  }
-                },
                 {
                   "if": {"required": ["type"], "properties": {"type": {"enum": ["string"]}}},
                   "then": {"properties": {"constraints": {"propertyNames": {"enum": ["maxLength"]}}}}
@@ -2859,6 +2856,74 @@
                 {
                   "if": {"required": ["type"], "properties": {"type": {"enum": ["concept"]}}},
                   "then": {"properties": {"constraints": {"propertyNames": {"enum": ["vocabularyRef"]}}}}
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["integer"]}}},
+                  "then": {
+                    "properties": {
+                      "constraints": {
+                        "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                        "properties": {
+                          "minInclusive": {"pattern": "^(0|-?[1-9][0-9]*)$"},
+                          "maxInclusive": {"pattern": "^(0|-?[1-9][0-9]*)$"}
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["decimal"]}}},
+                  "then": {
+                    "properties": {
+                      "constraints": {
+                        "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                        "properties": {
+                          "minInclusive": {"pattern": "^(0|-?[1-9][0-9]*|-?(0|[1-9][0-9]*)\\.[0-9]*[1-9])$"},
+                          "maxInclusive": {"pattern": "^(0|-?[1-9][0-9]*|-?(0|[1-9][0-9]*)\\.[0-9]*[1-9])$"}
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["date"]}}},
+                  "then": {
+                    "properties": {
+                      "constraints": {
+                        "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                        "properties": {
+                          "minInclusive": {
+                            "format": "date",
+                            "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)$"
+                          },
+                          "maxInclusive": {
+                            "format": "date",
+                            "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {"required": ["type"], "properties": {"type": {"enum": ["datetime"]}}},
+                  "then": {
+                    "properties": {
+                      "constraints": {
+                        "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                        "properties": {
+                          "minInclusive": {
+                            "format": "date-time",
+                            "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+                          },
+                          "maxInclusive": {
+                            "format": "date-time",
+                            "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
                 {
                   "if": {
@@ -3723,9 +3788,79 @@
                       "additionalProperties": false,
                       "properties": {
                         "separator": {"type": "string", "minLength": 1, "maxLength": 8},
-                        "itemReader": {"$ref": "#/$defs/reader"}
+                        "itemReader": {"$ref": "#/$defs/reader"},
+                        "itemReaderParams": {"type": "object"}
                       },
-                      "required": ["separator", "itemReader"]
+                      "required": ["separator", "itemReader"],
+                      "allOf": [
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {
+                              "itemReader": {
+                                "enum": [
+                                  "IDENTITY",
+                                  "TEXT_NFC_TRIM_V1",
+                                  "INTEGER_V1",
+                                  "INTEGER_GROUP_DOT_V1",
+                                  "DECIMAL_DOT_V1",
+                                  "DECIMAL_COMMA_V1",
+                                  "DECIMAL_GROUP_DOT_COMMA_V1",
+                                  "DECIMAL_GROUP_COMMA_DOT_V1",
+                                  "BOOLEAN_IT_V1",
+                                  "DATE_ISO_V1",
+                                  "DATE_DMY_V1",
+                                  "DATE_DMY_DASH_V1",
+                                  "DATETIME_ISO_OFFSET_V1",
+                                  "DATETIME_LOCAL_ROME_V1",
+                                  "GEOJSON_V1"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "itemReaderParams": {"type": "object", "additionalProperties": false, "properties": {}}
+                            }
+                          }
+                        },
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {"itemReader": {"enum": ["WKT_V1"]}}
+                          },
+                          "then": {
+                            "required": ["itemReaderParams"],
+                            "properties": {
+                              "itemReaderParams": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$", "maxLength": 512}
+                                },
+                                "required": ["crs"]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {"itemReader": {"enum": ["VALUE_MAP_V1"]}}
+                          },
+                          "then": {
+                            "required": ["itemReaderParams"],
+                            "properties": {
+                              "itemReaderParams": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"valueMapRef": {"type": "string", "maxLength": 512, "minLength": 1}},
+                                "required": ["valueMapRef"]
+                              }
+                            }
+                          }
+                        }
+                      ]
                     }
                   }
                 }
@@ -3759,6 +3894,43 @@
               }
             ]
           },
+          "fieldItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructorItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "constructor": {
+                "$ref": "#/$defs/constructor",
+                "properties": {"constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1"]}}
+              }
+            },
+            "required": ["constructor"]
+          },
           "constructorComponent": {
             "type": "object",
             "additionalProperties": false,
@@ -3780,7 +3952,24 @@
               "components": {
                 "type": "array",
                 "items": {
-                  "oneOf": [{"$ref": "#/$defs/fieldComponent"}, {"$ref": "#/$defs/constructorComponent"}]
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [{"$ref": "#/$defs/fieldItem"}, {"$ref": "#/$defs/constructorItem"}]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
+                    }
+                  ]
                 },
                 "minItems": 1,
                 "maxItems": 32,
@@ -3812,6 +4001,29 @@
                         "structured": {"$ref": "#/$defs/structured4"}
                       },
                       "required": ["component", "structured"]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {"$ref": "#/$defs/fieldItem"},
+                              {"$ref": "#/$defs/constructorItem"},
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"structured": {"$ref": "#/$defs/structured4"}},
+                                "required": ["structured"]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
                     }
                   ]
                 },
@@ -3845,6 +4057,29 @@
                         "structured": {"$ref": "#/$defs/structured3"}
                       },
                       "required": ["component", "structured"]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {"$ref": "#/$defs/fieldItem"},
+                              {"$ref": "#/$defs/constructorItem"},
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"structured": {"$ref": "#/$defs/structured3"}},
+                                "required": ["structured"]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
                     }
                   ]
                 },
@@ -3899,6 +4134,29 @@
                               "structured": {"$ref": "#/$defs/structured2"}
                             },
                             "required": ["component", "structured"]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "oneOf": [
+                                    {"$ref": "#/$defs/fieldItem"},
+                                    {"$ref": "#/$defs/constructorItem"},
+                                    {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {"structured": {"$ref": "#/$defs/structured2"}},
+                                      "required": ["structured"]
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "required": ["component", "items"]
                           }
                         ]
                       },
@@ -3913,7 +4171,7 @@
             },
             "minItems": 0,
             "maxItems": 1024,
-            "description": "Use INCLUDE fields from this file. Onboarding resolves pinned DATATYPEs and checks component names, output types and the limit of 256 leaves per structured value."
+            "description": "Use INCLUDE fields from this file. Build MANY with ordered items or LIST_SPLIT_V1. Onboarding checks component cardinality, output types and the limit of 256 leaves. New preparations require ACTIVE DATATYPE pins at every level. Published bundles may resolve ACTIVE, DEPRECATED or RETIRED pins. Concept membership requires a pinned CONCEPT of the vocabulary or a pinned value map targeting it."
           }
         },
         "properties": {
@@ -4918,9 +5176,79 @@
                       "additionalProperties": false,
                       "properties": {
                         "separator": {"type": "string", "minLength": 1, "maxLength": 8},
-                        "itemReader": {"$ref": "#/$defs/reader"}
+                        "itemReader": {"$ref": "#/$defs/reader"},
+                        "itemReaderParams": {"type": "object"}
                       },
-                      "required": ["separator", "itemReader"]
+                      "required": ["separator", "itemReader"],
+                      "allOf": [
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {
+                              "itemReader": {
+                                "enum": [
+                                  "IDENTITY",
+                                  "TEXT_NFC_TRIM_V1",
+                                  "INTEGER_V1",
+                                  "INTEGER_GROUP_DOT_V1",
+                                  "DECIMAL_DOT_V1",
+                                  "DECIMAL_COMMA_V1",
+                                  "DECIMAL_GROUP_DOT_COMMA_V1",
+                                  "DECIMAL_GROUP_COMMA_DOT_V1",
+                                  "BOOLEAN_IT_V1",
+                                  "DATE_ISO_V1",
+                                  "DATE_DMY_V1",
+                                  "DATE_DMY_DASH_V1",
+                                  "DATETIME_ISO_OFFSET_V1",
+                                  "DATETIME_LOCAL_ROME_V1",
+                                  "GEOJSON_V1"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "itemReaderParams": {"type": "object", "additionalProperties": false, "properties": {}}
+                            }
+                          }
+                        },
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {"itemReader": {"enum": ["WKT_V1"]}}
+                          },
+                          "then": {
+                            "required": ["itemReaderParams"],
+                            "properties": {
+                              "itemReaderParams": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$", "maxLength": 512}
+                                },
+                                "required": ["crs"]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "if": {
+                            "required": ["itemReader"],
+                            "properties": {"itemReader": {"enum": ["VALUE_MAP_V1"]}}
+                          },
+                          "then": {
+                            "required": ["itemReaderParams"],
+                            "properties": {
+                              "itemReaderParams": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"valueMapRef": {"type": "string", "maxLength": 512, "minLength": 1}},
+                                "required": ["valueMapRef"]
+                              }
+                            }
+                          }
+                        }
+                      ]
                     }
                   }
                 }
@@ -4954,6 +5282,43 @@
               }
             ]
           },
+          "fieldItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+              "reader": {"$ref": "#/$defs/reader"},
+              "transformParams": {"$ref": "#/$defs/transformParams"}
+            },
+            "required": ["fieldName", "reader"],
+            "allOf": [
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["WKT_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["crs"]}}
+                }
+              },
+              {
+                "if": {"required": ["reader"], "properties": {"reader": {"enum": ["VALUE_MAP_V1"]}}},
+                "then": {
+                  "required": ["transformParams"],
+                  "properties": {"transformParams": {"required": ["valueMapRef"]}}
+                }
+              }
+            ]
+          },
+          "constructorItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "constructor": {
+                "$ref": "#/$defs/constructor",
+                "properties": {"constructorId": {"enum": ["POINT_FROM_LAT_LON_V1", "TEXT_JOIN_V1"]}}
+              }
+            },
+            "required": ["constructor"]
+          },
           "constructorComponent": {
             "type": "object",
             "additionalProperties": false,
@@ -4975,7 +5340,24 @@
               "components": {
                 "type": "array",
                 "items": {
-                  "oneOf": [{"$ref": "#/$defs/fieldComponent"}, {"$ref": "#/$defs/constructorComponent"}]
+                  "oneOf": [
+                    {"$ref": "#/$defs/fieldComponent"},
+                    {"$ref": "#/$defs/constructorComponent"},
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [{"$ref": "#/$defs/fieldItem"}, {"$ref": "#/$defs/constructorItem"}]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
+                    }
+                  ]
                 },
                 "minItems": 1,
                 "maxItems": 32,
@@ -5007,6 +5389,29 @@
                         "structured": {"$ref": "#/$defs/structured4"}
                       },
                       "required": ["component", "structured"]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {"$ref": "#/$defs/fieldItem"},
+                              {"$ref": "#/$defs/constructorItem"},
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"structured": {"$ref": "#/$defs/structured4"}},
+                                "required": ["structured"]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
                     }
                   ]
                 },
@@ -5040,6 +5445,29 @@
                         "structured": {"$ref": "#/$defs/structured3"}
                       },
                       "required": ["component", "structured"]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {"$ref": "#/$defs/fieldItem"},
+                              {"$ref": "#/$defs/constructorItem"},
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"structured": {"$ref": "#/$defs/structured3"}},
+                                "required": ["structured"]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": ["component", "items"]
                     }
                   ]
                 },
@@ -5094,6 +5522,29 @@
                               "structured": {"$ref": "#/$defs/structured2"}
                             },
                             "required": ["component", "structured"]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "oneOf": [
+                                    {"$ref": "#/$defs/fieldItem"},
+                                    {"$ref": "#/$defs/constructorItem"},
+                                    {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {"structured": {"$ref": "#/$defs/structured2"}},
+                                      "required": ["structured"]
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "required": ["component", "items"]
                           }
                         ]
                       },
@@ -5108,7 +5559,7 @@
             },
             "minItems": 0,
             "maxItems": 1024,
-            "description": "Use INCLUDE fields from this file. Onboarding resolves pinned DATATYPEs and checks component names, output types and the limit of 256 leaves per structured value."
+            "description": "Use INCLUDE fields from this file. Build MANY with ordered items or LIST_SPLIT_V1. Onboarding checks component cardinality, output types and the limit of 256 leaves. New preparations require ACTIVE DATATYPE pins at every level. Published bundles may resolve ACTIVE, DEPRECATED or RETIRED pins. Concept membership requires a pinned CONCEPT of the vocabulary or a pinned value map targeting it."
           }
         },
         "then": { "not": { "required": ["changes"] } },
