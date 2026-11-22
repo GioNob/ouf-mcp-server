@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -194,7 +195,8 @@ func TestValueMapProposalByteLimits(t *testing.T) {
 	labels := map[string]string{"it": "Codici"}
 	definition := map[string]any{
 		"targetVocabulary": "urn:example:vocabulary@00000000-0000-4000-8000-000000000001",
-		"entries": entries, "labels": labels,
+		"entries":          entries,
+		"labels":           labels,
 	}
 	args["definition"] = definition
 	allFieldsMax := encode(args)
@@ -239,13 +241,25 @@ func TestValueMapProposalByteLimits(t *testing.T) {
 		}
 		var sent struct {
 			Definition json.RawMessage
-			Rationale struct{ SourceColumn struct{ FieldName string } }
+			Rationale  struct{ SourceColumn struct{ FieldName string } }
 		}
-		if json.Unmarshal(in.Arguments, &sent) != nil || in.IdempotencyKey != args["commandKey"] ||
+		if err := json.Unmarshal(in.Arguments, &sent); err != nil {
+			t.Error("invalid proposal in Gateway envelope")
+			return
+		}
+		if in.IdempotencyKey != args["commandKey"] ||
 			r.URL.Path != "/semantic/create" || r.Header.Get("X-OUF-Delegation") != "human-proof" ||
-			len(sent.Definition) != definitionLimit || sent.Rationale.SourceColumn.FieldName != "categoria" ||
-			!strings.Contains(string(sent.Definition), `&<>`+"\u2028\u2029"+`\\u2028`) {
-			t.Error("governed dispatch changed the definition or metadata")
+			sent.Rationale.SourceColumn.FieldName != "categoria" {
+			t.Error("governed dispatch changed the proposal metadata")
+		}
+		if got := len(sent.Definition); got != definitionLimit {
+			t.Errorf("Gateway definition has %d bytes, want %d", got, definitionLimit)
+		}
+		if !strings.Contains(string(sent.Definition), `&<>`+"\u2028\u2029"+`\\u2028`) {
+			t.Error("Gateway definition changed the UTF-8 or literal escape bytes")
+		}
+		if in.RequestHash != fmt.Sprintf("%x", sha256.Sum256(in.Arguments)) {
+			t.Error("dispatched argument bytes do not match RequestHash")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"state":"DRAFT"}`))

@@ -14,6 +14,7 @@ jobs:
       actions: read
     env:
       PREDECESSOR_COMMIT: ${{ vars.MCP_PREDECESSOR_COMMIT || '843d22059e03bcd58569fff9960bb46ae552b2b2' }}
+      PREDECESSOR_TESTED_COMMIT: ${{ vars.MCP_PREDECESSOR_TESTED_COMMIT || 'b3d48e541f688378a3dd2ce7e0839e4607748fac' }}
       PREDECESSOR_RUN: ${{ vars.MCP_PREDECESSOR_RUN || '44904141061' }}
       PREDECESSOR_ARTIFACT_ID: ${{ vars.MCP_PREDECESSOR_ARTIFACT_ID || '14707905199' }}
       PREDECESSOR_ZIP_SHA256: ${{ vars.MCP_PREDECESSOR_ZIP_SHA256 || 'bcb6002c844e2e6e3c997f5e3bb10b79f63231ca49d3c1a66de952254b15a3ae' }}
@@ -29,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$PREDECESSOR_COMMIT" =~ ^[0-9a-f]{40}$ &&
+                  "$PREDECESSOR_TESTED_COMMIT" =~ ^[0-9a-f]{40}$ &&
                   "$PREDECESSOR_RUN" =~ ^[1-9][0-9]*$ &&
                   "$PREDECESSOR_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
                   "$PREDECESSOR_ZIP_SHA256" =~ ^[0-9a-f]{64}$ &&
@@ -58,9 +60,9 @@ jobs:
             echo "::error::Predecessor artifact ZIP SHA-256 mismatch."
             exit 1
           }
-          if [[ "$(unzip -p "$work/predecessor.zip" source-commit.txt)" != "$PREDECESSOR_COMMIT" ||
+          if [[ "$(unzip -p "$work/predecessor.zip" source-commit.txt)" != "$PREDECESSOR_TESTED_COMMIT" ||
                 "$(unzip -p "$work/predecessor.zip" image-id.txt)" != "$PREDECESSOR_IMAGE_ID" ]]; then
-            echo "::error::Predecessor artifact manifest does not match the pinned commit and image ID."
+            echo "::error::Predecessor artifact manifest does not match the pinned tested commit and image ID."
             exit 1
           fi
           unzip -p "$work/predecessor.zip" image.tar.gz | docker load
@@ -69,8 +71,8 @@ jobs:
             exit 1
           fi
           printf 'OLD_IMAGE=%s\nPREDECESSOR=%s\n' "$PREDECESSOR_IMAGE_ID" "$PREDECESSOR_COMMIT" >> "$GITHUB_ENV"
-          printf 'Predecessor `%s` · run `%s` · artifact `%s` · ZIP SHA-256 `%s` · image `%s`\n\n' \
-            "$PREDECESSOR_COMMIT" "$PREDECESSOR_RUN" "$PREDECESSOR_ARTIFACT_ID" \
+          printf 'Predecessor source `%s` · tested commit `%s` · run `%s` · artifact `%s` · ZIP SHA-256 `%s` · image `%s`\n\n' \
+            "$PREDECESSOR_COMMIT" "$PREDECESSOR_TESTED_COMMIT" "$PREDECESSOR_RUN" "$PREDECESSOR_ARTIFACT_ID" \
             "$PREDECESSOR_ZIP_SHA256" "$PREDECESSOR_IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"
       - name: Build candidate HEAD
         run: |

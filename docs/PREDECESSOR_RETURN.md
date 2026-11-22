@@ -4,21 +4,22 @@ Il check GitHub Actions `predecessor-return` prova il ritorno su un solo Postgre
 
 ## Identità delle immagini
 
-Il predecessore predefinito è `843d22059e03bcd58569fff9960bb46ae552b2b2`, schema 15. Il workflow usa queste variabili di repository.
+Il predecessore predefinito usa lo schema 15. Il workflow registra il commit sorgente della run e il commit testato da cui è stata costruita l'immagine. Usa queste variabili di repository.
 
 | Variabile | Valore predefinito o fonte |
 |---|---|
-| `MCP_PREDECESSOR_COMMIT` | `843d22059e03bcd58569fff9960bb46ae552b2b2` |
+| `MCP_PREDECESSOR_COMMIT` | `843d22059e03bcd58569fff9960bb46ae552b2b2`, commit sorgente in `workflow_run.head_sha`. |
+| `MCP_PREDECESSOR_TESTED_COMMIT` | `b3d48e541f688378a3dd2ce7e0839e4607748fac`, commit testato in `source-commit.txt` e `publisherCommit` del profilo di rilascio. |
 | `MCP_PREDECESSOR_RUN` | `44904141061` |
 | `MCP_PREDECESSOR_ARTIFACT_ID` | `14707905199` |
 | `MCP_PREDECESSOR_ZIP_SHA256` | `bcb6002c844e2e6e3c997f5e3bb10b79f63231ca49d3c1a66de952254b15a3ae` |
 | `MCP_PREDECESSOR_IMAGE_ID` | Obbligatorio. Usare la riga `sha256:…` in `image-id.txt` alla radice dello ZIP verificato di `acquisition-mcp-image-44904141061`. |
 
-Il passo **Retain qualified MCP image without target activation** di [`ci.yml`](../.github/workflows/ci.yml) scrive `build/acquisition-release/image-id.txt` con `docker image inspect --format '{{.Id}}' ouf-mcp:ci`. Lo stesso ID compare in `image-config.json` nel campo `.[0].Id`. L'ID da impostare è quello dell'immagine Docker attestata per il rilascio.
+Il passo **Retain qualified MCP image without target activation** di [`ci.yml`](../.github/workflows/ci.yml) salva `GITHUB_SHA` in `source-commit.txt`. Nelle run su `pull_request`, è il commit di merge testato da GitHub Actions. Lo stesso passo scrive `build/acquisition-release/image-id.txt` con `docker image inspect --format '{{.Id}}' ouf-mcp:ci`. Lo stesso ID compare in `image-config.json` nel campo `.[0].Id`. L'ID da impostare è quello dell'immagine Docker attestata per il rilascio.
 
-Il job verifica i metadati dell'artefatto tramite l'API GitHub con `actions: read`, scarica lo ZIP per ID e ne confronta lo SHA-256 prima di estrarre i file. Verifica `source-commit.txt` e `image-id.txt`, carica `image.tar.gz` e controlla l'ID Docker. Entrambe le istanze del predecessore vengono avviate tramite quell'ID.
+Il job verifica i metadati dell'artefatto tramite l'API GitHub con `actions: read`, confrontando `workflow_run.head_sha` con `MCP_PREDECESSOR_COMMIT`. Scarica lo ZIP per ID e ne confronta lo SHA-256 prima di estrarre i file. Confronta `source-commit.txt` con `MCP_PREDECESSOR_TESTED_COMMIT` e `image-id.txt` con `MCP_PREDECESSOR_IMAGE_ID`, carica `image.tar.gz` e controlla l'ID Docker. Entrambe le istanze del predecessore vengono avviate tramite quell'ID.
 
-Il workflow parte su push, pull request o avvio manuale. Per cambiare predecessore, aggiornare insieme le cinque variabili con i riferimenti del rilascio attestato. Il candidato è costruito con il Dockerfile del commit selezionato, cioè la testa della PR nel caso di `pull_request`.
+Il workflow parte su push, pull request o avvio manuale. Per cambiare predecessore, aggiornare insieme le sei variabili con i riferimenti del rilascio attestato. Il candidato è costruito con il Dockerfile del commit selezionato, cioè la testa della PR nel caso di `pull_request`.
 
 ## Sequenza e condizioni di successo
 

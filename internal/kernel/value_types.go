@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxValueMapArgumentsBytes = 1 << 20
+	maxValueMapArgumentsBytes  = 1 << 20
 	maxValueMapDefinitionBytes = 768 << 10
 )
 

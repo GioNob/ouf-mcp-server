@@ -117,7 +117,7 @@ func (f *reprocessingFixture) permit(t *testing.T, change func(*reprocessing.Per
 	frame, _ = reprocessing.SigningBytes(raw, approval)
 	approval.Signature = hex.EncodeToString(ed25519.Sign(key1, frame))
 	env, _ := json.Marshal(reprocessing.Envelope{Payload: raw, Intent: intent, Approval: approval})
-	v, e := reprocessing.Verify(profile, policy, env, reprocessing.Hash(profile), f.in.ManifestChecksum, time.Now())
+	v, e := reprocessing.Verify(profile, policy, env, reprocessing.Hash(profile), f.in.ManifestChecksum, time.Unix(p.IssuedAt, 0))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -224,7 +224,13 @@ func TestSemanticReprocessingUnknownDebtAndExpiredTimeRemainBlocked(t *testing.T
 			f := newReprocessingFixture(t)
 			before := f.snapshot(t)
 			if mode == "expired" {
-				f.service.Reprocessing = f.permit(t, func(p *reprocessing.Permit) { p.ExpiresAt = p.IssuedAt + 1 })
+				// Verify the signed fixture at issuance, then exercise admission
+				// with PostgreSQL's current time after its expiry.
+				f.service.Reprocessing = f.permit(t, func(p *reprocessing.Permit) {
+					p.IssuedAt -= 60
+					p.OwnerReceiptAbsentAt = p.IssuedAt - 1
+					p.ExpiresAt = p.IssuedAt + 1
+				})
 			} else {
 				f.service.Reprocessing = f.permit(t, nil)
 			}
@@ -240,14 +246,27 @@ func TestSemanticReprocessingUnknownDebtAndExpiredTimeRemainBlocked(t *testing.T
 					t.Fatal(e)
 				}
 			}
-			if _, e := f.service.Call(context.Background(), f.in); e == nil {
+			_, e := f.service.Call(context.Background(), f.in)
+			if e == nil {
 				t.Fatal("unsafe reprocessing accepted")
 			}
 			if f.gateway.calls.Load() != 1 {
 				t.Fatal("blocked case dispatched")
 			}
-			if mode == "expired" && !bytes.Equal(before, f.snapshot(t)) {
-				t.Fatal("expiry mutated original")
+			if mode == "expired" {
+				if !errors.Is(e, reprocessing.ErrExpired) {
+					t.Fatalf("expected expired reprocessing, got %v", e)
+				}
+				if !bytes.Equal(before, f.snapshot(t)) {
+					t.Fatal("expiry mutated original")
+				}
+				var admitted bool
+				if err := f.store.Pool().QueryRow(context.Background(), `select exists(select 1 from ouf_mcp.semantic_reprocessing_session where predecessor_attempt_id=$1)`, f.prior).Scan(&admitted); err != nil {
+					t.Fatal(err)
+				}
+				if admitted {
+					t.Fatal("expired permit created a session")
+				}
 			}
 		})
 	}

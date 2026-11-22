@@ -137,14 +137,18 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	}
 	var body []byte
 	if orchestration.IsValueMapProposal(in.CapabilityID, in.Arguments) {
-		// Preserve the bounded UTF-8 arguments in the Gateway envelope.
-		var envelope bytes.Buffer
-		encoder := json.NewEncoder(&envelope)
-		encoder.SetEscapeHTML(false)
-		if err := encoder.Encode(in); err != nil {
+		// Encode the metadata separately so a second JSON encoding cannot
+		// change the validated UTF-8 arguments used for the request hash.
+		envelope, err := json.Marshal(struct {
+			orchestration.GatewayRequest
+			Arguments json.RawMessage `json:"Arguments,omitempty"`
+		}{GatewayRequest: in})
+		if err != nil {
 			return orchestration.GatewayResponse{}, err
 		}
-		body = bytes.TrimSuffix(envelope.Bytes(), []byte{'\n'})
+		body = append(envelope[:len(envelope)-1], `,"Arguments":`...)
+		body = append(body, in.Arguments...)
+		body = append(body, '}')
 	} else {
 		body, _ = json.Marshal(in)
 	}
