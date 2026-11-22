@@ -320,9 +320,10 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 				}
 				if !wantError {
 					var owner map[string]any
-					if err := json.Unmarshal([]byte(want), &owner); err != nil || !reflect.DeepEqual(res.StructuredContent, owner) {
-						t.Fatalf("%s structured receipt differs from the owner: %+v", tool, res.StructuredContent)
+					if err := json.Unmarshal([]byte(want), &owner); err != nil {
+						t.Fatal(err)
 					}
+					checkOwnerAndNext(t, res, owner)
 				}
 			}
 			if tc.name == "oversize owner body" {

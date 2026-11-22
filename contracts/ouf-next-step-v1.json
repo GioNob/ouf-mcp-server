@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ouf:contract:next-step:v1",
+  "title": "ouf.next-step.v1",
+  "description": "D-085. Blocco `next` presente in OGNI risultato di una capability di workflow, anche negli errori governati e nei rifiuti di validazione. Il chatbot non deduce mai il passo successivo: esegue `next`; davanti a un `contract` o a un'`action` sconosciuti si ferma in sicurezza e riferisce `userMessage`. `next.arguments` è valido contro l'inputSchema del tool indicato (verificato in CI). `userMessage` deriva da modelli controllati e non contiene mai dati della fonte né testo dell'utente.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "action",
+    "reasonCode",
+    "userMessage"
+  ],
+  "properties": {
+    "contract": {
+      "const": "ouf.next-step.v1"
+    },
+    "action": {
+      "enum": [
+        "CALL_TOOL",
+        "WAIT_FOR_HUMAN",
+        "POLL",
+        "DONE",
+        "BLOCKED"
+      ],
+      "description": "CALL_TOOL: chiama subito `tool` con `arguments`. POLL: richiama `tool` con `arguments` dopo `pollAfterSeconds`, fino a uno stato in `terminalStates` o a `deadline`. WAIT_FOR_HUMAN: dai all'utente `human.reviewUrl` e `userMessage`, poi chiama subito il tool di attesa (`tool` = ouf.wait) con `arguments`; non chiedere all'utente di tornare in chat. DONE: obiettivo della catena raggiunto, riferisci `userMessage`. BLOCKED: nessuna azione automatica sicura; proponi all'utente solo le `alternatives`, nell'ordine dato."
+    },
+    "reasonCode": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{2,79}$",
+      "description": "Codice stabile del motivo (stato owner o codice di errore governato), mai testo libero."
+    },
+    "tool": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.]{2,79}$"
+    },
+    "arguments": {
+      "type": "object",
+      "description": "Argomenti esatti e completi; nessun segnaposto. Per gli errori di argomenti, gli argomenti corretti quando l'MCP li può derivare; altrimenti action=BLOCKED con alternatives che indicano il tool da cui ottenerli."
+    },
+    "pollAfterSeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Scadenza reale lato owner (challenge, budget, finestra di retry). Dopo la scadenza il tool restituisce un nuovo `next`."
+    },
+    "terminalStates": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+      }
+    },
+    "human": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewUrl",
+        "decisionKind"
+      ],
+      "properties": {
+        "reviewUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link emesso dall'owner (THS); mai costruito dal chatbot."
+        },
+        "decisionKind": {
+          "enum": [
+            "APPROVE_OR_REJECT",
+            "RESUME_OR_ABORT",
+            "GRANT_PERMISSION",
+            "RECHECK",
+            "CHOOSE_FILE"
+          ]
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "reasonCode",
+          "userMessage"
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "CALL_TOOL",
+              "WAIT_FOR_HUMAN",
+              "POLL"
+            ]
+          },
+          "reasonCode": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{2,79}$"
+          },
+          "tool": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.]{2,79}$"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "human": {
+            "$ref": "#/properties/human"
+          },
+          "userMessage": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "userMessage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "description": "Una o due frasi in italiano da riferire all'utente, senza gergo interno."
+    },
+    "actor": {
+      "enum": [
+        "AGENT",
+        "HUMAN_THS",
+        "OPERATOR"
+      ],
+      "description": "Per BLOCKED: chi può far proseguire (l'agente con un'alternativa, l'umano nella THS, l'operatore dell'installazione)."
+    },
+    "outcome": {
+      "enum": [
+        "SUCCEEDED",
+        "REJECTED_BY_HUMAN",
+        "ABORTED"
+      ],
+      "description": "Per DONE: esito dell'intera catena. DONE si usa solo quando l'obiettivo dell'utente è concluso (per la pipeline: dati serviti e letti da urban.object.search), mai alla fine di un passo intermedio."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "CALL_TOOL",
+              "POLL",
+              "WAIT_FOR_HUMAN"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "tool",
+          "arguments"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "POLL"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "pollAfterSeconds",
+          "terminalStates"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "WAIT_FOR_HUMAN"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "human",
+          "deadline"
+        ],
+        "properties": {
+          "tool": {
+            "const": "ouf.wait"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "BLOCKED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "alternatives",
+          "actor"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "DONE"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "outcome"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "tool"
+              ]
+            },
+            {
+              "required": [
+                "arguments"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "x-ouf-wait-tool": {
+    "toolName": "ouf.wait",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waitRef"
+      ],
+      "properties": {
+        "waitRef": {
+          "type": "string",
+          "minLength": 32, "maxLength": 1024, "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "semantics": "waitRef è opaco, emesso dall'MCP dentro `next`, firmato e legato a principal, tenant, capability di lettura, risorsa, versione osservata (lockVersion/stateVersion) e deadline. L'MCP rilegge la capability di lettura legata ogni >= 5 s (lettura condizionale sulla versione quando l'owner la offre) per al massimo 45 s per chiamata. Risultato: {changed, observation, next}. Se nulla cambia entro 45 s: next = WAIT_FOR_HUMAN con lo stesso waitRef (il chatbot richiama subito). Dopo `deadline`: next = BLOCKED con le alternative dell'owner. Nessuna logica di business nel waitRef: lo stato viene sempre riletto dall'owner."
+  }
+}

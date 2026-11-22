@@ -14,8 +14,10 @@ import (
 var files embed.FS
 
 type Snapshot struct {
-	Version      string       `json:"version"`
-	Capabilities []Capability `json:"capabilities"`
+	Version      string            `json:"version"`
+	NextErrors   []Rule            `json:"nextErrors"`
+	NextPolicies map[string]Policy `json:"nextPolicies"`
+	Capabilities []Capability      `json:"capabilities"`
 }
 
 type Capability struct {
@@ -39,6 +41,7 @@ type Capability struct {
 	ToolEligible          bool            `json:"toolEligible"`
 	AllowedActors         []string        `json:"allowedActors,omitempty"`
 	RequiredScope         string          `json:"requiredScope,omitempty"`
+	NextPolicy            string          `json:"nextPolicy,omitempty"`
 	InputSchema           json.RawMessage `json:"inputSchema"`
 }
 
@@ -66,6 +69,12 @@ func (s *Snapshot) Validate() error {
 		prefix := fmt.Sprintf("capabilities[%d]", i)
 		if c.CapabilityID == "" || c.Purpose == "" || len(c.UseWhen) == 0 || len(c.DoNotUseWhen) == 0 || len(c.PreferredAlternatives) == 0 || len(c.OperationalLimits) == 0 || c.ResultSemantics == "" || len(c.SecurityNotes) == 0 || len(c.InputSchema) == 0 || c.Owner == "" || c.OperationClass == "" || c.PublicationState == "" || c.RequiredAuthorization == "" || c.GatewayBindingRef == "" || len(c.BaseCostEnvelope) == 0 || len(c.ConditionalCost) == 0 {
 			return fmt.Errorf("%s: incomplete mandatory manifest fields", prefix)
+		}
+		if c.ToolEligible {
+			policy, ok := s.NextPolicies[c.NextPolicy]
+			if !ok || policy.Read == "" || len(policy.Rules) == 0 {
+				return fmt.Errorf("%s: missing next policy", prefix)
+			}
 		}
 		if c.ToolEligible && c.ToolName == "" {
 			return fmt.Errorf("%s: tool-eligible capability requires toolName", prefix)
@@ -122,5 +131,10 @@ func (s *Snapshot) ToolEligible() []Capability {
 }
 
 func (c Capability) Description() string {
-	return fmt.Sprintf("%s Use when: %s. Do not use when: %s. Preferred alternatives: %s. Result: %s. Security: %s.", c.Purpose, strings.Join(c.UseWhen, "; "), strings.Join(c.DoNotUseWhen, "; "), strings.Join(c.PreferredAlternatives, ", "), c.ResultSemantics, strings.Join(c.SecurityNotes, "; "))
+	desc := fmt.Sprintf("%s Use when: %s. Do not use when: %s. Preferred alternatives: %s. Result: %s. Security: %s.", c.Purpose, strings.Join(c.UseWhen, "; "), strings.Join(c.DoNotUseWhen, "; "), strings.Join(c.PreferredAlternatives, ", "), c.ResultSemantics, strings.Join(c.SecurityNotes, "; "))
+	forms := InputForms(c.InputSchema)
+	if len(forms) > 1 {
+		desc += " Input constraint: " + strings.Join(forms, " or ") + "."
+	}
+	return desc + " " + FollowNext
 }

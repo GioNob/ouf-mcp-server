@@ -29,7 +29,7 @@ func sourceRevisionReceiptSchema(snapshot *manifest.Snapshot) *jsonschema.Schema
 	panic("revision.prepare must define newColumns")
 }
 
-func registerSourceRevisionRead(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerSourceRevisionRead(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
@@ -42,7 +42,7 @@ func registerSourceRevisionRead(server *mcp.Server, c manifest.Capability, snaps
 		OutputSchema: sourceRevisionReceiptSchema(snapshot),
 		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"},
 	}
-	mcp.AddTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		if service == nil {
 			return errorResult("MCP_1A_BACKEND_NOT_BOUND", false), nil, nil
 		}

@@ -201,6 +201,9 @@ func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected i
 		if e != nil || resolved.Validate(value) != nil {
 			return Plan{}, ErrInvalid
 		}
+		// The coordinator already owns this analysis. A continuation hint
+		// for the MCP client is outside the owner request and task identity.
+		delete(value, "analysisId")
 		w.Arguments, _ = json.Marshal(value)
 		w.Columns = append([]int(nil), w.Columns...)
 		sort.Ints(w.Columns)

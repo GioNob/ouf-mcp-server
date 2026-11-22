@@ -13,6 +13,12 @@
 
 # OUF MCP Server
 
+Il client segue il blocco `next` di `ouf.next-step.v1`. Per un nuovo comando, MCP genera una UUIDv4 in `next.arguments.commandKey`. Il client conserva tutti gli argomenti del passo e riusa la stessa chiave a ogni retry. Con la chiave di fingerprint di installazione condivisa, anche una rilettura della stessa osservazione riproduce la chiave del comando. Il piano e le attività di `source.analysis` conservano la propria identità durevole, legata al profilo e al lavoro pianificato.
+
+Durante il recupero di un run, MCP chiede il link a Onboarding tramite la capability interna `ouf.onboarding.ths-links.ingestion-run-recovery` via Gateway. La finestra della decisione è `decisionDeadline` di Ingestion. Per una revisione semantica, MCP invia il solo `challengeId` alla capability interna `ouf.onboarding.ths-links.semantic-review`. La scadenza della challenge governa l’attesa, con `expiresAt` del link come ripiego. In entrambi i flussi Onboarding emette il link e ne determina la validità.
+
+Per le pagine di valori distinti, `structuredContent` contiene la pagina dell’owner e `next`. Quando la copia testuale integrale farebbe superare il tetto di 1 MiB, `content` indica dove leggere la pagina completa.
+
 ## Installazione e collaudo del collegamento ChatGPT
 
 La [guida Keycloak, ChatGPT e policy MCP](docs/INSTALLAZIONE_KEYCLOAK_CHATGPT.md)
