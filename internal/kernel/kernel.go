@@ -402,6 +402,17 @@ func registerOperationalTool(server *workflowServer, c manifest.Capability, snap
 	})
 }
 
+// Measure both the incoming arguments (before schema validation) and the
+// serialized arguments sent to the Gateway, which may contain JSON escapes.
+func exceedsOnboardingArgumentLimit(c manifest.Capability, size int) bool {
+	switch c.CapabilityID {
+	case "ouf.managed-source.onboarding.create", "ouf.managed-source.onboarding.review.prepare":
+		var limits struct{ MaxArgumentsBytes int }
+		return json.Unmarshal(c.OperationalLimits, &limits) != nil || size > limits.MaxArgumentsBytes
+	}
+	return false
+}
+
 func invoke(ctx context.Context, c manifest.Capability, checksum string, args []byte, service *orchestration.Service, maxObjects, maxBytes int) (*mcp.CallToolResult, any, error) {
 	identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 	if !ok {
@@ -422,14 +433,14 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if orchestration.IsOperationalControlRead(c.CapabilityID, c.OperationClass) {
 		maxObjects = 100
 	}
-	argumentLimit := 65536
-	if c.CapabilityID == "ouf.managed-source.onboarding.create" || c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
-		argumentLimit = 2 << 20
+	if exceedsOnboardingArgumentLimit(c, len(args)) {
+		return errorResult("INVALID_TOOL_ARGUMENTS", false), nil, nil
 	}
+	argumentLimit := 65536
 	if len(args) > argumentLimit && orchestration.IsValueMapProposal(c.CapabilityID, args) {
 		argumentLimit = maxValueMapArgumentsBytes
 	}
-	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.onboarding.create") && len(args) > argumentLimit {
+	if (isSemanticProposalCapability(c.CapabilityID) || isSourceRevisionCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.onboarding.read") && len(args) > argumentLimit {
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)

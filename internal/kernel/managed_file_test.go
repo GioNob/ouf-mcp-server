@@ -118,8 +118,8 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
 				t.Error("unsafe onboarding draft arguments")
 			}
-			if len(args["fields"].([]any)) != 1024 {
-				t.Error("wide command lost columns")
+			if len(args["fields"].([]any)) != 1024 || len(args["semanticRefs"].([]any)) != 1024 || len(args["sourceObjectKeyFields"].([]any)) != 1024 {
+				t.Error("wide command lost columns, references or identity fields")
 			}
 			io.WriteString(w, `{"sourceId":"cinema","state":"DRAFT"}`)
 			return
@@ -161,11 +161,16 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 		t.Fatal("tool accepted arbitrary file URL")
 	}
 	fields := make([]any, 1024)
+	refs := make([]string, len(fields))
+	keys := make([]string, len(fields))
 	for i := range fields {
-		fields[i] = map[string]any{"fieldName": fmt.Sprintf("campo_%d", i), "extractionDecision": "INCLUDE", "dataAccessLabel": "RESTRICTED", "targetPropertyIri": fmt.Sprintf("urn:test:property:%d", i)}
+		property := fmt.Sprintf("urn:test:property:%d", i)
+		refs[i] = property + "@1"
+		keys[i] = fmt.Sprintf("campo_%d", i)
+		fields[i] = map[string]any{"fieldName": keys[i], "extractionDecision": "INCLUDE", "dataAccessLabel": "RESTRICTED", "targetPropertyIri": property}
 	}
 	draftArgs := map[string]any{
-		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": []string{"core@1"}, "sourceObjectKeyFields": []string{}, "fields": fields,
+		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": refs, "sourceObjectKeyFields": keys, "fields": fields,
 	}
 	draft, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})
 	if err != nil || draft.IsError || calls != 2 {
@@ -176,5 +181,17 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 	if err != nil || !tooWide.IsError || calls != 2 {
 		t.Fatalf("1025 columns dispatched: %v %v %d", tooWide, err, calls)
 	}
-
+	draftArgs["fields"] = fields
+	largeRefs := make([]string, 4500)
+	for i := range largeRefs {
+		largeRefs[i] = fmt.Sprintf("urn:test:%d:%s@1", i, strings.Repeat("é", 240))
+	}
+	draftArgs["semanticRefs"] = largeRefs
+	tooLarge, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})
+	if err != nil || !tooLarge.IsError || calls != 2 {
+		t.Fatal("oversized create did not return a tool error before dispatch", err)
+	}
+	if next := checkNext(t, nextContract(t), tooLarge); next["reasonCode"] != "INVALID_TOOL_ARGUMENTS" || next["action"] != "BLOCKED" {
+		t.Fatal(next)
+	}
 }

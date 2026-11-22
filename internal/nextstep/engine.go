@@ -418,6 +418,9 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			return Block("WAIT_UNAVAILABLE", r.Tool, "Consulta lo stato della decisione.")
 		}
 		s := call(r.Action, r.Reason, r.Tool, args)
+		if r.Message != "" {
+			s["userMessage"] = r.Message
+		}
 		if r.Action == "POLL" {
 			delay, ok := retryDelay(obs, e.Now())
 			if !ok {

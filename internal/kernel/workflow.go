@@ -73,7 +73,7 @@ func (s *workflowServer) valid(name string, args nextstep.Object) bool {
 	// Validate JSON values, including nested typed slices built by the planner.
 	raw, err := json.Marshal(args)
 	var v map[string]any
-	return err == nil && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil
+	return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(raw)) && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil
 }
 
 // Keep argument diagnostics inside the tool result. Typed SDK registration
@@ -140,7 +140,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		if len(req.Params.Arguments) == 0 {
 			req.Params.Arguments = json.RawMessage("{}")
 		}
-		if json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
+		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
 		} else {
 			var err error
