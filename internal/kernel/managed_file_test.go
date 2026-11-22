@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,66 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// D-084 r2, PET-mcp-097/099: only the owner decides which lists are disclosed.
+func TestManagedFileDistinctValuesPassThrough(t *testing.T) {
+	const asset = "00000000-0000-4000-8000-000000000001"
+	const job = "00000000-0000-4000-8000-000000000002"
+	const direct = `{"columns":[{"name":"code","distinctValues":["A","a","é"]},{"name":"legacy","distinctValues":2}]}`
+	values := make([]string, 2000)
+	for i := range values {
+		values[i] = fmt.Sprintf("%04d", i) + strings.Repeat("a", 123) + "é"
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"columns":[{"name":"code","dataAccessLabel":"OPEN","distinctValues":` + string(encoded) +
+		`},{"name":"restricted","dataAccessLabel":"RESTRICTED","distinctCount":2}]}`
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("X-OUF-Delegation") != "human-proof" {
+			t.Error("profile response bypassed delegation")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/managed.file/profile":
+			// The command may return a small owner result directly.
+			_, _ = io.WriteString(w, direct)
+		case "/managed.file/preview":
+			_, _ = io.WriteString(w, profile)
+		default:
+			t.Error("unexpected profile route")
+		}
+	}))
+	defer gateway.Close()
+	endpoint, _ := url.Parse(gateway.URL)
+	service := &orchestration.Service{
+		RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &statusAdmission{}, FingerprintKey: make([]byte, 32),
+		Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")},
+	}
+	session := revisionSession(t, service, "ouf.managed-source.file.profile ouf.managed-source.preview")
+	for _, tc := range []struct {
+		tool string
+		args map[string]string
+		want string
+	}{
+		{"source.file.profile", map[string]string{"assetId": asset}, direct},
+		{"source.file.preview", map[string]string{"assetId": asset, "jobId": job}, profile},
+	} {
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.tool, Arguments: tc.args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != tc.want {
+			t.Fatalf("%s changed the owner profile disclosure", tc.tool)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatal("each delegated tool must make one owner call")
+	}
+}
 
 func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T) {
 	const capID = "ouf.managed-source.file.profile"

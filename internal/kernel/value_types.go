@@ -11,6 +11,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	maxValueMapArgumentsBytes = 1 << 20
+	maxValueMapDefinitionBytes = 768 << 10
+)
+
 func isValueTypeTool(name string) bool {
 	return name == "semantic.propose" || name == "source.onboarding.create" || name == "source.onboarding.revision.prepare"
 }
@@ -48,8 +53,15 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 		if json.Unmarshal(raw, &args) != nil || args == nil || input.Validate(args) != nil {
 			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 		}
-		if args["artifactType"] == "VALUE_MAP" && !uniqueValueMapCodes(args) {
-			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
+		valueMap := c.ToolName == "semantic.propose" && args["artifactType"] == "VALUE_MAP"
+		if valueMap {
+			definition := args["definition"].(map[string]any)
+			if !validValueMapDefinition(definition) {
+				return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
+			}
+			if len(raw) > maxValueMapArgumentsBytes {
+				return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil
+			}
 		}
 		if service == nil {
 			return errorResult("MCP_1A_BACKEND_NOT_BOUND", false), nil
@@ -63,7 +75,11 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 				return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 			}
 		}
-		body, err := json.Marshal(args)
+		marshal := json.Marshal
+		if valueMap {
+			marshal = marshalValueMapJSON
+		}
+		body, err := marshal(args)
 		if err != nil {
 			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 		}
@@ -84,10 +100,10 @@ func registerValueTypeTool(server *mcp.Server, c manifest.Capability, snapshot *
 	})
 }
 
-// The input schema validates the shape first. JSON Schema cannot enforce
-// uniqueness by a single item property.
-func uniqueValueMapCodes(args map[string]any) bool {
-	entries := args["definition"].(map[string]any)["entries"].([]any)
+// The input schema validates the shape first. Definition size and uniqueness
+// by code are checked here because JSON Schema cannot express them.
+func validValueMapDefinition(definition map[string]any) bool {
+	entries := definition["entries"].([]any)
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		code := entry.(map[string]any)["code"].(string)
@@ -96,5 +112,45 @@ func uniqueValueMapCodes(args map[string]any) bool {
 		}
 		seen[code] = struct{}{}
 	}
-	return true
+	encoded, err := marshalValueMapJSON(definition)
+	return err == nil && len(encoded) <= maxValueMapDefinitionBytes
+}
+
+// Go's compact JSON escapes HTML and script separators. Emit those characters
+// directly for UTF-8 byte limits, preserving literal backslashes and other
+// required escapes. Sorting entries would leave the byte count unchanged.
+func marshalValueMapJSON(value any) ([]byte, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	compact := encoded[:0]
+	for {
+		escape := bytes.IndexByte(encoded, '\\')
+		if escape < 0 {
+			return append(compact, encoded...), nil
+		}
+		compact = append(compact, encoded[:escape]...)
+		encoded = encoded[escape:]
+		if encoded[1] != 'u' {
+			compact = append(compact, encoded[:2]...)
+			encoded = encoded[2:]
+			continue
+		}
+		switch string(encoded[:6]) {
+		case `\u0026`:
+			compact = append(compact, '&')
+		case `\u003c`:
+			compact = append(compact, '<')
+		case `\u003e`:
+			compact = append(compact, '>')
+		case `\u2028`:
+			compact = append(compact, "\u2028"...)
+		case `\u2029`:
+			compact = append(compact, "\u2029"...)
+		default:
+			compact = append(compact, encoded[:6]...)
+		}
+		encoded = encoded[6:]
+	}
 }

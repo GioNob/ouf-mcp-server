@@ -399,6 +399,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if c.CapabilityID == "ouf.managed-source.onboarding.create" || c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
 		argumentLimit = 2 << 20
 	}
+	if len(args) > argumentLimit && orchestration.IsValueMapProposal(c.CapabilityID, args) {
+		argumentLimit = maxValueMapArgumentsBytes
+	}
 	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.onboarding.create") && len(args) > argumentLimit {
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}

@@ -2585,8 +2585,8 @@
       "useWhen": [
         "preparing authorized native semantic proposals for human review",
         "Choose base types from the controlled vocabulary. If no published type fits structured data, propose a DATATYPE combining base types or pinned published DATATYPEs. Use it only after a human approves it in the THS and the Semantic Registry publishes it",
-        "Propose a VALUE_MAP for a column of codes from a controlled vocabulary. Use the distinct codes from the source.file.profile result, read through source.file.preview. Wait for the actual codes if the profile only provides a count. Preserve case and use each code after the VALUE_MAP_V1 trim",
-        "Use semantic.search and semantic.get to identify published concepts in one active published vocabulary and pin that vocabulary as semanticId@publicationSetId. Use only verified concepts from that vocabulary. After human approval in the THS and publication, use transform: VALUE_MAP_V1 with the published pin in transformParams.valueMapRef"
+        "Propose a VALUE_MAP for a column of codes from a controlled vocabulary. Build entries from the column's distinctValues list in the source.file.profile result. If profiling returns a job receipt, read the completed profile with source.file.preview. Preserve the codes and their case, and name the column in rationale.sourceColumn. If distinctValues is absent or the profile only reports a count, tell the user that the column is unsuitable for an agent-built VALUE_MAP",
+        "Use semantic.search and semantic.get to identify published concepts in one active published vocabulary and pin that vocabulary as semanticId@publicationSetId. Use only verified concepts from that vocabulary and never invent concepts. After human approval in the THS and publication, use transform: VALUE_MAP_V1 with the published pin in transformParams.valueMapRef"
       ],
       "doNotUseWhen": [
         "approving, publishing, activating, adopting external terms or bypassing owner decisions"
@@ -2597,6 +2597,8 @@
       "operationalLimits": {
         "maxArtifacts": 1,
         "maxRequestBytes": 65536,
+        "maxValueMapArgumentsBytes": 1048576,
+        "maxValueMapDefinitionBytes": 786432,
         "profile": "ouf.semantic-proposal-channel.v1"
       },
       "resultSemantics": "Owner receipt only; a review reference is not human approval or publication. Read current challenge in the THS before decision.",
@@ -2708,6 +2710,7 @@
             },
             "maxProperties": 4
           },
+          "rationale": { "$ref": "#/$defs/valueMapRationale" },
           "definition": {
             "type": "object",
             "anyOf": [
@@ -2960,9 +2963,25 @@
             "type": "string",
             "format": "iri",
             "not": {
-              "pattern": "[\\x00-\\x1F\\x7F]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+              "pattern": "[\\x00-\\x1F\\x7F]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
             },
             "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+$"
+          },
+          "valueMapRationale": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sourceColumn": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+                  "sourceId": {"type": "string"}
+                },
+                "required": ["fieldName"]
+              }
+            },
+            "required": ["sourceColumn"]
           },
           "valueMapDefinition": {
             "type": "object",
@@ -2971,7 +2990,7 @@
               "targetVocabulary": {
                 "type": "string",
                 "not": {
-                  "pattern": "[\\x00-\\x1F\\x7F]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+                  "pattern": "[\\x00-\\x1F\\x7F]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
                 },
                 "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
               },
@@ -2986,10 +3005,10 @@
                       "minLength": 1,
                       "maxLength": 128,
                       "not": {
-                        "pattern": "[\\x00-\\x1F\\x7F]|^[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$"
+                        "pattern": "[\\x00-\\x1F\\x7F-\\x9F]|^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$"
                       }
                     },
-                    "concept": {"$ref": "#/$defs/valueMapIri"}
+                    "concept": {"$ref": "#/$defs/valueMapIri", "maxLength": 512}
                   },
                   "required": ["code", "concept"]
                 },
@@ -3012,6 +3031,7 @@
         "if": { "properties": { "artifactType": { "const": "DATATYPE" } } },
         "then": {
           "required": ["definition"],
+          "not": { "required": ["rationale"] },
           "properties": {
             "semanticId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
             "definition": {
@@ -3029,6 +3049,7 @@
             }
           },
           "else": {
+            "not": { "required": ["rationale"] },
             "properties": {
               "definition": {
                 "not": { "anyOf": [{ "required": ["components"] }, { "required": ["entries"] }] }
@@ -3419,7 +3440,7 @@
       "purpose": "Queue profiling of a managed file owned by the authenticated human",
       "useWhen": [
         "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID",
-        "For a proposed VALUE_MAP, use source.file.preview to read this job and use the distinct codes of the column when the profile exposes them"
+        "Build VALUE_MAP entries from the column's distinctValues list in the completed profile. Use source.file.preview to read the result when this tool returns a job receipt. If distinctValues is absent or the profile only reports a count, tell the user that the column is unsuitable for an agent-built VALUE_MAP"
       ],
       "doNotUseWhen": [
         "the user has no asset ID or wants to read a different user’s file"
@@ -3431,7 +3452,7 @@
         "maxArgumentsBytes": 1024,
         "maxResultBytes": 65536
       },
-      "resultSemantics": "An idempotent profile job receipt, not an approved source configuration",
+      "resultSemantics": "An idempotent profile job receipt or owner profile result, with distinctValues when available under the same authorization, access labels and redaction as source.file.preview",
       "securityNotes": [
         "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
         "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
@@ -3473,7 +3494,8 @@
       "capabilityId": "ouf.managed-source.preview",
       "purpose": "Read an owned profile/job or bounded immutable schema pages (up to 1024 columns)",
       "useWhen": [
-        "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation"
+        "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation",
+        "Read a completed source.file.profile job for its distinctValues where the owner makes them available. Use that list when proposing a VALUE_MAP and record the column in rationale.sourceColumn"
       ],
       "doNotUseWhen": [
         "access to another tenant or subject, raw file bytes or storage locations is requested"

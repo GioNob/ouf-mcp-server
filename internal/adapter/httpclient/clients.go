@@ -135,7 +135,19 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 			return orchestration.GatewayResponse{}, errors.New("managed upload requires a verified stream or exact handoff")
 		}
 	}
-	body, _ := json.Marshal(in)
+	var body []byte
+	if orchestration.IsValueMapProposal(in.CapabilityID, in.Arguments) {
+		// Preserve the bounded UTF-8 arguments in the Gateway envelope.
+		var envelope bytes.Buffer
+		encoder := json.NewEncoder(&envelope)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(in); err != nil {
+			return orchestration.GatewayResponse{}, err
+		}
+		body = bytes.TrimSuffix(envelope.Bytes(), []byte{'\n'})
+	} else {
+		body, _ = json.Marshal(in)
+	}
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
 	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":

@@ -47,12 +47,18 @@ def dispatch_cases():
     invalid = deepcopy(request)
     invalid["Arguments"]["definition"]["entries"][0]["code"] = "private-source-value "
     yield SEMANTIC, request, invalid
+    request = deepcopy(request)
+    request["Arguments"]["rationale"] = {"sourceColumn": {"fieldName": "categoria", "sourceId": "places"}}
+    invalid = deepcopy(request)
+    invalid["Arguments"]["rationale"]["sourceColumn"]["fieldName"] = ""
+    yield SEMANTIC, request, invalid
 
 
 class ValueTypeSchemas(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.contract = json.loads(CONTRACT.read_bytes())
+        cls.value_maps = json.loads(VALUE_MAP_CONTRACT.read_bytes())
         cls.tools = {c["toolName"]: c for c in json.loads(MANIFEST.read_bytes())["capabilities"]}
         cls.schemas = {}
         for name in (SEMANTIC, CREATE, REVISION, "semantic.search"):
@@ -81,6 +87,7 @@ class ValueTypeSchemas(unittest.TestCase):
 
     def test_contract_and_generated_manifest(self):
         self.assertEqual(hashlib.sha256(CONTRACT.read_bytes()).hexdigest(), DIGEST)
+        self.assertEqual(self.contract["revision"], 2)
         source = MANIFEST.read_text(encoding="utf-8")
         self.assertEqual(generate(source, self.contract), source)
         components = self.tools[SEMANTIC]["inputSchema"]["$defs"]["datatypeComponents"]
@@ -141,11 +148,19 @@ class ValueTypeSchemas(unittest.TestCase):
 
     def test_value_map_contract_and_guidance(self):
         self.assertEqual(hashlib.sha256(VALUE_MAP_CONTRACT.read_bytes()).hexdigest(), VALUE_MAP_DIGEST)
+        self.assertEqual(self.value_maps["revision"], 2)
+        self.assertIn(DIGEST, self.value_maps["extends"])
+        limits = self.tools[SEMANTIC]["operationalLimits"]
+        self.assertEqual(limits["maxRequestBytes"], 65536)
+        self.assertEqual(limits["maxValueMapArgumentsBytes"], 1048576)
+        self.assertEqual(limits["maxValueMapDefinitionBytes"], 786432)
         for tool, phrases in {
-            SEMANTIC: ("column of codes", "controlled vocabulary", "distinct codes", "source.file.profile",
+            SEMANTIC: ("column of codes", "controlled vocabulary", "distinctValues", "source.file.profile",
                        "semantic.search", "semantic.get", "only verified concepts", "THS", "publication",
-                       "transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
-            "source.file.profile": ("VALUE_MAP", "distinct codes", "source.file.preview"),
+                       "never invent concepts", "rationale.sourceColumn", "distinctValues is absent",
+                       "unsuitable", "transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
+            "source.file.profile": ("VALUE_MAP", "distinctValues", "source.file.preview", "unsuitable"),
+            "source.file.preview": ("distinctValues", "rationale.sourceColumn"),
             "semantic.search": ("published vocabulary", "published concepts", "VALUE_MAP"),
             "semantic.get": ("published vocabulary", "concepts", "VALUE_MAP"),
             CREATE: ("transform: VALUE_MAP_V1", "transformParams.valueMapRef"),
@@ -165,7 +180,7 @@ class ValueTypeSchemas(unittest.TestCase):
 
         check(definition)
         check({**definition, "labels": {"it": "Codici", "en": "Codes"}})
-        entries = [{"code": f"{i:03x}", "concept": "urn:c"} for i in range(2001)]
+        entries = [{"code": f"{i:04d}" + "a" * 124, "concept": "urn:" + "z" * 235} for i in range(2001)]
         check({**definition, "entries": entries[:2000]})
         for invalid in (
             {}, {"targetVocabulary": PIN}, {"entries": definition["entries"]},
@@ -196,6 +211,48 @@ class ValueTypeSchemas(unittest.TestCase):
         self.accepts(SEMANTIC, {**proposal, "definition": definition, "extra": True}, False)
         self.accepts(SEMANTIC, {**proposal, "definition": definition, "semanticId": "relative"}, False)
         self.accepts(SEMANTIC, {**proposal, "rdfTurtle": "<urn:a> a <urn:b> .", "mediaType": "text/turtle"}, False)
+
+    def test_value_map_r2_lengths_and_rationale(self):
+        proposal = {**self.proposal, "artifactType": "VALUE_MAP", "definition": {
+            "targetVocabulary": PIN, "entries": [{"code": "A", "concept": "urn:" + "é" * 508}],
+        }}
+        self.accepts(SEMANTIC, proposal)
+        for column in ({"fieldName": "categoria"}, {"fieldName": "🌍" * 256, "sourceId": "places"}):
+            self.accepts(SEMANTIC, {**proposal, "rationale": {"sourceColumn": column}})
+        for rationale in (
+            {}, {"note": "text"}, {"sourceColumn": {}}, {"sourceColumn": {"fieldName": ""}},
+            {"sourceColumn": {"fieldName": "🌍" * 257}}, {"sourceColumn": {"fieldName": "a", "sourceId": 7}},
+            {"sourceColumn": {"fieldName": "a", "sourceValue": "private"}},
+        ):
+            self.accepts(SEMANTIC, {**proposal, "rationale": rationale}, False)
+        proposal["definition"]["rationale"] = {"sourceColumn": {"fieldName": "categoria"}}
+        self.accepts(SEMANTIC, proposal, False)
+        del proposal["definition"]["rationale"]
+        proposal["definition"]["entries"][0]["concept"] += "é"
+        self.accepts(SEMANTIC, proposal, False)
+        self.accepts(SEMANTIC, {**self.proposal, "artifactType": "CLASS", "definition": {},
+                                "rationale": {"sourceColumn": {"fieldName": "categoria"}}}, False)
+
+    def test_value_map_code_uses_contract_whitespace(self):
+        entry = {"code": "A", "concept": "urn:c"}
+        proposal = {**self.proposal, "artifactType": "VALUE_MAP", "definition": {
+            "targetVocabulary": PIN, "entries": [entry],
+        }}
+        vector, = (v for v in self.contract["whitespace"]["vectors"] if v["reader"] == "VALUE_MAP_V1")
+        entry["code"] = vector["cell"]
+        self.accepts(SEMANTIC, proposal, False)
+        entry["code"] = "A1"
+        self.accepts(SEMANTIC, proposal)
+        whitespace = {chr(c) for c in (*range(9, 14), 0x20, 0x85, 0xA0, 0x1680,
+                                        *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000)}
+        controls = {chr(c) for c in (*range(0x20), *range(0x7F, 0xA0))}
+        for char in sorted(whitespace | controls | {"\ufeff", "\u200b", "\u180e"}):
+            for code, valid in ((char + "A", char not in whitespace | controls),
+                                ("A" + char, char not in whitespace | controls),
+                                ("A" + char + "B", char not in controls)):
+                with self.subTest(code=code):
+                    entry["code"] = code
+                    self.accepts(SEMANTIC, proposal, valid)
 
     def test_component_constraint_forms(self):
         for kind, key, good, bad in [

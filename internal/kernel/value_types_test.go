@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -52,6 +53,7 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 			if tc.valueMap {
 				ownerCode = "SEMANTIC_VALUE_MAP_INVALID"
 				want["artifactType"] = "VALUE_MAP"
+				want["rationale"] = map[string]any{"sourceColumn": map[string]string{"fieldName": "categoria", "sourceId": "places"}}
 				want["definition"] = map[string]any{
 					"targetVocabulary": "urn:example:vocabulary@00000000-0000-4000-8000-000000000001",
 					"entries": []map[string]string{
@@ -72,7 +74,11 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 				invalid = []string{
 					strings.Replace(args, `"code":"a"`, `"code":"b"`, 1),
 					strings.Replace(args, `"code":"a"`, `"code":"private-source-value "`, 1),
+					strings.Replace(args, `"code":"a"`, `"code":"A\u009fB"`, 1),
+					strings.Replace(args, `"code":"a"`, `"code":"\u00a0A1\u00a0"`, 1),
 					strings.Replace(args, `"code":"a"`, `"code":"`+strings.Repeat("x", 129)+`"`, 1),
+					strings.Replace(args, `"concept":"urn:concept:2"`, `"concept":"urn:`+strings.Repeat("x", 509)+`"`, 1),
+					strings.Replace(args, `"fieldName":"categoria"`, `"fieldName":""`, 1),
 				}
 			} else {
 				invalid = []string{strings.Replace(args, tc.replace, "private-source-value", 1)}
@@ -144,6 +150,136 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 			message := result.Content[0].(*mcp.TextContent).Text
 			if !strings.Contains(message, ownerCode) || strings.Contains(message, "private-source-value") {
 				t.Fatal("owner rejection must preserve the code and omit source data")
+			}
+		})
+	}
+}
+
+// D-084 r2, PET-mcp-002/097/099: byte boundaries through SDK and the Gateway adapter.
+func TestValueMapProposalByteLimits(t *testing.T) {
+	const tool = "semantic.propose"
+	const capability = "ouf.semantic.propose"
+	const definitionLimit = 786432
+	const argumentLimit = 1048576
+	fixture, err := os.ReadFile("testdata/value-types/" + tool + ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct{ Arguments map[string]any }
+	if err := json.Unmarshal(fixture, &request); err != nil {
+		t.Fatal(err)
+	}
+	args := request.Arguments
+	encode := func(value any) string {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	legacyLabel := strings.Repeat("&", 3000)
+	args["labels"] = map[string]string{"it": legacyLabel, "en": legacyLabel, "de": legacyLabel, "sl": legacyLabel}
+	legacyOversize := encode(args)
+	if len(legacyOversize) <= 65536 || len(legacyOversize) >= argumentLimit {
+		t.Fatal("invalid legacy fixture size")
+	}
+	args["artifactType"] = "VALUE_MAP"
+	args["labels"] = map[string]string{"it": "/////"}
+	args["rationale"] = map[string]any{"sourceColumn": map[string]string{"fieldName": "categoria"}}
+	entries := make([]map[string]string, 2000)
+	for i := range entries {
+		entries[i] = map[string]string{"code": fmt.Sprintf("%04d", i) + strings.Repeat("a", 124), "concept": "urn:" + strings.Repeat("z", 508)}
+	}
+	labels := map[string]string{"it": "Codici"}
+	definition := map[string]any{
+		"targetVocabulary": "urn:example:vocabulary@00000000-0000-4000-8000-000000000001",
+		"entries": entries, "labels": labels,
+	}
+	args["definition"] = definition
+	allFieldsMax := encode(args)
+	if len(encode(definition)) <= argumentLimit {
+		t.Fatal("all fields at their maxima must exceed both byte limits")
+	}
+	for _, entry := range entries {
+		entry["concept"] = entry["concept"][:239]
+	}
+	entries[len(entries)-1]["concept"] = "urn:" + strings.Repeat("z", 508)
+	// The canonical definition writes these five characters directly. The
+	// final literal backslash sequence still occupies seven JSON bytes.
+	entries[0]["code"] = "0000&<>\u2028\u2029" + `\u2028` + strings.Repeat("a", 113)
+	const extraGoEscapeBytes = 3*5 + 2*3
+	labels["it"] = ""
+	labels["it"] = strings.Repeat("A", definitionLimit-len(encode(definition))+extraGoEscapeBytes)
+	valid := encode(args)
+	wantDefinitionBytes := len(encode(definition)) - extraGoEscapeBytes
+	if wantDefinitionBytes != definitionLimit || len(valid) >= argumentLimit {
+		t.Fatal("invalid canonical boundary fixture")
+	}
+	labels["it"] += "A"
+	definitionOversize := encode(args)
+	// Equivalent JSON string escapes exercise the inbound argument limit
+	// without changing the canonical definition or exceeding its byte cap.
+	padding := argumentLimit - len(valid)
+	pad := func(extra int) string {
+		padded := strings.Replace(valid, "z", `\u007a`, extra/5)
+		return strings.Replace(padded, "/", `\/`, extra%5)
+	}
+	atLimit, overLimit := pad(padding), pad(padding+1)
+	if len(atLimit) != argumentLimit || len(overLimit) != argumentLimit+1 {
+		t.Fatal("invalid transport boundary fixture")
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Error("invalid Gateway envelope")
+			return
+		}
+		var sent struct {
+			Definition json.RawMessage
+			Rationale struct{ SourceColumn struct{ FieldName string } }
+		}
+		if json.Unmarshal(in.Arguments, &sent) != nil || in.IdempotencyKey != args["commandKey"] ||
+			r.URL.Path != "/semantic/create" || r.Header.Get("X-OUF-Delegation") != "human-proof" ||
+			len(sent.Definition) != definitionLimit || sent.Rationale.SourceColumn.FieldName != "categoria" ||
+			!strings.Contains(string(sent.Definition), `&<>`+"\u2028\u2029"+`\\u2028`) {
+			t.Error("governed dispatch changed the definition or metadata")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"DRAFT"}`))
+	}))
+	defer gateway.Close()
+	endpoint, _ := url.Parse(gateway.URL)
+	admission := &statusAdmission{}
+	service := &orchestration.Service{
+		RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: admission, FingerprintKey: make([]byte, 32),
+		Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")},
+	}
+	session := revisionSession(t, service, capability)
+	for _, tc := range []struct{ name, input, code string }{
+		{"legacy over 64 KiB", legacyOversize, "OWNER_COMMAND_ARGUMENTS_TOO_LARGE"},
+		{"2000 entries with both max-length fields", allFieldsMax, "INVALID_TOOL_ARGUMENTS"},
+		{"canonical limit plus one", definitionOversize, "INVALID_TOOL_ARGUMENTS"},
+		{"transport limit plus one", overLimit, "OWNER_COMMAND_ARGUMENTS_TOO_LARGE"},
+		{"exact transport and canonical limits", atLimit, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: json.RawMessage(tc.input)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.code != "" {
+				want := fmt.Sprintf(`{"code":%q,"retryable":false}`, tc.code)
+				if !result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != want ||
+					calls.Load() != 0 || admission.calls.Load() != 0 {
+					t.Fatal("expected a stable size error before admission and dispatch")
+				}
+				return
+			}
+			if result.IsError || calls.Load() != 1 || admission.calls.Load() != 1 {
+				t.Fatal("boundary request did not reach the Gateway once")
 			}
 		})
 	}

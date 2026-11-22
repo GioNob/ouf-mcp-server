@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "contracts/ouf-value-types-v1.json"
 VALUE_MAP_CONTRACT = ROOT / "contracts/ouf-value-maps-v1.json"
 MANIFEST = ROOT / "internal/manifest/capabilities.json"
-DIGEST = "4b90e85ecd1573404612ef0a0ee627feffaa9c189fe4363e82079bd07824c333"
-VALUE_MAP_DIGEST = "2f4528eb4c9c6bd9d2c6345464c8292f0cb3f36834cb2f54f81ae20e3dbe4a71"
+DIGEST = "3b85052e253b985f1082527eb595d2f02e5336047203deb3503a9766c1324295"
+VALUE_MAP_DIGEST = "40b247ad3422e09245a8314fdcc59ffe0b039e25733a2ca8f31aa6ba03ff2d2e"
 NAME = {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"}
 # publicationSetId is the UUID used by semantic.get and by Onboarding.
 PUBLICATION_SET_ID = r"[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}"
@@ -48,19 +48,22 @@ def ids(entries):
 
 
 def value_map_defs(labels):
-    # Unicode White_Space outside the control range U+0000 through U+001F.
-    whitespace = "\x20\x85\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
-    controls = r"[\x00-\x1F\x7F]"
-    space_or_control = {"not": {"pattern": controls + "|[" + whitespace + "]"}}
+    # Explicit Unicode White_Space from ouf.value-types.v1 r2.
+    whitespace = "\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+    space_or_control = {"not": {"pattern": r"[\x00-\x1F\x7F]|[" + whitespace + "]"}}
     code = {
         "type": "string",
         "minLength": 1,
         "maxLength": 128,
-        "not": {"pattern": controls + "|^[" + whitespace + "]|[" + whitespace + "]$"},
+        "not": {"pattern": r"[\x00-\x1F\x7F-\x9F]|^[" + whitespace + "]|[" + whitespace + "]$"},
     }
-    entry = obj({"code": code, "concept": ref("valueMapIri")}, ["code", "concept"])
+    entry = obj({"code": code, "concept": {**ref("valueMapIri"), "maxLength": 512}}, ["code", "concept"])
     return {
         "valueMapIri": {"type": "string", "format": "iri", **space_or_control, "pattern": ABSOLUTE_IRI + "$"},
+        "valueMapRationale": obj({"sourceColumn": obj({
+            "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+            "sourceId": {"type": "string"},
+        }, ["fieldName"])}, ["sourceColumn"]),
         "valueMapDefinition": obj({
             "targetVocabulary": {"type": "string", **space_or_control,
                                  "pattern": ABSOLUTE_IRI + "@" + PUBLICATION_SET_ID + "$"},
