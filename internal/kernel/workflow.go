@@ -237,10 +237,8 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	p := s.manifest.NextPolicies[c.NextPolicy]
 	obs := ownerObject(result)
 	structured := map[string]any{}
-	if obs != nil {
-		for k, v := range obs {
-			structured[k] = v
-		}
+	for k, v := range obs {
+		structured[k] = v
 	}
 	if result.IsError && obs["reasonCode"] == "NO_APPLICABLE_GRANT" {
 		structured["requiredCapability"] = c.RequiredAuthorization
