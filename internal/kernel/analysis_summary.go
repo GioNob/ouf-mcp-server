@@ -136,7 +136,12 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 
 // Try the requested page first. Smaller, non-final pages all carry the same
 // size cursor and continuation, so binary search finds the largest fitting prefix.
+// summaryEnvelopeReserve leaves room for the framing the MCP server adds after the tool
+// returns (_meta.serverInfo, resultType). The configured limit applies to the bytes on the wire.
+const summaryEnvelopeReserve = 512
+
 func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope analysis.Scope, pos analysis.Position, result analysis.Summary, maximum int) (*mcp.CallToolResult, int, error) {
+	maximum -= summaryEnvelopeReserve
 	engine := s.engine(ctx)
 	pos.Seq = result.Seq
 	build := func(n int) (*mcp.CallToolResult, int, error) {
