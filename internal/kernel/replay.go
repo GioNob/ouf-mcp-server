@@ -58,6 +58,10 @@ func replayResult(c manifest.Capability, args []byte, r orchestration.Result) *m
 				body["readArguments"] = map[string]string{"view": "ASSETS"}
 			}
 		}
+		if c.CapabilityID == orchestration.HandoffIssueCapability && r.ResultID != nil {
+			body["readTool"] = "source.file.upload.status"
+			body["readArguments"] = map[string]any{"handoffId": r.ResultID}
+		}
 		if r.ResultID != nil {
 			body["resultRef"] = r.ResultID
 			failed = false

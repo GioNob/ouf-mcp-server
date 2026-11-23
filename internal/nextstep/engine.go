@@ -24,13 +24,17 @@ type Object = map[string]any
 
 const Contract = "ouf.next-step.v1"
 
+const DefaultWaitMaxSeconds = 3600
+
 type Engine struct {
-	Errors     []manifest.Rule
-	Valid      func(string, Object) bool
-	Issue      func(manifest.Rule, Object, Object) Object
-	Now        func() time.Time
-	AnalysisID func(string, string) string
-	CommandKey func(string, Object, Object, Object) string
+	WaitMaxSeconds      int
+	PollIntervalSeconds int
+	Errors              []manifest.Rule
+	Valid               func(string, Object) bool
+	Issue               func(manifest.Rule, Object, Object) Object
+	Now                 func() time.Time
+	AnalysisID          func(string, string) string
+	CommandKey          func(string, Object, Object, Object) string
 }
 
 func step(action, reason, message string) Object {
@@ -352,7 +356,7 @@ func ensureProgress(tool string, input, next Object) Object {
 		remaining := slices.DeleteFunc(alts, same)
 		if len(alts) > 0 && len(remaining) == 0 {
 			actor, _ := next["actor"].(string)
-			if actor == "AGENT" {
+			if actor == "AGENT" || reason == "WAIT_DEADLINE_EXPIRED" {
 				actor = "OPERATOR"
 			}
 			message := next["userMessage"].(string)
@@ -393,13 +397,33 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		return e.failure(c, policy, input, owner)
 	}
 	obs := Observation(c.ToolName, input, owner)
+	if c.ToolName == "source.file.upload.status" || c.ToolName == "source.file.upload" {
+		if obs["legacy"] == true {
+			return (WaitRef{Read: "source.file.upload", Args: Object{}}).Block("HANDOFF_NOT_ISSUED", "Apri un nuovo selettore per scegliere il file.")
+		}
+		if obs["state"] == "EXPIRED" || obs["status"] == "EXPIRED" {
+			args := Object{"handoffId": get(obs, input, "@handoffId|handoffId")}
+			return (WaitRef{Read: "source.file.upload.status", Args: args}).Block("WAIT_DEADLINE_EXPIRED", "Rileggi l’esito registrato.")
+		}
+		waitUntil, _ := obs["waitUntil"].(string)
+		if waitUntil == "" && (obs["handoffId"] != nil || c.ToolName == "source.file.upload.status" || obs["status"] == "AWAITING_FILE_SELECTION") {
+			return ManualBlock("HANDOFF_DEADLINE_REQUIRED", "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
+		}
+		if c.ToolName == "source.file.upload.status" && obs["state"] == "PENDING" && obs["pickerUrl"] == nil {
+			if end, err := time.Parse(time.RFC3339Nano, waitUntil); err == nil && !e.Now().Before(end) {
+				return (WaitRef{Read: c.ToolName, Args: input}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta.")
+			}
+			return Block("HANDOFF_REFERENCE_REQUIRED", "ouf.wait", "Riprendi l’attesa con il waitRef ricevuto all’apertura del selettore.")
+		}
+	}
 	if c.ToolName == "ouf.ingestion.status" {
 		obs = recoveryObservation(obs)
 	}
 	if obs["replay"] == true {
 		tool, _ := obs["readTool"].(string)
 		args, _ := obs["readArguments"].(Object)
-		if tool == policy.Read && args != nil && e.Valid(tool, args) {
+		pickerReceipt := c.ToolName == "source.file.upload" && tool == "source.file.upload.status"
+		if (tool == policy.Read || pickerReceipt) && args != nil && e.Valid(tool, args) {
 			if id := input["analysisId"]; id != nil {
 				contextual := maps.Clone(args)
 				contextual["analysisId"] = id
@@ -506,22 +530,60 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			s["userMessage"] = r.Message
 		}
 		if r.Action == "POLL" {
-			delay, ok := retryDelay(obs, e.Now())
-			if !ok {
-				return Block("RETRY_WINDOW_UNAVAILABLE", policy.Read, "Verifica la finestra di ripresa.")
-			}
-			s["pollAfterSeconds"], s["terminalStates"] = delay, r.Terminal
-			if raw := get(obs, nil, "budgetDeadline|activationProgress.budgetExpiresAt"); raw != nil {
-				end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
-				if err != nil || !e.Now().Add(time.Duration(delay)*time.Second).Before(end) {
-					return Block("RETRY_WINDOW_EXHAUSTED", policy.Read, "Verifica il budget prima della prossima lettura.")
-				}
-				s["deadline"] = end.UTC().Format(time.RFC3339Nano)
-			}
+			return e.machinePoll(s, policy.Read, obs, args, r.Terminal)
 		}
 		return s
 	}
 	return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+}
+
+// A deadline is checked before proposing another delay, including an owner error.
+func (e Engine) machinePoll(next Object, read string, obs, args Object, terminal []string) Object {
+	now := e.Now()
+	end, valid := e.machineDeadline(obs)
+	if !valid {
+		return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la scadenza del lavoro con l’owner.", "OPERATOR")
+	}
+	if !end.IsZero() {
+		if !now.Before(end) {
+			if next["tool"] == read {
+				return (WaitRef{Read: read, Args: args}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Rileggi l’esito registrato su richiesta dell’utente.")
+			}
+			return ManualBlock("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Verifica l’esito del lavoro con l’operatore.", "OPERATOR")
+		}
+		next["deadline"] = end.UTC().Format(time.RFC3339Nano)
+	}
+	delay, ok := retryDelay(obs, now)
+	if !ok {
+		return Block("RETRY_WINDOW_UNAVAILABLE", read, "Verifica la finestra di ripresa.")
+	}
+	next["pollAfterSeconds"], next["terminalStates"] = max(delay, e.PollIntervalSeconds), terminal
+	return next
+}
+
+func (e Engine) machineDeadline(obs Object) (time.Time, bool) {
+	maximum := e.WaitMaxSeconds
+	if maximum == 0 {
+		maximum = DefaultWaitMaxSeconds
+	}
+	var earliest time.Time
+	for _, field := range []string{"deadline", "waitUntil", "expiresAt", "decisionDeadline", "budgetDeadline", "activationProgress.budgetExpiresAt", "createdAt", "startedAt"} {
+		raw := lookup(obs, field)
+		if raw == nil {
+			continue
+		}
+		end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+		if err != nil {
+			return time.Time{}, false
+		}
+		if field == "createdAt" || field == "startedAt" {
+			end = end.Add(time.Duration(maximum) * time.Second)
+		}
+		if earliest.IsZero() || end.Before(earliest) {
+			earliest = end
+		}
+	}
+	return earliest, true
 }
 
 // Only a single visible source in a complete page can select a run. Preserve
@@ -562,6 +624,12 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	code, _ := get(obs, nil, "reasonCode|code|Code").(string)
 	if !reasonPattern.MatchString(code) {
 		code = "OWNER_REQUEST_FAILED"
+	}
+	if c.ToolName == "source.file.upload" && code == "HANDOFF_DEADLINE_REQUIRED" {
+		return ManualBlock(code, "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
+	}
+	if c.ToolName == "source.file.upload.status" && code == "ONB_HANDOFF_UNKNOWN" {
+		return (WaitRef{Read: "source.file.upload", Args: Object{}}).Block(code, "Apri un nuovo selettore per scegliere il file.")
 	}
 	if AdmissionWindowCode(code) {
 		// The admission store refused before dispatch. It knows the exact
@@ -616,14 +684,7 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		}
 		s := call(r.Action, code, target, projected)
 		if r.Action == "POLL" {
-			delay, ok := retryDelay(obs, e.Now())
-			if !ok {
-				return Block(code, p.Read, "Verifica la finestra di ripresa.")
-			}
-			s["pollAfterSeconds"], s["terminalStates"] = delay, r.Terminal
-			if t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(obs["windowEndsAt"])); err == nil {
-				s["deadline"] = t.UTC().Format(time.RFC3339Nano)
-			}
+			return e.machinePoll(s, p.Read, obs, projected, r.Terminal)
 		}
 		return s
 	}
@@ -635,30 +696,36 @@ func AdmissionWindowCode(code string) bool {
 }
 
 func retryDelay(obs Object, now time.Time) (int, bool) {
-	raw := get(obs, nil, "RetryAfter|retryAfterSeconds|pollAfterSeconds")
-	if obs["recoveryAction"] != nil && obs["retryAt"] != nil && obs["RetryAfter"] == nil {
-		raw = nil
-	}
-	if raw == nil {
-		if at := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); at != nil {
-			t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(at))
+	delay := orchestration.PollIntervalSeconds
+	for _, field := range []string{"RetryAfter", "retryAfterSeconds", "pollAfterSeconds"} {
+		raw := get(obs, nil, field)
+		if raw == nil {
+			continue
+		}
+		seconds, err := strconv.Atoi(fmt.Sprint(raw))
+		if err != nil {
+			date, err := http.ParseTime(fmt.Sprint(raw))
 			if err != nil {
 				return 0, false
 			}
-			delay := max(orchestration.PollIntervalSeconds, int((t.Sub(now)+time.Second-1)/time.Second))
-			return delay, delay <= 3600
+			if date.After(now.Add(time.Hour)) {
+				return 0, false
+			}
+			seconds = max(0, int((date.Sub(now)+time.Second-1)/time.Second))
 		}
-		return orchestration.PollIntervalSeconds, true
-	}
-	s := fmt.Sprint(raw)
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		date, err := http.ParseTime(s)
-		if err != nil {
+		if seconds < 0 || seconds > 3600 {
 			return 0, false
 		}
-		n = int((date.Sub(now) + time.Second - 1) / time.Second)
-		n = max(n, 0)
+		delay = max(delay, seconds)
 	}
-	return max(n, orchestration.PollIntervalSeconds), n >= 0 && n <= 3600
+	if raw := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); raw != nil {
+		at, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+		if err != nil || at.After(now.Add(time.Hour)) {
+			return 0, false
+		}
+		if at.After(now) {
+			delay = max(delay, int((at.Sub(now)+time.Second-1)/time.Second))
+		}
+	}
+	return delay, true
 }

@@ -43,7 +43,14 @@ func AdmissionWindowBudget(in AdmissionRequest) (string, Cost, error) {
 		return semanticReadWindowBudget(in)
 	}
 	if in.BudgetProfile == "" {
-		return in.ManifestChecksum, Cost{ToolCalls: in.Maximum.ToolCalls * int64(in.RetryThreshold), ResultBytes: in.Maximum.ResultBytes * int64(in.RetryThreshold), DistinctObjects: in.Maximum.DistinctObjects * int64(in.RetryThreshold)}, nil
+		calls := in.CallsPerMinute
+		if calls == 0 {
+			calls = DefaultAdmissionCallsPerMinute
+		}
+		if calls < 1 {
+			return "", Cost{}, errors.New("invalid ordinary call budget")
+		}
+		return in.ManifestChecksum, Cost{ToolCalls: int64(calls), ResultBytes: in.Maximum.ResultBytes * int64(in.RetryThreshold), DistinctObjects: in.Maximum.DistinctObjects * int64(in.RetryThreshold)}, nil
 	}
 	if in.BudgetProfile != OperationalControlBudgetProfile || !IsOperationalControlRead(in.CapabilityID, in.OperationClass) ||
 		in.Window != AdmissionWindow || in.RetryThreshold != AdmissionRetryThreshold || in.Maximum.ToolCalls != 1 || in.Maximum.ResultBytes < 1 ||

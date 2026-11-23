@@ -16,11 +16,12 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schemas := map[string]*jsonschema.Resolved{
-		"source.file.upload.status": resolve(t, []byte(manifest.PickerStatusInputSchema)),
-	}
+	schemas := map[string]*jsonschema.Resolved{}
 	for _, c := range s.ToolEligible() {
 		schemas[c.ToolName] = resolve(t, c.InputSchema)
+		if c.ToolName == "source.file.upload" {
+			schemas["source.file.upload.status"] = resolve(t, c.HandoffInputSchema)
+		}
 	}
 	const id = "11111111-1111-4111-8111-111111111111"
 	fixture := Object{

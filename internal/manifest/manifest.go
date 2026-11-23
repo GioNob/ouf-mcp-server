@@ -21,6 +21,7 @@ type Snapshot struct {
 }
 
 type Capability struct {
+	HandoffInputSchema    json.RawMessage `json:"handoffInputSchema,omitempty"`
 	ToolName              string          `json:"toolName"`
 	CapabilityID          string          `json:"capabilityId"`
 	Purpose               string          `json:"purpose"`

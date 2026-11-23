@@ -31,6 +31,14 @@ func (s statusBundle) FetchActive(context.Context) (authorization.ActivePolicyBu
 
 type statusAdmission struct{ calls atomic.Int32 }
 
+func (*statusAdmission) ClaimWaitRead(context.Context, orchestration.Identity, string, time.Duration, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (s *statusAdmission) ChargeWait(context.Context, orchestration.Identity, string, int) error {
+	return nil
+}
+
 func (s *statusAdmission) Reserve(_ context.Context, in orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
 	s.calls.Add(1)
 	return orchestration.AdmissionDecision{AttemptID: in.AttemptID}, nil

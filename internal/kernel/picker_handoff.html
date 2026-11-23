@@ -6,21 +6,18 @@
 <style>
   html, body { margin: 0; min-height: 164px; }
   body { box-sizing: border-box; padding: 14px 18px 18px; font: 15px/1.45 system-ui, sans-serif; }
-  #status, #asset { margin: 0 0 12px; max-width: 58ch; overflow-wrap: anywhere; }
+  #status { margin: 0 0 12px; max-width: 58ch; overflow-wrap: anywhere; }
   #open { padding: 9px 14px; border-radius: 7px; cursor: pointer; font: inherit; }
 </style>
 <body>
 <p id="status" role="status">Preparazione del selettore OUF…</p>
-<p id="asset" hidden></p>
 <button id="open" type="button" hidden>Scegli file in OUF</button>
 <script>
 (() => {
   const status = document.getElementById('status');
-  const asset = document.getElementById('asset');
   const button = document.getElementById('open');
-  const pickerPrefix = 'https://api.ouf-lab.it/trusted-human/managed-files/?handoff=';
+  const allowedOrigin = "__OUF_PICKER_ORIGIN__";
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   let host;
 
   // Standard MCP Apps JSON-RPC over postMessage; no host-specific global.
@@ -73,10 +70,6 @@
       return {
         result: async () => output || await resultReady,
         open: url => request('ui/open-link', {url}),
-        call: id => request('tools/call', {name: 'source.file.upload.status', arguments: {handoffId: id}}),
-        message: id => request('ui/message', {
-          role: 'user', content: [{type: 'text', text: 'OUF ha registrato il file con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}]
-        }),
         resize: height => notification('ui/notifications/size-changed', {height})
       };
     } catch (_) {
@@ -113,8 +106,6 @@
         });
       },
       open: url => api.openExternal ? api.openExternal({href: url, redirectUrl: false}) : window.open(url, '_blank', 'noopener'),
-      call: id => api.callTool('source.file.upload.status', {handoffId: id}),
-      message: id => api.sendFollowUpMessage({prompt: 'OUF ha registrato il file con Asset ID ' + id + '. Prosegui con source.file.profile per questo asset.'}),
       resize: height => api.notifyIntrinsicHeight?.(height)
     };
   }
@@ -137,8 +128,10 @@
     height();
     const initial = extract(await host.result());
     const id = initial?.handoffId;
-    const url = initial?.pickerUrl;
-    if (!uuid.test(id ?? '') || url !== pickerPrefix + id) {
+    const next = initial?.next;
+    const url = next?.human?.reviewUrl;
+    if (next?.action !== 'WAIT_FOR_HUMAN' || next.human?.decisionKind !== 'CHOOSE_FILE' ||
+        !uuid.test(id ?? '') || url !== initial.pickerUrl || new URL(url).origin !== allowedOrigin) {
       status.textContent = 'Collegamento al picker non disponibile. Avvia un nuovo caricamento dalla chat.';
       return;
     }
@@ -147,40 +140,8 @@
       try { await host.open(url); }
       catch (_) { status.textContent = 'Apri il collegamento OUF mostrato nella risposta del tool.'; }
     };
-    status.textContent = 'Scegli un file in OUF. Questo riquadro attende l’esito.';
+    status.textContent = 'Scegli un file in OUF. La chat attende l’esito.';
     height();
-    for (let n = 0; n < 90; n++) {
-      await wait(10000);
-      let reply;
-      try { reply = await host.call(id); }
-      catch (_) { continue; }
-      const result = extract(reply);
-      if (result?.status === 'REJECTED') {
-        status.textContent = result.code === 'FORMAT_UNSUPPORTED' ? 'Formato non ancora gestito per il caricamento. Al momento è supportato CSV.' :
-          'Il file deve essere non vuoto e non superare 10 MiB.';
-        height();
-        return;
-      }
-      if (reply?.isError || result?.code) {
-        status.textContent = 'Impossibile leggere l’esito. L’Asset ID resta visibile nella pagina OUF.';
-        return;
-      }
-      if (result?.status !== 'STAGED' || !uuid.test(result.assetId ?? '')) continue;
-      asset.hidden = false;
-      asset.textContent = 'Asset ID: ' + result.assetId;
-      status.textContent = 'File registrato. L’host potrebbe chiederti di confermare il messaggio per proseguire in chat.';
-      height();
-      try {
-        const acknowledged = await host.message(result.assetId);
-        if (acknowledged?.isError) throw new Error('Host refused message');
-        status.textContent = 'Richiesta accettata dall’host. Se non appare in chat, usa l’Asset ID qui sopra.';
-      } catch (_) {
-        status.textContent = 'Il messaggio alla chat non è confermato. Usa l’Asset ID qui sopra per proseguire.';
-      }
-      height();
-      return;
-    }
-    status.textContent = 'L’attesa è terminata. Se il file è stato caricato, l’Asset ID resta visibile in OUF.';
   })().catch(() => {
     status.textContent = 'Selettore non disponibile. Usa il link OUF presente nella risposta del tool.';
   });

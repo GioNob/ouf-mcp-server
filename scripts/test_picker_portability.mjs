@@ -6,8 +6,9 @@ const html = fs.readFileSync(new URL('../internal/kernel/picker_handoff.html', i
 const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
 assert.ok(script);
 const id = '11111111-1111-4111-8111-111111111111';
-const assetId = '22222222-2222-4222-8222-222222222222';
-const pickerUrl = 'https://api.ouf-lab.it/trusted-human/managed-files/?handoff=' + id;
+const pickerUrl = 'https://owner.example.invalid/picker?handoff=' + id;
+
+const receipt = {handoffId: id, pickerUrl, next: {action: 'WAIT_FOR_HUMAN', human: {decisionKind: 'CHOOSE_FILE', reviewUrl: pickerUrl}}};
 
 async function scenario(mode) {
   const elements = Object.fromEntries(['status', 'asset', 'open'].map(name => [name, {
@@ -20,7 +21,6 @@ async function scenario(mode) {
     if (mode !== 'apps') return;
     let result;
     if (message.method === 'ui/initialize') result = {protocolVersion: '2026-01-26', hostCapabilities: {serverTools: {}, message: {}}};
-    else if (message.method === 'tools/call') result = {structuredContent: {status: 'STAGED', assetId}};
     else if (message.method === 'ui/message' || message.method === 'ui/open-link') result = {};
     else return;
     queueMicrotask(() => listeners.get('message')?.({source: parent, data: {jsonrpc: '2.0', id: message.id, result}}));
@@ -30,30 +30,27 @@ async function scenario(mode) {
     removeEventListener(name) { listeners.delete(name); }
   };
   if (mode === 'chatgpt') window.openai = {
-    toolOutput: {handoffId: id, pickerUrl},
-    callTool: async () => ({structuredContent: {status: 'STAGED', assetId}}),
-    sendFollowUpMessage: async () => ({}),
+    toolOutput: receipt,
+    callTool: async () => calls.push({method: 'tools/call'}),
+    openExternal: ({href}) => calls.push({method: 'ui/open-link', params: {url: href}}),
     notifyIntrinsicHeight: () => {}
   };
   const context = {window, document: {
     getElementById: name => elements[name], body: {scrollHeight: 164}
   }, ResizeObserver: undefined,
   setTimeout: (callback, ms) => setTimeout(callback, ms === 10000 ? 1 : ms),
-  clearTimeout, Promise, Map, Error, JSON};
-  vm.runInNewContext(script, context);
+  clearTimeout, Promise, Map, Error, JSON, URL};
+  vm.runInNewContext(script.replace('"__OUF_PICKER_ORIGIN__"', JSON.stringify(new URL(pickerUrl).origin)), context);
   if (mode === 'apps') {
     await new Promise(resolve => setTimeout(resolve, 10));
     listeners.get('message')?.({source: parent, data: {jsonrpc: '2.0', method: 'ui/notifications/tool-result',
-      params: {structuredContent: {handoffId: id, pickerUrl}}}});
+      params: {structuredContent: receipt}}});
   }
   await new Promise(resolve => setTimeout(resolve, mode === 'apps' ? 60 : 2600));
-  assert.equal(elements.asset.textContent, 'Asset ID: ' + assetId);
-  assert.equal(elements.asset.hidden, false);
-  assert.match(elements.status.textContent, /Se non appare in chat/);
-  if (mode === 'apps') {
-    assert.deepEqual(calls.filter(c => c.method === 'tools/call').map(c => c.params.name), ['source.file.upload.status']);
-    assert.equal(calls.filter(c => c.method === 'ui/message').length, 1);
-  }
+  assert.equal(elements.open.hidden, false);
+  await elements.open.onclick();
+  assert.equal(calls.find(c => c.method === 'ui/open-link')?.params.url, pickerUrl);
+  assert.equal(calls.filter(c => c.method === 'tools/call' || c.method === 'ui/message').length, 0);
 }
 await scenario('apps');
 await scenario('chatgpt');

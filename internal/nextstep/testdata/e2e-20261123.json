@@ -6,7 +6,10 @@
       "owner": {
         "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f",
         "pickerUrl": "https://ths.example.invalid/trusted-human/managed-files/?handoff=fafe72c3-24a9-4c67-bfd2-a408be01d40f",
-        "status": "AWAITING_FILE_SELECTION"
+        "issuedAt": "2000-01-01T00:00:00Z",
+        "waitUntil": "2000-01-01T01:00:00Z",
+        "state": "PENDING",
+        "observationVersion": "1"
       }
     },
     {
@@ -20,20 +23,11 @@
         ],
         "reasonCode": "UPLOAD_PENDING",
         "status": "PENDING",
-        "workflowState": "PENDING"
-      }
-    },
-    {
-      "tool": "source.file.upload.status",
-      "input": {
-        "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f"
-      },
-      "error": {
-        "code": "TOOL_SELECTION_STALL",
-        "dimension": "EQUIVALENT_ATTEMPTS",
-        "retryAfterSeconds": 23,
-        "retryable": true,
-        "windowEndsAt": "2026-11-23T12:16:00Z"
+        "workflowState": "PENDING",
+        "state": "PENDING",
+        "observationVersion": "1",
+        "issuedAt": "2000-01-01T00:00:00Z",
+        "waitUntil": "2000-01-01T01:00:00Z"
       }
     },
     {
@@ -61,6 +55,10 @@
         ],
         "assetId": "4875f080-d27f-4d4a-a911-9491883439bb",
         "reasonCode": "UPLOAD_STAGED",
+        "state": "STAGED",
+        "issuedAt": "2000-01-01T00:00:00Z",
+        "waitUntil": "2000-01-01T01:00:00Z",
+        "observationVersion": "2",
         "status": "STAGED",
         "workflowState": "STAGED"
       }

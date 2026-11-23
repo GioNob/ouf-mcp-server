@@ -15,7 +15,7 @@ func TestOperationalControlBudgetDoesNotRaiseBusinessOrEquivalentRetryLimits(t *
 	request.CapabilityID = "urban.object.related_search"
 	request.OperationClass = "SEARCH"
 	key, budget, err = AdmissionWindowBudget(request)
-	if err != nil || key != "manifest" || budget.ToolCalls != 3 || budget.ResultBytes != 3*(512<<10) {
+	if err != nil || key != "manifest" || budget.ToolCalls != DefaultAdmissionCallsPerMinute || budget.ResultBytes != 3*(512<<10) {
 		t.Fatal("business budget changed", key, budget, err)
 	}
 }

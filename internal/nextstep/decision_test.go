@@ -3,6 +3,7 @@ package nextstep
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -107,39 +108,23 @@ func TestObedientPollsFitAdmissionWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	const id = "11111111-1111-4111-8111-111111111111"
-	args := Object{"handoffId": id}
-	owner := Object{"status": "PENDING", "allowedActions": []any{"READ_AGAIN"}}
-	request := orchestration.AdmissionRequest{ManifestChecksum: "fixture", CapabilityID: "ouf.managed-source.upload",
-		OperationClass: "COMMAND", Window: orchestration.AdmissionWindow, RetryThreshold: orchestration.AdmissionRetryThreshold,
-		Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 4096, DistinctObjects: 1}}
-	_, capacity, err := orchestration.AdmissionWindowBudget(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := manifest.Capability{ToolName: "source.file.upload.status"}
-	schema := resolve(t, []byte(manifest.PickerStatusInputSchema))
-	for offset := time.Duration(0); offset < request.Window; offset += time.Second {
+	args := Object{"requestId": id}
+	owner := Object{"state": "RUNNING"}
+	c := manifest.Capability{ToolName: "semantic.discovery.status"}
+	for offset := time.Duration(0); offset < orchestration.AdmissionWindow; offset += time.Second {
 		now := time.Unix(0, 0).Add(offset)
-		e := Engine{Now: func() time.Time { return now }, Valid: func(tool string, args Object) bool {
-			return tool == c.ToolName && schema.Validate(args) == nil
-		}}
-		window := now.Truncate(request.Window)
-		// A preceding CALL_TOOL burst has already consumed the shared window.
-		calls, equivalents := capacity.ToolCalls, request.RetryThreshold-1
-		for i := 0; i < 10; i++ {
-			next := e.Evaluate(c, m.NextPolicies["upload"], args, owner, false)
-			if next["action"] != "POLL" || next["tool"] != c.ToolName || !reflect.DeepEqual(next["arguments"], args) {
+		e := Engine{Now: func() time.Time { return now }, Valid: func(name string, a Object) bool { return name == c.ToolName && reflect.DeepEqual(a, args) }}
+		calls := map[time.Time]int{}
+		for range 30 {
+			next := e.Evaluate(c, m.NextPolicies["discovery"], args, owner, false)
+			if next["action"] != "POLL" || next["pollAfterSeconds"] != 5 {
 				t.Fatal(next)
 			}
-			delay := next["pollAfterSeconds"].(int)
-			now = now.Add(time.Duration(delay) * time.Second)
-			if start := now.Truncate(request.Window); start != window {
-				window, calls, equivalents = start, 0, 0
-			}
-			calls++
-			equivalents++
-			if calls > capacity.ToolCalls || equivalents >= request.RetryThreshold {
-				t.Fatalf("poll rejected at phase %v, calls=%d equivalent=%d", offset, calls, equivalents)
+			now = now.Add(time.Duration(next["pollAfterSeconds"].(int)) * time.Second)
+			window := now.Truncate(orchestration.AdmissionWindow)
+			calls[window]++
+			if calls[window]+orchestration.AdmissionRetryThreshold > orchestration.DefaultAdmissionCallsPerMinute {
+				t.Fatal("cadence exhausted the ordinary window", offset, calls)
 			}
 		}
 	}
@@ -175,5 +160,59 @@ func TestWindowRefusalPreservesCommand(t *testing.T) {
 				t.Fatal("permanent refusal permitted retry", code)
 			}
 		}
+	}
+}
+
+func TestMachineWaitUsesAbsoluteOwnerClock(t *testing.T) {
+	m, err := manifest.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("../../contracts/ouf-next-step-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := resolve(t, raw)
+	start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	now := start
+	c := manifest.Capability{ToolName: "semantic.discovery.status"}
+	args := Object{"requestId": "11111111-1111-4111-8111-111111111111"}
+	owner := Object{"state": "RUNNING", "pollAfterSeconds": 17}
+	e := Engine{Now: func() time.Time { return now }, Valid: func(string, Object) bool { return true }}
+	check := func() Object {
+		t.Helper()
+		next := e.Evaluate(c, m.NextPolicies["discovery"], args, owner, false)
+		if err := schema.Validate(asJSON(t, next)); err != nil {
+			t.Fatal(err)
+		}
+		return next
+	}
+	if next := check(); next["deadline"] != nil || next["pollAfterSeconds"] != 17 {
+		t.Fatal(next)
+	}
+	owner["deadline"] = start.Add(2 * time.Hour).Format(time.RFC3339)
+	if next := check(); next["deadline"] != owner["deadline"] {
+		t.Fatal(next)
+	}
+	owner["createdAt"] = start.Format(time.RFC3339)
+	hour := start.Add(time.Hour)
+	now = hour.Add(-time.Second)
+	if next := check(); next["deadline"] != hour.Format(time.RFC3339) || next["action"] != "POLL" {
+		t.Fatal(next)
+	}
+	now = hour
+	if next := check(); next["reasonCode"] != "WAIT_DEADLINE_EXPIRED" || next["actor"] != "OPERATOR" {
+		t.Fatal(next)
+	}
+	now = start
+	delete(owner, "createdAt")
+	owner["startedAt"] = start.Format(time.RFC3339)
+	e.WaitMaxSeconds = 120
+	if next := check(); next["deadline"] != start.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatal(next)
+	}
+	owner["waitUntil"] = start.Add(time.Minute).Format(time.RFC3339)
+	if next := check(); next["deadline"] != owner["waitUntil"] {
+		t.Fatal(next)
 	}
 }

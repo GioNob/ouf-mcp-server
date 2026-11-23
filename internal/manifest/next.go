@@ -10,8 +10,6 @@ import (
 
 const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key. For BLOCKED/AGENT choose only a listed alternative, preserve its supplied arguments, and complete missing decision fields from the indicated evidence using its input schema."
 
-const PickerStatusInputSchema = `{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`
-
 type Policy struct {
 	Read       string              `json:"read"`
 	Vocabulary map[string][]string `json:"vocabulary,omitempty"`

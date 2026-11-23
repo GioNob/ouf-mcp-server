@@ -25,7 +25,7 @@ func TestSemanticReadBudgetProfile(t *testing.T) {
 	request.CapabilityID = "ouf.semantic.propose"
 	request.OperationClass = "COMMAND"
 	key, budget, err := AdmissionWindowBudget(request)
-	if err != nil || key != "manifest" || budget.ToolCalls != 3 {
+	if err != nil || key != "manifest" || budget.ToolCalls != DefaultAdmissionCallsPerMinute {
 		t.Fatal("command window changed", key, budget, err)
 	}
 }

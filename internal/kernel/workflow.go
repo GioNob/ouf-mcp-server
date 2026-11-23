@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/contracts"
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
@@ -30,11 +31,12 @@ type registeredTool struct {
 
 type workflowServer struct {
 	*mcp.Server
-	manifest *manifest.Snapshot
-	tools    map[string]registeredTool
-	waits    *waitService
-	thsLinks map[string]linkLookup
-	key      []byte
+	manifest   *manifest.Snapshot
+	nextSchema *jsonschema.Resolved
+	tools      map[string]registeredTool
+	waits      *waitService
+	thsLinks   map[string]linkLookup
+	key        []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -46,7 +48,11 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 		installationKey = make([]byte, 32)
 		rand.Read(installationKey)
 	}
-	return &workflowServer{Server: sdk, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	schema, err := contracts.NextStepSchema()
+	if err != nil {
+		return nil, err
+	}
+	return &workflowServer{Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -132,6 +138,10 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		tool.Description += " " + manifest.FollowNext
 	}
 	c.ToolName = name
+	if name == "source.file.upload.status" {
+		// The predecessor Gateway route uses the upload envelope. Its bound handoff operation is read-only.
+		c.OperationClass = "READ"
+	}
 	t := registeredTool{c, input, manifest.InputForms(raw), budget.HardMaxResultBytes, run}
 	s.tools[name] = t
 	s.Server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -161,10 +171,29 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 				body := out.StructuredContent.(map[string]any)
 				body["changed"], body["observation"] = false, nil
 			}
-			return out, nil
+			result = out
+		} else {
+			result = s.decorate(ctx, t, args, result)
 		}
-		return s.decorate(ctx, t, args, result), nil
+		return s.validateNext(name, result), nil
 	})
+}
+
+func (s *workflowServer) validateNext(name string, result *mcp.CallToolResult) *mcp.CallToolResult {
+	body, _ := result.StructuredContent.(nextstep.Object)
+	raw, err := json.Marshal(body["next"])
+	var next nextstep.Object
+	if err == nil && json.Unmarshal(raw, &next) == nil && next != nil && s.nextSchema.Validate(next) == nil {
+		return result
+	}
+	const code = "NEXT_CONTRACT_INVALID"
+	fallback := nextstep.ManualBlock(code, "Chiedi all’operatore di verificare il passo successivo.", "OPERATOR")
+	body = nextstep.Object{"code": code, "next": fallback}
+	if name == "ouf.wait" {
+		body["changed"], body["observation"] = false, nil
+	}
+	wire, _ := json.Marshal(body)
+	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
 }
 
 func ownerObject(result *mcp.CallToolResult) nextstep.Object {
@@ -198,7 +227,7 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 }
 
 func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
-	return nextstep.Engine{Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
+	return nextstep.Engine{WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
 		t, ok := s.tools[r.Tool]
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
@@ -272,17 +301,18 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	result.StructuredContent = structured
 	code, _ := structured["code"].(string)
 	windowRefusal := result.IsError && nextstep.AdmissionWindowCode(code)
-	if windowRefusal {
+	pickerIssued := c.ToolName == "source.file.upload" && obs["pickerUrl"] != nil
+	if windowRefusal || pickerIssued {
 		// Some MCP clients surface only text content for tool errors.
 		body, _ := json.Marshal(structured)
 		result.Content = []mcp.Content{&mcp.TextContent{Text: string(body)}}
 	}
 	out := s.boundedResult(result, t)
-	if out != result && windowRefusal {
+	if out != result && (windowRefusal || pickerIssued) {
 		// Prefer the complete structured retry if only its text duplicate
 		// overflows the wire budget, as for large preview pages below.
 		compact := *result
-		compact.Content = []mcp.Content{&mcp.TextContent{Text: "Il rifiuto e il passo successivo sono in structuredContent."}}
+		compact.Content = []mcp.Content{&mcp.TextContent{Text: "Il risultato e il passo successivo sono in structuredContent."}}
 		return s.boundedResult(&compact, t)
 	}
 	if out != result && !result.IsError && c.ToolName == "source.file.preview" {

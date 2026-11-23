@@ -108,7 +108,9 @@ func (s *workflowServer) bindTHSLinks(service *orchestration.Service) error {
 				resource.ResourceType = "semantic.challenge"
 				resource.ResourceID = args["challengeId"].(string)
 			}
+			internalRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
 			response, err := service.Call(ctx, orchestration.Invocation{
+				InternalWaitRead:          internalRead,
 				Identity:                  identity.Identity,
 				CapabilityID:              c.CapabilityID,
 				Owner:                     c.Owner,

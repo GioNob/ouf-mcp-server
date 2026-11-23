@@ -95,6 +95,9 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
+	CallsPerMinute                                                                  int
+	StatusRead                                                                      bool
+	InternalWaitRead                                                                bool
 	Reprocessing                                                                    *reprocessing.VerifiedPermit
 	AttemptTimeout                                                                  time.Duration
 	BudgetProfile                                                                   string
@@ -178,7 +181,18 @@ type AuditPort interface {
 	Audit(context.Context, AuditEvent) error
 }
 
+const HandoffIssueCapability = "ouf.managed-source.file.handoff-issue"
+
+// The issue route shares the upload grant. Its only dispatch argument is the
+// MCP-generated idempotency key for this invocation.
+func ValidHandoffIssue(identity Identity, operation, key string, raw json.RawMessage) bool {
+	var args map[string]string
+	return identity.ActorType == "HUMAN" && identity.Delegation != "" && operation == "COMMAND" &&
+		len(key) == 36 && uuid.Validate(key) == nil && json.Unmarshal(raw, &args) == nil && len(args) == 1 && args["commandKey"] == key
+}
+
 type Invocation struct {
+	InternalWaitRead bool
 	// Trusted manifest binding, never taken from tool arguments. Transport,
 	// fingerprints and budget identity continue to use CapabilityID.
 	AuthorizationCapabilityID                                                string
@@ -204,14 +218,15 @@ type Result struct {
 }
 
 type Service struct {
-	ReprocessingGuard func() error
-	Reprocessing      *reprocessing.VerifiedPermit
-	RequireDelegation bool
-	Auth              AuthorizationPort
-	Admission         AdmissionPort
-	Gateway           GatewayPort
-	Audit             AuditPort
-	FingerprintKey    []byte
+	AdmissionCallsPerMinute int
+	ReprocessingGuard       func() error
+	Reprocessing            *reprocessing.VerifiedPermit
+	RequireDelegation       bool
+	Auth                    AuthorizationPort
+	Admission               AdmissionPort
+	Gateway                 GatewayPort
+	Audit                   AuditPort
+	FingerprintKey          []byte
 }
 
 func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
@@ -235,6 +250,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	if s.RequireDelegation && in.Identity.Delegation == "" {
 		return Result{}, &AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
+	}
+	if in.CapabilityID == HandoffIssueCapability && (in.AuthorizationCapabilityID != "ouf.managed-source.file.upload" || !ValidHandoffIssue(in.Identity, in.OperationClass, in.IdempotencyKey, in.Arguments)) {
+		return Result{}, errors.New("INVALID_HANDOFF_ISSUE")
 	}
 	if in.Upload != nil && (in.CapabilityID != "ouf.managed-source.file.upload" || in.Upload.Reader == nil || in.Upload.Size < 1 || in.Upload.Size > 10*1024*1024) {
 		return Result{}, fmt.Errorf("invalid governed upload")
@@ -326,7 +344,12 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 			return Result{}, err
 		}
 	}
+	statusRead := isPollRead(in)
+	if in.InternalWaitRead && !statusRead {
+		return Result{}, errors.New("invalid internal wait read")
+	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
+		CallsPerMinute: s.AdmissionCallsPerMinute, StatusRead: statusRead, InternalWaitRead: in.InternalWaitRead,
 		Reprocessing: permit, AttemptTimeout: in.Timeout,
 		BudgetProfile: in.BudgetProfile,
 		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
@@ -360,11 +383,12 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		MaxResultBytes: in.Maximum.ResultBytes,
 		Upload:         in.Upload,
 	}, in.Timeout)
-	if in.CapabilityID == "ouf.semantic.discovery.adopt" && callErr == nil && response.Status >= 500 {
+	uncertainCommand := in.CapabilityID == "ouf.semantic.discovery.adopt" || in.CapabilityID == HandoffIssueCapability
+	if uncertainCommand && callErr == nil && response.Status >= 500 {
 		// A Gateway failure after forwarding cannot establish whether the owner committed.
 		callErr = ErrIdempotencyOutcomeUnknown
 	}
-	if (permit != nil || in.CapabilityID == "ouf.semantic.discovery.adopt") && callErr != nil {
+	if (permit != nil || uncertainCommand) && callErr != nil {
 		// Dispatch may have reached the owner. Preserve the finite lease and
 		// reservation for native UNKNOWN recovery; never infer a known failure
 		// or make this one-use session available for another dispatch.
@@ -388,6 +412,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		response.Problem = &Problem{Status: response.Status, Code: outcome.Code}
 	}
 	actual := Cost{ToolCalls: 1, ResultBytes: int64(len(response.Body))}
+	if in.InternalWaitRead {
+		actual.ToolCalls = 0
+	}
 	redacted := false
 	if publicStatus && callErr == nil && response.Problem == nil && response.Status >= 200 && response.Status < 300 && actual.ResultBytes <= in.Maximum.ResultBytes {
 		response.Body, callErr = statusview.Project(response.Body)
@@ -456,7 +483,7 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "idempotencyKey")
 		}
-	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
+	case HandoffIssueCapability, "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "commandKey")
 		}

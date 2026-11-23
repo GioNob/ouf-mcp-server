@@ -1,5 +1,5 @@
 {
-  "version": "1.15.3-next-step-v1",
+  "version": "1.15.4-human-wait-v1",
   "nextErrors": [
     {"when": {"code": "INVALID_TOOL_ARGUMENTS", "tool": "source.file.preview", "@assetId": "?", "@profileId": "?", "@jobId": "-", "@view": "-"}, "action": "CALL_TOOL", "reason": "INVALID_TOOL_ARGUMENTS", "tool": "source.file.preview", "args": {"assetId": "@assetId", "profileId": "@profileId"}},
     {"when": {"code": "INVALID_TOOL_ARGUMENTS", "tool": "source.file.preview", "@assetId": "?", "@jobId": "?", "@profileId": "-", "@view": "-"}, "action": "CALL_TOOL", "reason": "INVALID_TOOL_ARGUMENTS", "tool": "source.file.preview", "args": {"assetId": "@assetId", "jobId": "@jobId"}},
@@ -17,9 +17,9 @@
       "read": "source.file.preview",
       "vocabulary": {"workflowState": ["PENDING", "STAGED", "PROFILED", "QUARANTINED", "REJECTED", "ERROR"], "workflowState|status": ["PENDING", "STAGED", "PROFILED", "QUARANTINED", "REJECTED", "ERROR", "AWAITING_FILE_SELECTION"]},
       "rules": [
-        {"when": {"workflowState|status": "AWAITING_FILE_SELECTION|PENDING"}, "action": "POLL", "reason": "FILE_SELECTION_PENDING", "tool": "source.file.upload.status", "args": {"handoffId": "handoffId|@handoffId"}, "terminal": ["STAGED", "REJECTED"]},
-        {"when": {"workflowState|status": "STAGED|PROFILED"}, "action": "CALL_TOOL", "reason": "ASSET_AVAILABLE", "tool": "source.file.profile", "args": {"commandKey": "#uuid", "assetId": "assetId|@assetId"}},
-        {"when": {"workflowState|status": "QUARANTINED|REJECTED"}, "action": "BLOCKED", "reason": "FILE_REVIEW_REQUIRED", "tool": "source.file.preview", "message": "Verifica lo stato del file prima di proseguire."}
+        {"when": {"state|workflowState|status": "AWAITING_FILE_SELECTION|PENDING"}, "action": "WAIT_FOR_HUMAN", "reason": "FILE_SELECTION_PENDING", "tool": "source.file.upload.status", "args": {"handoffId": "handoffId|@handoffId"}, "decision": "CHOOSE_FILE"},
+        {"when": {"state|workflowState|status": "STAGED|PROFILED"}, "action": "CALL_TOOL", "reason": "ASSET_AVAILABLE", "tool": "source.file.profile", "args": {"commandKey": "#uuid", "assetId": "assetId|@assetId"}},
+        {"when": {"state|workflowState|status": "QUARANTINED|REJECTED"}, "action": "BLOCKED", "reason": "FILE_REVIEW_REQUIRED", "tool": "source.file.preview", "message": "Verifica lo stato del file prima di proseguire."}
       ]
     },
     "profile": {
@@ -3683,7 +3683,52 @@
       }
     },
     {
+      "capabilityId": "ouf.managed-source.file.handoff-issue",
+      "purpose": "Issue a durable file picker handoff for the delegated human",
+      "useWhen": ["source.file.upload opens the first-party picker"],
+      "doNotUseWhen": ["reading a previously issued handoff"],
+      "preferredAlternatives": ["source.file.upload.status"],
+      "operationalLimits": {"maxArgumentsBytes": 4096, "maxResultBytes": 4096},
+      "resultSemantics": "Owner-issued handoffId, pickerUrl, issuedAt, waitUntil, state and observationVersion",
+      "securityNotes": ["Gateway mediates the HUMAN upload grant with managed-file-delegation-v1"],
+      "mcpClass": "MCP_INTERNAL",
+      "owner": "onboarding",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.file.upload",
+      "gatewayBindingRef": "capability://ouf.managed-source.file.handoff-issue",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 4096,
+        "hardMaxElapsedMs": 30000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commandKey"
+        ],
+        "properties": {
+          "commandKey": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "allowedActors": [
+        "HUMAN"
+      ]
+    },
+    {
       "toolName": "source.file.upload",
+      "handoffInputSchema": {"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}},
       "nextPolicy": "upload",
       "capabilityId": "ouf.managed-source.file.upload",
       "purpose": "Stage an authenticated user's CSV through the governed Gateway",

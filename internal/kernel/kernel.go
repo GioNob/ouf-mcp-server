@@ -120,6 +120,21 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 		return nil, err
 	}
 	if service != nil {
+		service.AdmissionCallsPerMinute = server.waits.callsPerMinute
+		checksum, err := snapshot.Checksum()
+		if err != nil {
+			return nil, err
+		}
+		admission, hasWaitAdmission := service.Admission.(waitAdmission)
+		if hasWaitAdmission {
+			server.waits.claimRead = admission.ClaimWaitRead
+		}
+		server.waits.charge = func(ctx context.Context, identity orchestration.Identity) error {
+			if !hasWaitAdmission {
+				return fmt.Errorf("WAIT_ADMISSION_UNAVAILABLE")
+			}
+			return admission.ChargeWait(ctx, identity, checksum, server.waits.callsPerMinute)
+		}
 		if err := server.bindTHSLinks(service); err != nil {
 			return nil, err
 		}
@@ -132,7 +147,13 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 		if capability.ToolName == "source.file.upload" {
 			if service != nil && pickerURL != "" {
 				registerPickerUploadWidget(sdk, pickerURL)
-				registerPickerUploadTool(server, capability, snapshot, service, pickerURL)
+				index := slices.IndexFunc(snapshot.Capabilities, func(c manifest.Capability) bool {
+					return c.CapabilityID == orchestration.HandoffIssueCapability && c.MCPClass == "MCP_INTERNAL" && c.PublicationState == "ACTIVE" && c.OperationClass == "COMMAND" && !c.ToolEligible
+				})
+				if index < 0 {
+					return nil, fmt.Errorf("missing governed handoff emission")
+				}
+				registerPickerUploadTool(server, snapshot.Capabilities[index], snapshot, service)
 				registerPickerHandoffStatusTool(server, capability, snapshot, service)
 			} else if service != nil && originProbe {
 				registerHostOriginProbe(server, capability.InputSchema)
@@ -155,7 +176,8 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	return modernOnly(streamable), nil
 }
 
-func registerPickerUploadTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, pickerURL string) {
+func registerPickerUploadTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	checksum, _ := snapshot.Checksum()
 	var schema jsonschema.Schema
 	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"properties":{}}`), &schema); err != nil {
 		panic(err)
@@ -170,18 +192,30 @@ func registerPickerUploadTool(server *workflowServer, capability manifest.Capabi
 		if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
 			return actorOrDelegationDenial(identity, ok), nil, nil
 		}
-		id := uuid.NewString()
-		url := pickerURL + "?handoff=" + id
-		result := map[string]any{"status": "AWAITING_FILE_SELECTION", "pickerUrl": url, "handoffId": id}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un file. OUF verificherà il formato; al momento il caricamento gestisce CSV. La chat attenderà l’esito."}}, StructuredContent: result}, nil, nil
+		key := uuid.NewString()
+		if identity.IdempotencyKey != "" {
+			key = server.commandKey(ctx, capability.CapabilityID, nil, nil, map[string]any{"commandKey": identity.IdempotencyKey})
+		}
+		identity.IdempotencyKey = key
+		ctx = context.WithValue(ctx, identityKey{}, identity)
+		args, _ := json.Marshal(map[string]string{"commandKey": key})
+		result, _, err := invoke(ctx, capability, checksum, args, service, 1, 4096)
+		if err == nil && result != nil && !result.IsError {
+			owner := ownerObject(result)
+			if waitUntil, _ := owner["waitUntil"].(string); waitUntil == "" && owner["replay"] != true {
+				return errorResult("HANDOFF_DEADLINE_REQUIRED", false), nil, nil
+			}
+		}
+		return result, nil, err
 	})
 }
 
 // This result read uses the upload capability's existing governed execution.
 // It has no widget template, so calling it cannot launch a second picker.
 func registerPickerHandoffStatusTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+	checksum, _ := snapshot.Checksum()
 	var schema jsonschema.Schema
-	if err := json.Unmarshal([]byte(manifest.PickerStatusInputSchema), &schema); err != nil {
+	if err := json.Unmarshal(capability.HandoffInputSchema, &schema); err != nil {
 		panic(err)
 	}
 	addWorkflowTool(server, &mcp.Tool{
@@ -200,7 +234,6 @@ func registerPickerHandoffStatusTool(server *workflowServer, capability manifest
 			return errorResult("HANDOFF_ID_INVALID", false), nil, nil
 		}
 		args, _ := json.Marshal(map[string]string{"handoffId": value})
-		checksum, _ := snapshot.Checksum()
 		return invoke(ctx, capability, checksum, args, service, 1, 4096)
 	})
 }
@@ -444,6 +477,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
 	}
 	authorizationCapability, resource, err := ingestionReadAuthorization(c, args, identity.TenantID)
+	if c.CapabilityID == orchestration.HandoffIssueCapability {
+		authorizationCapability = c.RequiredAuthorization
+	}
 	if c.CapabilityID == "ouf.managed-source.preview" {
 		authorizationCapability, resource, err = managedProfileJobAuthorization(c, args, identity.TenantID)
 	}
@@ -497,7 +533,8 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isSourcePreparationCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" {
 		timeout = 10 * time.Second
 	}
-	in := orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	internalRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
+	in := orchestration.Invocation{InternalWaitRead: internalRead, AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
 	if c.ToolName == "semantic.discovery.adopt" {
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}
@@ -512,6 +549,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return denial, nil, nil
 	}
 	if result.Problem != nil {
+		if c.CapabilityID == orchestration.HandoffIssueCapability && (result.Problem.Status == http.StatusNotFound || result.Problem.Status == http.StatusMethodNotAllowed) {
+			return errorResult("HANDOFF_DEADLINE_REQUIRED", false), nil, nil
+		}
 		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
 			return revisionCSVError(result.Body), nil, nil
 		}
@@ -534,14 +574,26 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 }
 
 func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallToolResult {
-	var flags struct {
-		Retryable *bool `json:"retryable"`
+	// Only typed timing fields may accompany an owner problem on the retry rail.
+	type timing struct {
+		Retryable         *bool      `json:"retryable,omitempty"`
+		PollAfterSeconds  *int       `json:"pollAfterSeconds,omitempty"`
+		RetryAfterSeconds *int       `json:"retryAfterSeconds,omitempty"`
+		WaitUntil         *time.Time `json:"waitUntil,omitempty"`
+		Deadline          *time.Time `json:"deadline,omitempty"`
+		ExpiresAt         *time.Time `json:"expiresAt,omitempty"`
+		CreatedAt         *time.Time `json:"createdAt,omitempty"`
+		StartedAt         *time.Time `json:"startedAt,omitempty"`
+		BudgetDeadline    *time.Time `json:"budgetDeadline,omitempty"`
 	}
-	_ = json.Unmarshal(body, &flags)
+	var flags timing
+	if json.Valid(body) && json.Unmarshal(body, &flags) != nil {
+		return errorResult("OWNER_PROBLEM_INVALID", false)
+	}
 	projected := struct {
 		orchestration.Problem
-		Retryable *bool `json:"retryable,omitempty"`
-	}{*problem, flags.Retryable}
+		timing
+	}{*problem, flags}
 	if projected.Code == "" {
 		projected.Code = "OWNER_REQUEST_FAILED"
 	}

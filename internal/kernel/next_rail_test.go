@@ -118,7 +118,8 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		if c.ToolName == "source.file.upload" {
 			register(c, []byte(`{"type":"object","additionalProperties":false}`))
 			c.ToolName = "source.file.upload.status"
-			register(c, []byte(manifest.PickerStatusInputSchema))
+			c.OperationClass = "READ"
+			register(c, c.HandoffInputSchema)
 		} else {
 			register(c, c.InputSchema)
 		}
@@ -233,7 +234,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		}
 		t.Fatal("decision outside the rail", tool, next)
 	}
-	wait := func(read string, observation railObject) {
+	wait := func(read string, observations ...railObject) {
 		t.Helper()
 		if next["action"] != "WAIT_FOR_HUMAN" || next["tool"] != "ouf.wait" {
 			t.Fatal("expected a THS wait", next)
@@ -244,11 +245,17 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 			t.Fatal("wrong wait binding", ref, err)
 		}
 		reg := s.tools[read]
+		index := 0
 		reg.run = func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args railObject
 			if json.Unmarshal(req.Params.Arguments, &args) != nil || !reflect.DeepEqual(args, ref.ReadArgs()) {
 				t.Fatal("wait changed the authorized observation", args)
 			}
+			if index >= len(observations) {
+				return nil, fmt.Errorf("extra owner read for %s", read)
+			}
+			observation := observations[index]
+			index++
 			return &mcp.CallToolResult{StructuredContent: observation}, nil
 		}
 		s.tools[read] = reg
@@ -257,7 +264,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 			t.Fatal(err)
 		}
 		result := s.wait(ctx, &req, token)
-		if result.IsError {
+		if result.IsError || index != len(observations) {
 			t.Fatal("wait failed", ownerObject(result))
 		}
 		check("ouf.wait", railObject{"waitRef": token}, result)
@@ -277,17 +284,16 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		return call(row.Tool, row.Owner, false)
 	}
 	replay(0)
-	replay(1)
+	wait("source.file.upload.status", real[1].Owner, real[3].Owner)
+	call("source.file.profile", c["profileJob"], false)
+	if next["action"] != "POLL" {
+		t.Fatal("expected machine poll", next)
+	}
+	call("source.file.preview", c["jobComplete"], false)
 	if injectRefusals {
 		replay(2)
 	}
-	replay(4)
-	call("source.file.profile", c["profileJob"], false)
-	call("source.file.preview", c["jobComplete"], false)
-	if injectRefusals {
-		replay(3)
-	}
-	profile := maps.Clone(real[3].Input)
+	profile := maps.Clone(real[2].Input)
 	var columns []railObject
 	for _, name := range f.ProfileColumns {
 		columns = append(columns, railObject{"name": name, "distinctValuesComplete": true})
@@ -299,7 +305,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	if len(work) != 18 || len(work) != len(columns) {
 		t.Fatal("incomplete discovery plan", len(work))
 	}
-	aid := real[5].Input["analysisId"]
+	aid := real[4].Input["analysisId"]
 	var tasks []railObject
 	for i, item := range work {
 		job := item.(railObject)
@@ -308,11 +314,11 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		}
 		id := fmt.Sprintf("%064x", i+1)
 		if i == 0 {
-			id = real[5].Input["taskId"].(string)
+			id = real[4].Input["taskId"].(string)
 		}
 		tasks = append(tasks, railObject{"taskId": id, "state": "READY", "tool": job["tool"], "columns": job["columns"]})
 	}
-	view := railObject{"analysisId": aid, "revision": 1, "tasks": tasks, "profile": real[3].Input, "hasMore": false}
+	view := railObject{"analysisId": aid, "revision": 1, "tasks": tasks, "profile": real[2].Input, "hasMore": false}
 	budget := railObject{"plannedCalls": len(tasks), "completedTasks": 0}
 	view["budget"] = budget
 	call("source.analysis.plan", view, false)
@@ -321,8 +327,8 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		if args["taskId"] != task["taskId"] || args["analysisId"] != aid {
 			t.Fatal("selected wrong task", i, next)
 		}
-		receipt := maps.Clone(real[5].Owner)
-		request := real[6].Input["requestId"].(string)
+		receipt := maps.Clone(real[4].Owner)
+		request := real[5].Input["requestId"].(string)
 		if i != 0 {
 			request = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
 			result := maps.Clone(receipt["result"].(railObject))
@@ -346,7 +352,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		}
 		switch i {
 		case 0:
-			replay(6)
+			replay(5)
 		case 1:
 			call("semantic.discovery.status", railObject{"requestId": request, "state": "SUCCEEDED", "candidateCount": 1, "allowedActions": []string{"LIST_CANDIDATES"}}, false)
 			evidence.candidateQuery = next["arguments"].(railObject)

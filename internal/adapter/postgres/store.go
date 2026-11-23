@@ -221,7 +221,11 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, err
 	}
 	objectBudgetExceeded := in.Maximum.DistinctObjects > 0 && reservedObjects+consumedObjects+objectDebt+in.Maximum.DistinctObjects > windowMaximum.DistinctObjects
-	callBudgetExceeded := reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls
+	calls := in.Maximum.ToolCalls
+	if in.InternalWaitRead {
+		calls = 0
+	}
+	callBudgetExceeded := calls > 0 && reservedCalls+consumedCalls+calls > windowMaximum.ToolCalls
 	byteBudgetExceeded := reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes
 	if callBudgetExceeded || byteBudgetExceeded || objectBudgetExceeded {
 		dimension := "DISTINCT_OBJECTS"
@@ -250,7 +254,7 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	if blocking > 0 {
 		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
-	if blocked || attempts >= in.RetryThreshold {
+	if blocked || (!in.StatusRead && attempts >= in.RetryThreshold) {
 		return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(orchestration.ErrToolSelectionStall, "TOOL_SELECTION_STALL", "EQUIVALENT_ATTEMPTS", now, windowEnd)
 	}
 	if in.AttemptID == uuid.Nil {
@@ -266,10 +270,10 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation(reservation_id,attempt_id,budget_window_id,reserved_tool_calls,reserved_result_bytes,state,created_at,reserved_distinct_objects_max) values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),$6)`, uuid.New(), in.AttemptID, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.budget_reservation(reservation_id,attempt_id,budget_window_id,reserved_tool_calls,reserved_result_bytes,state,created_at,reserved_distinct_objects_max) values($1,$2,$3,$4,$5,'RESERVED',transaction_timestamp(),$6)`, uuid.New(), in.AttemptID, windowID, calls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls+$2,reserved_result_bytes=reserved_result_bytes+$3,reserved_distinct_objects=reserved_distinct_objects+$4 where budget_window_id=$1`, windowID, in.Maximum.ToolCalls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
+		_, err = tx.Exec(ctx, `update ouf_mcp.budget_window set reserved_tool_calls=reserved_tool_calls+$2,reserved_result_bytes=reserved_result_bytes+$3,reserved_distinct_objects=reserved_distinct_objects+$4 where budget_window_id=$1`, windowID, calls, in.Maximum.ResultBytes, in.Maximum.DistinctObjects)
 	}
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
@@ -611,4 +615,45 @@ func execOne(ctx context.Context, tx pgx.Tx, sql string, arguments ...any) error
 
 func (s *Store) AppendRecoveryAudit(ctx context.Context, id uuid.UUID, outcome, code string) error {
 	return s.AppendAudit(ctx, "ATTEMPT_RECOVERY_"+outcome, "MAINTENANCE_WORKER", "", &id, "", []byte(fmt.Sprintf(`{"outcomeCode":%q}`, code)))
+}
+
+// Charge the local ouf.wait invocation against the same database minute as ordinary calls.
+// The conditional upsert serializes with reserveOnce and has no owner dispatch to reconcile.
+func (s *Store) ChargeWait(ctx context.Context, identity orchestration.Identity, checksum string, limit int) error {
+	if limit < 1 || checksum == "" || identity.ServicePrincipalID == "" || identity.PrincipalID == "" || identity.TenantID == "" {
+		return errors.New("invalid wait admission")
+	}
+	var now time.Time
+	var admitted bool
+	err := s.pool.QueryRow(ctx, `with debit as (
+		insert into ouf_mcp.budget_window as w (budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end,consumed_tool_calls)
+		values ($1,$2,$3,$4,$5,date_trunc('minute',statement_timestamp()),date_trunc('minute',statement_timestamp())+interval '1 minute',1)
+		on conflict(service_principal_id,principal_id,tenant_id,policy_ref,window_start) do update
+		set consumed_tool_calls=w.consumed_tool_calls+1 where w.reserved_tool_calls+w.consumed_tool_calls < $6 returning 1)
+		select statement_timestamp(),exists(select 1 from debit)`, uuid.New(), identity.ServicePrincipalID, identity.PrincipalID, identity.TenantID, checksum, limit).Scan(&now, &admitted)
+	if err == nil && !admitted {
+		return orchestration.NewWindowBudgetError(ErrBudgetExhausted, "ADMISSION_WINDOW_BUDGET_EXHAUSTED", "TOOL_CALLS", now, now.Truncate(time.Minute).Add(time.Minute))
+	}
+	return err
+}
+
+// Each signed wait has one finite observation window shared across replicas.
+// Its start records the last claimed tick. The owner deadline also bounds
+// retention under the ordinary budget-window lifecycle.
+func (s *Store) ClaimWaitRead(ctx context.Context, identity orchestration.Identity, tokenHash string, interval time.Duration, deadline time.Time) (bool, error) {
+	if len(tokenHash) != 64 || interval <= 0 {
+		return false, errors.New("invalid wait read interval")
+	}
+	// Keep the primary key stable when window_start advances. No bearer token
+	// or owner URL is stored. No transaction survives the returned claim.
+	id := uuid.NewHash(sha256.New(), uuid.NameSpaceOID, []byte("ouf.wait-read.v1/"+tokenHash), 8)
+	tag, err := s.pool.Exec(ctx, `insert into ouf_mcp.budget_window as w
+		(budget_window_id,service_principal_id,principal_id,tenant_id,policy_ref,window_start,window_end)
+		select $1,$2,$3,$4,$5,statement_timestamp(),$6 where statement_timestamp()<$6
+		on conflict (budget_window_id) do update set window_start=excluded.window_start
+		where w.policy_ref=excluded.policy_ref and w.service_principal_id=excluded.service_principal_id
+		and w.principal_id=excluded.principal_id and w.tenant_id=excluded.tenant_id and w.window_end=excluded.window_end
+		and w.window_start <= excluded.window_start - $7::bigint * interval '1 microsecond'`,
+		id, identity.ServicePrincipalID, identity.PrincipalID, identity.TenantID, "ouf.wait-read.v1:"+tokenHash, deadline, interval.Microseconds())
+	return tag.RowsAffected() == 1, err
 }

@@ -32,6 +32,9 @@ type statusWriter struct {
 	status int
 }
 
+// Let the wait handler extend only its own HTTP write deadline.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
