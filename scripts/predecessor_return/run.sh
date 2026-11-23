@@ -97,6 +97,9 @@ stop
 migrate "$NEW_IMAGE"
 after=$(schema)
 echo "Candidate schema $after"
+if [[ "${PREDECESSOR:-}" == 092bcdc2f5cc7e20a41c6c419e3e5466da822448 ]]; then
+  [[ "$before" == 15 && "$after" == 16 ]]
+fi
 start "$NEW_IMAGE" candidate
 probe read-predecessor
 probe seed candidate

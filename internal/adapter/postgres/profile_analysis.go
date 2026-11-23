@@ -74,7 +74,10 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		return analysis.View{}, e
 	}
 	if existing != p.Profile {
-		return analysis.View{}, analysis.ErrScope
+		return analysis.View{}, holdAnalysis(ctx, tx, p.ID)
+	}
+	if e = checkAnalysisHold(ctx, tx, p.ID); e != nil {
+		return analysis.View{}, e
 	}
 	tasks, e := analysisTasks(ctx, tx, p.ID)
 	if e != nil {
@@ -104,7 +107,16 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	if len(changes) > 0 && rev != p.ExpectedRevision {
 		return analysis.View{}, analysis.ErrConflict
 	}
+	if len(p.Headers) > 0 {
+		if e = createAnalysisSummary(ctx, tx, p); e != nil {
+			return analysis.View{}, e
+		}
+	}
+	var retainedRequests []string
 	for _, t := range changes {
+		if t.Tool == "semantic.discovery.request" && t.State == "SUCCEEDED" {
+			retainedRequests = append(retainedRequests, t.ID)
+		}
 		if _, exists := indices[t.ID]; exists {
 			columns, _ := json.Marshal(t.Columns)
 			_, e = tx.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(task,'{columns}',$3::jsonb) where analysis_id=$1 and task_id=$2`, p.ID, t.ID, columns)
@@ -115,6 +127,12 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		if e != nil {
 			return analysis.View{}, e
 		}
+		if e = assignSummaryTask(ctx, tx, p.ID, t); e != nil {
+			return analysis.View{}, e
+		}
+	}
+	if e = inheritRequests(ctx, tx, p.ID, retainedRequests); e != nil {
+		return analysis.View{}, e
 	}
 	if len(changes) > 0 {
 		rev++
@@ -200,6 +218,9 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest); e != nil {
 		return t, e
 	}
+	if e = checkAnalysisHold(ctx, tx, id); e != nil {
+		return t, e
+	}
 	t, e = readAnalysisTask(ctx, tx, id, taskID)
 	if e != nil {
 		return t, e
@@ -211,12 +232,30 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	if t.State == "SUCCEEDED" || t.State == "HELD" {
 		return t, tx.Commit(ctx)
 	}
+	if t.State == "READY" {
+		var allInvalid bool
+		e = tx.QueryRow(ctx, `select coalesce(bool_and(header=''),false)
+			from ouf_mcp.analysis_column where analysis_id=$1 and ordinal=any($2::int[])`, id, t.Columns).Scan(&allInvalid)
+		if e != nil {
+			return t, e
+		}
+		if allInvalid {
+			t.State, t.Code = "HELD", "ANALYSIS_COLUMN_INVALID"
+			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+				return t, e
+			}
+			return t, tx.Commit(ctx)
+		}
+	}
 	if t.State == "RUNNING" {
 		if !now.Before(t.LeaseUntil) {
 			t.State = "HELD"
 			t.Code = "PREVIOUS_OUTCOME_REQUIRES_RECONCILIATION"
 			t.Fence = uuid.NewString()
 			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+				return t, e
+			}
+			if e = finishSummary(ctx, tx, id, t, now); e != nil {
 				return t, e
 			}
 		}
@@ -231,6 +270,9 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 		t.State = "HELD"
 		t.Code = "RETRY_BUDGET_EXHAUSTED"
 		if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+			return t, e
+		}
+		if e = finishSummary(ctx, tx, id, t, now); e != nil {
 			return t, e
 		}
 		return t, tx.Commit(ctx)
@@ -334,6 +376,12 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 		t.CompletedAt = now
 	}
 	if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+		return t, e
+	}
+	if e = finishSummary(ctx, tx, id, t, now); e != nil {
+		if errors.Is(e, analysis.ErrProfile) {
+			return t, holdAnalysis(ctx, tx, id)
+		}
 		return t, e
 	}
 	return t, tx.Commit(ctx)

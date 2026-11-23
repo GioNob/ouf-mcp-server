@@ -164,8 +164,16 @@ func (g *analysisGateway) Execute(_ context.Context, r orchestration.GatewayRequ
 		var v map[string]any
 		json.Unmarshal(b, &v)
 		v["view"] = "COLUMNS"
-		v["offset"] = 0
-		v["columns"] = []any{map[string]any{"name": "tipologia"}}
+		var page struct{ Offset, Limit int }
+		if err := json.Unmarshal(r.Arguments, &page); err != nil {
+			return orchestration.GatewayResponse{}, err
+		}
+		end := min(g.profile.ColumnCount, page.Offset+page.Limit)
+		columns := make([]map[string]any, end-page.Offset)
+		for i := range columns {
+			columns[i] = map[string]any{"name": "tipologia", "ordinal": page.Offset + i}
+		}
+		v["offset"], v["hasMore"], v["nextOffset"], v["columns"] = page.Offset, end < g.profile.ColumnCount, end, columns
 		b, _ = json.Marshal(v)
 		return orchestration.GatewayResponse{Status: 200, Body: b}, nil
 	}
@@ -284,7 +292,7 @@ func TestProfileAnalysisTransientReadAndInactiveDiscovery(t *testing.T) {
 	}
 }
 
-func TestProfileAnalysisCoordinatorPlans1024WithOneOwnedProfileRead(t *testing.T) {
+func TestProfileAnalysisCoordinatorPlans1024WithOnePassOverOwnedProfile(t *testing.T) {
 	ctx, _, c, i, _, g, p := coordinatorFixture(t, 1024)
 	var v analysis.View
 	for offset := 0; offset < 1024; offset += 128 {
@@ -298,7 +306,7 @@ func TestProfileAnalysisCoordinatorPlans1024WithOneOwnedProfileRead(t *testing.T
 			t.Fatal(offset, e)
 		}
 	}
-	if v.Budget.PlannedCalls != 1024 || v.CoveredColumns != 1024 || g.calls != 1 {
+	if v.Budget.PlannedCalls != 1024 || v.CoveredColumns != 1024 || g.calls != 8 {
 		t.Fatal(v.Budget, v.CoveredColumns, g.calls)
 	}
 }

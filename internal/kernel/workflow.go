@@ -31,12 +31,13 @@ type registeredTool struct {
 
 type workflowServer struct {
 	*mcp.Server
-	manifest   *manifest.Snapshot
-	nextSchema *jsonschema.Resolved
-	tools      map[string]registeredTool
-	waits      *waitService
-	thsLinks   map[string]linkLookup
-	key        []byte
+	manifest      *manifest.Snapshot
+	nextSchema    *jsonschema.Resolved
+	tools         map[string]registeredTool
+	waits         *waitService
+	summaryLimits analysis.Limits
+	thsLinks      map[string]linkLookup
+	key           []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -52,7 +53,11 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if err != nil {
 		return nil, err
 	}
-	return &workflowServer{Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	limits, err := configuredSummary(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return &workflowServer{summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -152,6 +157,17 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		}
 		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
+			if summaryInput(name, args) {
+				inputErr := analysis.ErrInvalid
+				id, _ := args["analysisId"].(string)
+				if token, ok := args["cursor"].(string); ok && args["view"] == "SUMMARY" && len(args) == 3 &&
+					analysis.ValidateID(id) == nil && (len(token) < 32 || len(token) > 1024) {
+					inputErr = analysis.ErrCursor
+				}
+				result = summaryFailure(inputErr, id)
+			}
+		} else if summaryInput(name, args) && !validJCSInput(req.Params.Arguments) {
+			result = summaryFailure(analysis.ErrInvalid, "")
 		} else {
 			var err error
 			result, err = run(ctx, req)
@@ -165,7 +181,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
 		}
-		if name == "ouf.wait" && result.StructuredContent != nil {
+		if (name == "ouf.wait" || summaryInput(name, args)) && result.StructuredContent != nil {
 			result = s.boundedResult(result, t)
 		} else {
 			result = s.decorate(ctx, t, args, result)

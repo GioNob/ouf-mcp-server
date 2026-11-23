@@ -54,7 +54,16 @@ type analysisSDKGateway struct {
 
 func (g *analysisSDKGateway) Execute(_ context.Context, r orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
 	g.calls++
-	body, _ := json.Marshal(map[string]any{"assetId": g.asset, "profileId": g.profile, "profileVersion": 1, "columnCount": 1024, "schemaHash": "sha256:" + strings.Repeat("a", 64), "view": "COLUMNS", "offset": 0, "columns": []any{map[string]any{"name": "tipologia"}}})
+	var page struct{ Offset, Limit int }
+	if err := json.Unmarshal(r.Arguments, &page); err != nil {
+		return orchestration.GatewayResponse{}, err
+	}
+	columns := make([]map[string]any, min(page.Limit, 1024-page.Offset))
+	for i := range columns {
+		columns[i] = map[string]any{"name": "tipologia", "ordinal": page.Offset + i}
+	}
+	end := page.Offset + len(columns)
+	body, _ := json.Marshal(map[string]any{"assetId": g.asset, "profileId": g.profile, "profileVersion": 1, "columnCount": 1024, "schemaHash": "sha256:" + strings.Repeat("a", 64), "view": "COLUMNS", "offset": page.Offset, "nextOffset": end, "hasMore": end < 1024, "columns": columns})
 	return orchestration.GatewayResponse{Status: 200, Body: body}, nil
 }
 func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
@@ -88,7 +97,7 @@ func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
 	defer session.Close()
 	args := map[string]any{"assetId": gateway.asset, "profileId": gateway.profile, "expectedRevision": 0, "work": []any{map[string]any{"tool": "semantic.search", "arguments": map[string]any{"q": "tipologia", "type": "PROPERTY"}, "columns": []int{1023}}}}
 	result, e := session.CallTool(context.Background(), &mcp.CallToolParams{Name: cap.ToolName, Arguments: args})
-	if e != nil || result.IsError || store.plans != 1 || gateway.calls != 1 {
+	if e != nil || result.IsError || store.plans != 1 || gateway.calls != 8 {
 		t.Fatal(result, e, store.plans, gateway.calls)
 	}
 	var view analysis.View
@@ -100,7 +109,7 @@ func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
 	if e == nil && !result.IsError {
 		t.Fatal("accepted caller count")
 	}
-	if gateway.calls != 1 || store.plans != 1 {
+	if gateway.calls != 8 || store.plans != 1 {
 		t.Fatal("invalid input reached owner")
 	}
 }

@@ -15,29 +15,35 @@ import (
 )
 
 type Coordinator struct {
-	Store    Store
-	Service  *orchestration.Service
-	Manifest *manifest.Snapshot
+	Store           Store
+	Service         *orchestration.Service
+	Manifest        *manifest.Snapshot
+	Onboarding      bool
+	PreviewPageSize int
 }
 
 func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, cap manifest.Capability) error {
+	_, err := c.authorization(ctx, i, cap)
+	return err
+}
+func (c Coordinator) authorization(ctx context.Context, i orchestration.Identity, cap manifest.Capability) (string, error) {
 	if i.Delegation == "" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
 	}
 	if i.ActorType != "HUMAN" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
 	}
 	if !IdentityScope(i).Valid() {
-		return orchestration.ErrUnauthorized
+		return "", orchestration.ErrUnauthorized
 	}
 	d, e := c.Service.Auth.Authorize(ctx, orchestration.AuthorizationRequest{Identity: i, Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: i.TenantID}, CapabilityID: cap.RequiredAuthorization, Owner: cap.Owner, OperationClass: cap.OperationClass})
 	if e != nil {
-		return e
+		return "", e
 	}
 	if !d.Allowed || d.DecisionRef == "" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
 	}
-	return nil
+	return d.DecisionRef, nil
 }
 func (c Coordinator) check(ctx context.Context, i orchestration.Identity) (string, error) {
 	preview, ok := Find(c.Manifest, "source.file.preview")
@@ -75,30 +81,58 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		return View{}, readErr
 	}
 	preview, _ := Find(c.Manifest, "source.file.preview")
-	args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": 0, "limit": 1})
-	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+	limits, e := SummaryLimits(c.Manifest)
 	if e != nil {
 		return View{}, e
 	}
-	if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
+	if c.PreviewPageSize != 0 {
+		if c.PreviewPageSize < 1 || c.PreviewPageSize > 128 {
+			return View{}, ErrInvalid
+		}
+		limits.PreviewPageSize = c.PreviewPageSize
 	}
-	if r.Replay || r.Problem != nil {
-		return View{}, ErrScope
+	var profilePin Profile
+	var headers []string
+	checkpoints, durable := c.Store.(PreviewStore)
+	if durable {
+		profilePin, headers, e = checkpoints.PreviewProgress(ctx, scope, logicalID, checksum)
+		if e != nil {
+			return View{}, e
+		}
 	}
-	var p Profile
-	var envelope struct {
-		View    string            `json:"view"`
-		Offset  int               `json:"offset"`
-		Columns []json.RawMessage `json:"columns"`
+	for len(headers) == 0 || len(headers) < profilePin.ColumnCount {
+		offset := len(headers)
+		args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": offset, "limit": limits.PreviewPageSize})
+		r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+		if e != nil {
+			return View{}, e
+		}
+		if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
+			return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
+		}
+		if r.Problem != nil && (r.Problem.Status == 503 || r.Problem.Status == 429) {
+			return View{}, ErrUnavailable
+		}
+		if r.Replay || r.Problem != nil {
+			return View{}, ErrProfile
+		}
+		page, names, err := previewPage(r.Body, asset, profile, profilePin, offset, limits.PreviewPageSize)
+		if err != nil {
+			return View{}, err
+		}
+		profilePin = page
+		if durable {
+			if e = checkpoints.SavePreviewPage(ctx, scope, logicalID, checksum, page, offset, names); e != nil {
+				return View{}, e
+			}
+		}
+		headers = append(headers, names...)
 	}
-	if json.Unmarshal(r.Body, &p) != nil || json.Unmarshal(r.Body, &envelope) != nil || p.AssetID != asset || p.ProfileID != profile || !p.Valid() || envelope.View != "COLUMNS" || envelope.Offset != 0 || len(envelope.Columns) != 1 {
-		return View{}, ErrScope
-	}
-	plan, e := Build(IdentityScope(i), p, c.Manifest, expected, work)
+	plan, e := Build(IdentityScope(i), profilePin, c.Manifest, expected, work)
 	if e != nil {
 		return View{}, e
 	}
+	plan.Headers, plan.Onboarding = headers, c.Onboarding
 	return c.Store.PlanAnalysis(ctx, plan)
 }
 func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id string, offset, limit int) (View, error) {

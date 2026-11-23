@@ -102,7 +102,7 @@ FENCED = {"code": "ANALYSIS_NOT_FOUND_OR_SCOPE_CHANGED", "retryable": False}
 def read_analysis(analysis_id, read_by):
     result = rpc("tools/call", name="source.analysis.read", arguments={"analysisId": analysis_id})
     payload = json.loads(result["content"][0]["text"])
-    if read_by == "candidate":
+    if read_by == "candidate" or ("next" in payload and result.get("isError")):
         structured = dict(result["structuredContent"])
         step = structured.pop("next")
         assert step["contract"] == "ouf.next-step.v1"
@@ -137,6 +137,13 @@ def verify_return():
     for phase in ("predecessor", "candidate"):
         saved = verify_analysis(phase, "predecessor-return", own=phase == "predecessor")
         replay(phase, saved["requestId"])
+    original = json.loads(Path("/tmp/predecessor.json").read_text())["view"]
+    extension = tool("source.analysis.plan", assetId=original["profile"]["assetId"],
+                     profileId=original["profile"]["profileId"], expectedRevision=original["revision"],
+                     work=[{"tool": "semantic.search", "arguments": {"q": "seconda"}, "columns": [0]}])
+    assert extension["revision"] == original["revision"] + 1
+    assert extension["analysisId"] == original["analysisId"]
+    assert tool("source.analysis.read", analysisId=original["analysisId"])["tasks"] == extension["tasks"]
     receipt = discovery("return")
     assert receipt["status"] == "PENDING"
     replay("return", receipt["requestId"])

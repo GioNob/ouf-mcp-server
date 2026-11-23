@@ -237,8 +237,8 @@ func discoveryWork(obs Object) any {
 	for i, col := range columns {
 		column, _ := col.(Object)
 		name, ok := column["name"].(string)
-		if !ok || strings.TrimSpace(name) == "" || len(name) > 2000 {
-			return nil
+		if !ok || !analysis.UsableColumnName(name) {
+			continue
 		}
 		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{offset + i}, "arguments": Object{
 			"intent": name, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY",

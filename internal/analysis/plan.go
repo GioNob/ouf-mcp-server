@@ -109,6 +109,9 @@ type View struct {
 	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
 type Plan struct {
+	// Headers are owner-verified in ordinal order, only during initial planning.
+	Headers          []string
+	Onboarding       bool
 	ID               string
 	Scope            Scope
 	Profile          Profile
@@ -293,6 +296,11 @@ func SafeError(err error) string {
 	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()
+		}
+	}
+	for _, known := range []error{ErrProfile, ErrCursor, ErrExpired} {
+		if errors.Is(err, known) {
+			return known.Error()
 		}
 	}
 	return "ANALYSIS_OPERATION_HELD"

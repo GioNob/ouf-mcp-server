@@ -18,11 +18,23 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 	if e := json.Unmarshal(c.InputSchema, &schema); e != nil {
 		panic(e)
 	}
-	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.ToolName == "source.analysis.read"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+	tool := &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.ToolName == "source.analysis.read"}}
+	if len(c.OutputSchema) > 0 {
+		var output jsonschema.Schema
+		if err := json.Unmarshal(c.OutputSchema, &output); err != nil {
+			panic(err)
+		}
+		tool.OutputSchema = &output
+	}
+	addWorkflowTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
+			if summaryInput(c.ToolName, input) {
+				return summaryFailure(orchestration.ErrUnauthorized, ""), nil, nil
+			}
 			return actorOrDelegationDenial(i, ok), nil, nil
 		}
+		_, railCommand := input["commandKey"]
 		if key, supplied := input["commandKey"]; supplied {
 			delete(input, "commandKey")
 			if key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
@@ -31,9 +43,12 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		}
 		store, ok := service.Admission.(analysis.Store)
 		if !ok {
+			if summaryInput(c.ToolName, input) {
+				return summaryFailure(errors.New("missing analysis store"), ""), nil, nil
+			}
 			return errorResult("ANALYSIS_STORE_NOT_BOUND", false), nil, nil
 		}
-		coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot}
+		coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot, Onboarding: railCommand, PreviewPageSize: server.summaryLimits.PreviewPageSize}
 		raw, _ := json.Marshal(input)
 		var out any
 		var err error
@@ -50,6 +65,9 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			}
 			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
 		case "source.analysis.read":
+			if input["view"] != nil {
+				return server.analysisSummary(ctx, coordinator, i.Identity, input), nil, nil
+			}
 			var args struct {
 				AnalysisID string `json:"analysisId"`
 				Offset     int    `json:"offset"`

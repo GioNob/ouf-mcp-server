@@ -65,7 +65,7 @@ class Owner(BaseHTTPRequestHandler):
         if self.path == "/execute/managed.file/preview" and args["view"] == "COLUMNS":
             self.reply({"assetId": args["assetId"], "profileId": args["profileId"],
                         "profileVersion": 1, "schemaHash": "sha256:" + "a" * 64,
-                        "columnCount": 1, "view": "COLUMNS", "offset": 0,
+                        "columnCount": 1, "view": "COLUMNS", "offset": 0, "hasMore": False,
                         "columns": [{"name": "tipologia"}]})
         elif self.path == "/execute/semantic/discovery/request":
             key = args["idempotencyKey"]

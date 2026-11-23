@@ -44,6 +44,7 @@ type Capability struct {
 	RequiredScope         string          `json:"requiredScope,omitempty"`
 	NextPolicy            string          `json:"nextPolicy,omitempty"`
 	InputSchema           json.RawMessage `json:"inputSchema"`
+	OutputSchema          json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 func Load() (*Snapshot, error) {

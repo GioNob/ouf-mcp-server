@@ -557,10 +557,10 @@ func TestNextOnlyFromPreviewCursorToAnalysis(t *testing.T) {
 			}
 			obs["offset"], obs["columns"] = 1, []any{column}
 		case 3:
-			if args["offset"] != float64(0) || args["limit"] != float64(1) {
+			if args["offset"] != float64(0) || args["limit"] != float64(128) {
 				t.Error("plan did not verify the immutable profile", args)
 			}
-			obs["columns"] = []any{nextstep.Object{"name": "id"}}
+			obs["columns"] = []any{nextstep.Object{"name": "id"}, column}
 		default:
 			t.Error("unexpected preview dispatch")
 		}
