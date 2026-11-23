@@ -392,8 +392,11 @@ func TestProfileAnalysisFiniteRetryHistoryAndInflightCapacity(t *testing.T) {
 
 func TestProfileAnalysisDiscoveryCandidateExecutionAndPollPacing(t *testing.T) {
 	ctx, s, c, i, _, g, p := coordinatorFixture(t, 20)
-	// Activation is confined to this fixture; the production descriptors stay INACTIVE.
+	// Exercise the predecessor owner and its per-column status-observation path.
 	for n := range c.Manifest.Capabilities {
+		if c.Manifest.Capabilities[n].ToolName == analysis.BatchTool {
+			c.Manifest.Capabilities[n].PublicationState = "INACTIVE"
+		}
 		if strings.HasPrefix(c.Manifest.Capabilities[n].ToolName, "semantic.discovery.") {
 			c.Manifest.Capabilities[n].PublicationState = "ACTIVE"
 		}
@@ -407,6 +410,9 @@ func TestProfileAnalysisDiscoveryCandidateExecutionAndPollPacing(t *testing.T) {
 	v, e := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{discovery})
 	if e != nil {
 		t.Fatal(e)
+	}
+	if v.Tasks[0].Code != "PUBLISHED_BATCH_UNAVAILABLE" {
+		t.Fatal("missing compatibility reason")
 	}
 	request, e := c.Step(ctx, i, v.ID, v.Tasks[0].ID)
 	if e != nil || request.State != "SUCCEEDED" {

@@ -90,6 +90,17 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			}
 			var task analysis.Task
 			task, err = coordinator.Step(ctx, i.Identity, args.AnalysisID, args.TaskID)
+			if task.Code == analysis.InvalidOwner {
+				result := errorResult(analysis.InvalidOwner, false)
+				result.Meta = mcp.Meta{"ouf/httpStatus": 502}
+				return result, nil, nil
+			}
+			if task.Visibility != "" {
+				task.Visibility, task.OwnerKey, task.Groups, task.Arguments = "", "", nil, nil
+				if task.Tool == analysis.BatchTool {
+					task.Result = nil
+				}
+			}
 			out = task
 			if task.State == "WAITING" && task.Code == "ADMISSION_WINDOW_WAIT" {
 				out = struct {

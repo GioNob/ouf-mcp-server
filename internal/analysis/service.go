@@ -71,7 +71,20 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	logicalID := AnalysisID(scope, Profile{AssetID: asset, ProfileID: profile})
 	retained, readErr := c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 1)
 	if readErr == nil {
-		plan, buildErr := Build(scope, retained.Profile, c.Manifest, expected, work)
+		if retained.Seed != "" {
+			if err := c.CheckPublishedScope(ctx, i, retained.Visibility); err != nil {
+				return View{}, err
+			}
+			if expected != 0 || retained.Seed != Digest(work) {
+				return View{}, ErrConflict
+			}
+			return c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 128)
+		}
+		build := Build
+		if cap, ok := Find(c.Manifest, BatchTool); onlyDiscovery(work) && (!ok || cap.PublicationState == "INACTIVE") {
+			build = buildWithoutBatch
+		}
+		plan, buildErr := build(scope, retained.Profile, c.Manifest, expected, work)
 		if buildErr != nil {
 			return View{}, buildErr
 		}
@@ -128,7 +141,31 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		}
 		headers = append(headers, names...)
 	}
-	plan, e := Build(IdentityScope(i), profilePin, c.Manifest, expected, work)
+	batch, available := Find(c.Manifest, BatchTool)
+	if onlyDiscovery(work) && available && batch.PublicationState == "ACTIVE" {
+		visibility, decision, err := c.publishedScope(ctx, i, batch)
+		if err != nil {
+			return View{}, err
+		}
+		limits, err := PublishedLimits(batch)
+		if err != nil {
+			return View{}, err
+		}
+		p, err := BuildPublished(scope, profilePin, c.Manifest, headers, work, visibility, envelopeSize(i, batch, decision, limits.ResponseBytes))
+		if err != nil {
+			return View{}, err
+		}
+		p.Onboarding = c.Onboarding
+		return c.Store.PlanAnalysis(ctx, p)
+	}
+	if onlyDiscovery(work) && available && batch.PublicationState == "REVOKED" {
+		return View{}, ErrUnavailable
+	}
+	build := Build
+	if onlyDiscovery(work) {
+		build = buildWithoutBatch
+	}
+	plan, e := build(IdentityScope(i), profilePin, c.Manifest, expected, work)
 	if e != nil {
 		return View{}, e
 	}
@@ -140,7 +177,11 @@ func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id stri
 	if e != nil {
 		return View{}, e
 	}
-	return c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
+	v, err := c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
+	if err == nil {
+		err = c.CheckPublishedScope(ctx, i, v.Visibility)
+	}
+	return v, err
 }
 func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, taskID string) (Task, error) {
 	checksum, e := c.check(ctx, i)
@@ -156,13 +197,18 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return Task{}, e
 	}
 	cap, ok := Find(c.Manifest, metadata.Tool)
-	if !ok || !allowed(metadata.Tool) || cap.PublicationState != "ACTIVE" {
+	if !ok || (!allowed(metadata.Tool) && metadata.Tool != BatchTool) || cap.PublicationState != "ACTIVE" {
 		return Task{}, ErrUnavailable
 	}
 	// A previously saved result is historical evidence. Even its reread requires
 	// current authorization for the underlying semantic capability.
-	if e = c.authorize(ctx, i, cap); e != nil {
+	if e = c.CheckStepScope(ctx, i, id, checksum, metadata.Visibility); e != nil {
 		return Task{}, e
+	}
+	if metadata.Tool != BatchTool {
+		if e = c.authorize(ctx, i, cap); e != nil {
+			return Task{}, e
+		}
 	}
 	task, e := c.Store.ClaimAnalysisTask(ctx, scope, id, taskID, checksum)
 	if e != nil {
@@ -172,7 +218,34 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return task, nil
 	}
 	start := time.Now()
-	r, callErr := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef, ManifestChecksum: checksum, Arguments: task.Arguments, IdempotencyKey: "analysis:" + Digest([]any{id, task.ID, task.Attempts}), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes}})
+	dispatchKey := "analysis:" + Digest([]any{id, task.ID, task.Attempts})
+	if task.OwnerKey != "" {
+		dispatchKey = task.OwnerKey
+	}
+	var checkDecision func(orchestration.AuthorizationDecision) error
+	var maxRequest int
+	if task.Tool == BatchTool {
+		l, err := PublishedLimits(cap)
+		if err != nil {
+			return Task{}, err
+		}
+		maxRequest = l.RequestBytes
+		checkDecision = func(d orchestration.AuthorizationDecision) error {
+			if visibilityDigest(i, d) != task.Visibility {
+				return ErrScope
+			}
+			return nil
+		}
+	}
+	r, callErr := c.Service.Call(ctx, orchestration.Invocation{
+		Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass,
+		AuthorizationCapabilityID: cap.RequiredAuthorization, GatewayBindingRef: cap.GatewayBindingRef,
+		MaxRequestBytes: maxRequest, CheckDecision: checkDecision, ManifestChecksum: checksum,
+		Arguments: task.Arguments, IdempotencyKey: dispatchKey, CorrelationID: uuid.NewString(),
+		Window: orchestration.AdmissionWindow, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond,
+		RetryThreshold: orchestration.AdmissionRetryThreshold,
+		Maximum:        orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes},
+	})
 	f := Finish{State: "HELD", Code: "OUTCOME_REQUIRES_RECONCILIATION", ElapsedMS: time.Since(start).Milliseconds()}
 	if r.AttemptID != uuid.Nil {
 		f.AttemptID = r.AttemptID.String()
@@ -217,6 +290,9 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		f.Calls = 1
 		f.Body = r.Body
 	}
+	if task.Tool == BatchTool {
+		f = c.batchFinish(task, id, r, callErr, f)
+	}
 	// Reconciliation has its own bounded context. A disconnected MCP client must
 	// not erase an already observed outcome; a failed write leaves a fenced hold.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -226,7 +302,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return finished, callErr
 	}
 	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.CapabilityID}
+		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.RequiredAuthorization}
 	}
 	return finished, err
 }
@@ -236,7 +312,8 @@ type OwnerDenial struct{ ReasonCode, CapabilityID string }
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 
 func retryAfter(value string, now time.Time) time.Time {
-	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 && n <= 86400 {
+	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 {
+		n = min(n, 86401)
 		return now.Add(time.Duration(n) * time.Second)
 	}
 	if at, e := http.ParseTime(value); e == nil {

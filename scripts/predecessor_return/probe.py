@@ -15,7 +15,7 @@ IDENTITY = {
     "X-OUF-Tenant-ID": "ci", "X-OUF-Actor-Type": "HUMAN",
     "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "fixture",
     "X-OUF-Token-Audience": "gateway",
-    "X-OUF-Granted-Scopes": "ouf.managed-source.preview ouf.semantic.discovery ouf.system.status",
+    "X-OUF-Granted-Scopes": "ouf.managed-source.preview ouf.semantic.discovery ouf.system.status ouf.semantic.search",
 }
 
 
@@ -158,6 +158,15 @@ if __name__ == "__main__":
             wait_ready(sys.argv[1] == "wait-owner")
         case ["seed", phase] if phase in ("predecessor", "candidate"):
             seed(phase)
+        case ["execute-predecessor"]:
+            saved = verify_analysis("predecessor", "candidate", own=True)
+            view = saved["view"]
+            task = tool("source.analysis.step", analysisId=view["analysisId"], taskId=view["tasks"][0]["taskId"])
+            assert task["state"] == "SUCCEEDED" and task["result"] == {"items": []}
+            # The predecessor must see the same newly committed step after return.
+            saved["view"] = tool("source.analysis.read", analysisId=view["analysisId"])
+            assert saved["view"]["tasks"][0]["state"] == "SUCCEEDED"
+            Path("/tmp/predecessor.json").write_text(json.dumps(saved))
         case ["read-predecessor"]:
             verify_analysis("predecessor", "candidate", own=False)
         case ["return"]:

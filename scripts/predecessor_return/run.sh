@@ -98,10 +98,18 @@ migrate "$NEW_IMAGE"
 after=$(schema)
 echo "Candidate schema $after"
 if [[ "${PREDECESSOR:-}" == 092bcdc2f5cc7e20a41c6c419e3e5466da822448 ]]; then
-  [[ "$before" == 15 && "$after" == 16 ]]
+  [[ "$before" == 15 && ( "$after" == 16 || "$after" == 17 ) ]]
+fi
+if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
+  [[ "$before" == 16 && "$after" == 17 ]]
 fi
 start "$NEW_IMAGE" candidate
-probe read-predecessor
+if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
+  # MCP-50T-09: candidate must execute the exact ea4033e plan before return.
+  probe execute-predecessor
+else
+  probe read-predecessor
+fi
 probe seed candidate
 new_witness=$(witness candidate)
 stop

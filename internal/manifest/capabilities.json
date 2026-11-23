@@ -1,5 +1,5 @@
 {
-  "version": "1.16.0-analysis-summary-v2",
+  "version": "1.17.0-published-batch-v1",
   "nextErrors": [
     {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
@@ -304,6 +304,136 @@
     }
   },
   "capabilities": [
+    {
+      "capabilityId": "ouf.semantic.search.batch",
+      "gatewayBindingRef": "capability://ouf.semantic.search.batch",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "requiredAuthorizationCapability": "ouf.semantic.search",
+      "allowedActors": [
+        "HUMAN"
+      ],
+      "toolEligible": false,
+      "baseCostEnvelope": {
+        "hardMaxResultBytes": 262144,
+        "hardMaxToolCalls": 1,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxElapsedMs": 3000
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract",
+          "limitPerIntent",
+          "intents"
+        ],
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "ouf.semantic.published-batch.v1"
+          },
+          "limitPerIntent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "intents": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "intentId",
+                "intent",
+                "preferredLanguages",
+                "requestedArtifactType",
+                "context"
+              ],
+              "properties": {
+                "intentId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                },
+                "intent": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "preferredLanguages": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 5,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$"
+                  }
+                },
+                "requestedArtifactType": {
+                  "type": "string",
+                  "enum": [
+                    "PROPERTY",
+                    "CLASS",
+                    "DATATYPE"
+                  ]
+                },
+                "context": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "namespace": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "domain": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "range": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "toolName": "semantic.search.batch",
+      "purpose": "Consult published semantic evidence for a finite analysis step.",
+      "useWhen": [
+        "A profile analysis step resolves distinct intents."
+      ],
+      "doNotUseWhen": [
+        "Direct client calls."
+      ],
+      "preferredAlternatives": [
+        "source.analysis.step"
+      ],
+      "operationalLimits": {
+        "batchMaxIntents": 64,
+        "batchMaxRequestBytes": 65536,
+        "batchMaxResponseBytes": 262144,
+        "limitPerIntent": 3,
+        "preferredLanguages": [
+          "it"
+        ]
+      },
+      "resultSemantics": "Published evidence and revision pins per intent.",
+      "securityNotes": [
+        "Current HUMAN delegation and published search permission."
+      ],
+      "mcpClass": "MCP_INTERNAL",
+      "publicationState": "ACTIVE",
+      "conditionalOutcomeCost": {}
+    },
     {
       "toolName": "urban.object.related_search",
       "nextPolicy": "urban.object.related_search",

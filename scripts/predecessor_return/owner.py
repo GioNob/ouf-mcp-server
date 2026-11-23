@@ -15,6 +15,7 @@ def policy():
     now = datetime.now(timezone.utc)
     capabilities = {
         "ouf.managed-source.preview": "READ",
+        "ouf.semantic.search": "READ",
         "ouf.semantic.discovery": "COMMAND",
         "ouf.system.status": "READ",
     }
@@ -67,6 +68,8 @@ class Owner(BaseHTTPRequestHandler):
                         "profileVersion": 1, "schemaHash": "sha256:" + "a" * 64,
                         "columnCount": 1, "view": "COLUMNS", "offset": 0, "hasMore": False,
                         "columns": [{"name": "tipologia"}]})
+        elif self.path == "/execute/semantic/search":
+            self.reply({"items": []})
         elif self.path == "/execute/semantic/discovery/request":
             key = args["idempotencyKey"]
             if self.headers.get("Idempotency-Key") != key:

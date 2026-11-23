@@ -152,6 +152,18 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	} else {
 		body, _ = json.Marshal(in)
 	}
+	if in.CapabilityID == "ouf.semantic.search.batch" {
+		limit := in.MaxRequestBytes
+		if limit == 0 {
+			limit = 65536
+		}
+		if limit < 1 || limit > 65536 {
+			return orchestration.GatewayResponse{}, errors.New("invalid published batch limit")
+		}
+		if len(body) > limit {
+			return orchestration.GatewayResponse{Status: 413, Problem: &orchestration.Problem{Status: 413, Code: "SEM_BATCH_REQUEST_TOO_LARGE"}}, nil
+		}
+	}
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
 	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
@@ -166,6 +178,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
 		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/authorization/" + mode
+	case "ouf.semantic.search.batch":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/consultation/search-batch"
 	case "ouf.semantic.search":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/search"
 	case "ouf.semantic.consultation.read":

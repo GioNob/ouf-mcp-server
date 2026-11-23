@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	manifestpkg "github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -38,9 +39,9 @@ func createAnalysisSummary(ctx context.Context, tx pgx.Tx, p analysis.Plan) erro
 }
 
 func assignSummaryTask(ctx context.Context, tx pgx.Tx, id string, t analysis.Task) error {
-	_, err := tx.Exec(ctx, `update ouf_mcp.analysis_column set task_id=$3,next_tool='source.analysis.step'
+	_, err := tx.Exec(ctx, `update ouf_mcp.analysis_column set task_id=$3,next_tool='source.analysis.step',published_first=$4
 		where analysis_id=$1 and ordinal=any($2::int[]) and outcome->>'state'='PENDING'
-		and request_id is null and (task_id is null or next_tool='source.analysis.plan')`, id, t.Columns, t.ID)
+		and request_id is null and (task_id is null or next_tool='source.analysis.plan')`, id, t.Columns, t.ID, t.Tool == analysis.BatchTool)
 	return err
 }
 
@@ -93,6 +94,7 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 		  count(*) filter(where old->>'state'='BLOCKED') as ob,
 		  count(*) filter(where outcome->>'state'='PENDING') as np,
 		  count(*) filter(where outcome->>'state'='BLOCKED') as nb,
+		  count(*) filter(where outcome->>'state'='MATCHED_PUBLISHED') as nm,
 		  count(*) filter(where outcome->>'state'='NO_CANDIDATES') as nz,
 		  count(*) filter(where outcome->>'state'='CANDIDATES_READY') as nr
 		from changed where old<>outcome
@@ -102,7 +104,7 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 		and not exists(select from changed u where u.ordinal=c.ordinal)) as stopped
 	)
 	insert into ouf_mcp.analysis_counts(analysis_id,seq,total,matched,ready,zero_count,blocked,pending,onboarding,stopped)
-	select $1,h.seq+1,h.total,h.matched,h.ready+d.nr,h.zero_count+d.nz,h.blocked-d.ob+d.nb,
+	select $1,h.seq+1,h.total,h.matched+d.nm,h.ready+d.nr,h.zero_count+d.nz,h.blocked-d.ob+d.nb,
 		h.pending-d.op+d.np,h.onboarding,(h.pending-d.op+d.np>0 and stop.stopped)
 	from head h cross join delta d cross join stop where not h.integrity_hold and
 	(exists(select 1 from versions) or h.stopped is distinct from (h.pending-d.op+d.np>0 and stop.stopped))`,
@@ -111,6 +113,9 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 }
 
 func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, now time.Time) error {
+	if t.Tool == analysis.BatchTool {
+		return savePublished(ctx, tx, id, t, analysis.Finish{})
+	}
 	if t.State == "HELD" {
 		if t.Code == "OWNER_AUTHORIZATION_DENIED" || t.Code == "OWNER_REQUEST_REJECTED" || t.Code == "RETRY_BUDGET_EXHAUSTED" || t.Code == "AUTHORIZATION_DENIED" {
 			return projectOutcome(ctx, tx, id, t.Columns, "", analysis.Outcome{State: "BLOCKED", Reason: t.Code}, "")
@@ -263,11 +268,11 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	c := &out.Counts
 	err = scanSummaryRow(ctx, tx, &out, `select h.seq,h.total,h.matched,h.ready,h.zero_count,h.blocked,h.pending,h.onboarding,h.stopped,
 		case when h.integrity_hold then 'ANALYSIS_PROFILE_CHANGED' else '' end,
-		p.profile->>'assetId',p.profile->>'profileId',p.revision
-		from ouf_mcp.profile_analysis p cross join lateral
+		p.profile->>'assetId',p.profile->>'profileId',p.revision,coalesce(pub.visibility_digest::text,'')
+		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_published_plan pub using(analysis_id) cross join lateral
 		(select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id and seq <= $6 order by seq desc limit 1) h
-		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=$5`,
-		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifest, pos.Seq}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision)
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum in ($5,nullif($7,'')::char(64))`,
+		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifest, pos.Seq, manifestpkg.AnalysisPredecessor(manifest)}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, analysis.ErrScope
 	}
@@ -299,7 +304,7 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		}
 	} else if c.Pending > 0 {
 		err = scanSummaryRow(ctx, tx, &out, `select next_tool,coalesce(task_id,''),coalesce(request_id::text,''),ordinal,case when next_tool='source.analysis.plan' then header else '' end
-			from ouf_mcp.analysis_column where analysis_id=$1 and next_tool<>'' order by ordinal limit 1`, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header)
+			from ouf_mcp.analysis_column where analysis_id=$1 and next_tool<>'' order by published_first desc,ordinal limit 1`, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header)
 	} else if c.Blocked == c.Total {
 		err = scanSummaryRow(ctx, tx, &out, `select outcome->>'reasonCode' from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='BLOCKED' order by ordinal limit 1`, []any{id}, &out.Hint.Reason)
 	} else if out.Onboarding && c.Ready > 0 {

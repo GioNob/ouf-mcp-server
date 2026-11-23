@@ -141,6 +141,7 @@ func IsValueMapProposal(capabilityID string, args json.RawMessage) bool {
 }
 
 type GatewayRequest struct {
+	MaxRequestBytes                                                                 int `json:"-"`
 	GatewayBindingRef, CapabilityID, Owner, OperationClass                          string
 	Arguments                                                                       json.RawMessage
 	Identity                                                                        Identity
@@ -192,6 +193,8 @@ func ValidHandoffIssue(identity Identity, operation, key string, raw json.RawMes
 }
 
 type Invocation struct {
+	MaxRequestBytes  int
+	CheckDecision    func(AuthorizationDecision) error
 	InternalWaitRead bool
 	// Trusted manifest binding, never taken from tool arguments. Transport,
 	// fingerprints and budget identity continue to use CapabilityID.
@@ -315,6 +318,11 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 		in.IdempotencyKey = command.IdempotencyKey
 	}
+	if in.CheckDecision != nil {
+		if err := in.CheckDecision(decision); err != nil {
+			return Result{}, err
+		}
+	}
 	requestHash := sha256.Sum256(in.Arguments)
 	fingerprintArguments := in.Arguments
 	if in.ReadPositionRef != "" {
@@ -380,8 +388,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		GatewayBindingRef: in.GatewayBindingRef, CapabilityID: in.CapabilityID, Owner: in.Owner, OperationClass: in.OperationClass,
 		Arguments: in.Arguments, Identity: in.Identity, AuthorizationDecisionRef: decision.DecisionRef,
 		CorrelationID: in.CorrelationID, IdempotencyKey: in.IdempotencyKey, AttemptID: admitted.AttemptID.String(), RequestHash: hex.EncodeToString(requestHash[:]),
-		MaxResultBytes: in.Maximum.ResultBytes,
-		Upload:         in.Upload,
+		MaxResultBytes: in.Maximum.ResultBytes, MaxRequestBytes: in.MaxRequestBytes,
+		Upload: in.Upload,
 	}, in.Timeout)
 	uncertainCommand := in.CapabilityID == "ouf.semantic.discovery.adopt" || in.CapabilityID == HandoffIssueCapability
 	if uncertainCommand && callErr == nil && response.Status >= 500 {
@@ -412,6 +420,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		response.Problem = &Problem{Status: response.Status, Code: outcome.Code}
 	}
 	actual := Cost{ToolCalls: 1, ResultBytes: int64(len(response.Body))}
+	if in.CapabilityID == "ouf.semantic.search.batch" && callErr == nil && response.Problem == nil {
+		actual.DistinctObjects = publishedRevisionCount(response.Body)
+		if actual.DistinctObjects > in.Maximum.DistinctObjects {
+			// Reject the whole response and consume the full reservation.
+			// No excess revisions are admitted as evidence.
+			actual.DistinctObjects = in.Maximum.DistinctObjects
+			callErr, outcome.Code = ErrResultLimit, "PUBLISHED_OBJECT_LIMIT_EXCEEDED"
+		}
+	}
 	if in.InternalWaitRead {
 		actual.ToolCalls = 0
 	}
@@ -453,7 +470,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 	}
 	if callErr != nil {
-		return Result{}, callErr
+		return Result{AttemptID: admitted.AttemptID}, callErr
 	}
 	return Result{Body: response.Body, Problem: response.Problem, AttemptID: admitted.AttemptID}, nil
 }

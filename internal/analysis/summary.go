@@ -286,6 +286,7 @@ type Hint struct {
 	Revision                                                    int64
 }
 type Summary struct {
+	Visibility          string
 	Seq                 int64
 	Counts              Counts
 	Items               []json.RawMessage
@@ -329,6 +330,9 @@ func (c Coordinator) SummaryAccess(ctx context.Context, i orchestration.Identity
 // Check evidence permissions again before releasing either live counts or
 // retained job references from an older snapshot.
 func (c Coordinator) EvidenceAccess(ctx context.Context, i orchestration.Identity, s Summary) error {
+	if err := c.CheckPublishedScope(ctx, i, s.Visibility); err != nil {
+		return err
+	}
 	status := s.Counts.Zero > 0 || s.Hint.RequestID != ""
 	for _, raw := range s.Items {
 		var item struct{ RequestID string }
@@ -341,6 +345,7 @@ func (c Coordinator) EvidenceAccess(ctx context.Context, i orchestration.Identit
 		tool   string
 		needed bool
 	}{
+		{"semantic.search", s.Counts.Matched > 0},
 		{"semantic.discovery.status", status},
 		{"semantic.discovery.candidates", s.Counts.Ready > 0 || s.Hint.Tool == "semantic.discovery.candidates"},
 	} {
