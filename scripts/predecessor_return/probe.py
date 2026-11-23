@@ -104,7 +104,12 @@ def read_analysis(analysis_id, read_by):
     payload = json.loads(result["content"][0]["text"])
     if read_by == "candidate":
         structured = dict(result["structuredContent"])
-        assert structured.pop("next")["contract"] == "ouf.next-step.v1"
+        step = structured.pop("next")
+        assert step["contract"] == "ouf.next-step.v1"
+        # task-50p: an error result also carries the same next block in its text for text-only clients.
+        if result.get("isError") and "next" in payload:
+            payload = dict(payload)
+            assert payload.pop("next") == step, "text and structured next differ"
         assert structured == payload, "candidate changed the owner view or refusal"
     return bool(result.get("isError")), payload
 
