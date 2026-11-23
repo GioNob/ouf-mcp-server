@@ -642,10 +642,10 @@ func Observation(tool string, args, body Object) Object {
 var reasonPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,79}$`)
 
 // A status row can describe a run and a schedule. A run recovery takes
-// precedence. Otherwise use the schedule's action and its associated clock.
+// precedence. A terminal schedule has no recovery work, even while the run is active.
 func recoveryObservation(obs Object) Object {
 	schedule, action := obs["scheduleRecoveryAction"], obs["recoveryAction"]
-	if schedule == nil || schedule == "NONE" || (action != nil && action != "NONE") {
+	if schedule == nil || schedule == "NONE" || schedule == "TERMINAL" || (action != nil && action != "NONE") {
 		return obs
 	}
 	row := maps.Clone(obs)

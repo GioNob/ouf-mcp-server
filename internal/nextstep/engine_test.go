@@ -79,6 +79,19 @@ func TestSameToolNumericArguments(t *testing.T) {
 	}
 }
 
+func TestInactiveSchedulePreservesRunVersion(t *testing.T) {
+	run := Object{"expectedVersion": 1, "runState": "RUNNING", "recoveryAction": "NONE"}
+	want := Version(run)
+	for _, schedule := range []string{"NONE", "TERMINAL"} {
+		row := maps.Clone(run)
+		row["scheduleRecoveryAction"] = schedule
+		row["scheduleDecisionDeadline"] = "2099-01-01T00:00:00Z"
+		if got := Version(row); got != want {
+			t.Errorf("schedule %s changed run version from %q to %q", schedule, want, got)
+		}
+	}
+}
+
 func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	s, err := manifest.Load()
 	if err != nil {
@@ -122,6 +135,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 		DeniedCapability, RetryAfter                 string
 		Failed, NewCommand                           bool
 		Delay                                        int
+		TerminalStates                               []any
 	}
 	raw, err = os.ReadFile("testdata/transitions.json")
 	if err != nil || json.Unmarshal(raw, &cases) != nil || len(cases) == 0 {
@@ -223,6 +237,9 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			}
 			if tc.Delay != 0 && result["pollAfterSeconds"] != float64(max(tc.Delay, orchestration.PollIntervalSeconds)) {
 				t.Fatal("wrong poll delay", result)
+			}
+			if tc.TerminalStates != nil && !reflect.DeepEqual(result["terminalStates"], tc.TerminalStates) {
+				t.Fatalf("terminalStates = %v, want %v", result["terminalStates"], tc.TerminalStates)
 			}
 		})
 	}
