@@ -131,10 +131,11 @@ func TestValueTypesGovernedDispatch(t *testing.T) {
 			}
 			for _, args := range invalid {
 				rejected := call(args)
-				if !rejected.IsError || len(rejected.Content) != 1 || rejected.Content[0].(*mcp.TextContent).Text != `{"code":"INVALID_TOOL_ARGUMENTS","retryable":false}` ||
+				if !rejected.IsError || len(rejected.Content) != 1 ||
 					calls.Load() != 0 || admission.calls.Load() != 0 {
 					t.Fatal("invalid arguments must produce a safe code before admission")
 				}
+				checkErrorText(t, rejected, `{"code":"INVALID_TOOL_ARGUMENTS","retryable":false}`)
 			}
 			result := call(args)
 			if result.IsError || calls.Load() != 1 || admission.calls.Load() != 1 {
@@ -293,10 +294,11 @@ func TestValueMapProposalByteLimits(t *testing.T) {
 			}
 			if tc.code != "" {
 				want := fmt.Sprintf(`{"code":%q,"retryable":false}`, tc.code)
-				if !result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != want ||
+				if !result.IsError || len(result.Content) != 1 ||
 					calls.Load() != 0 || admission.calls.Load() != 0 {
 					t.Fatal("expected a stable size error before admission and dispatch")
 				}
+				checkErrorText(t, result, want)
 				return
 			}
 			if result.IsError || calls.Load() != 1 || admission.calls.Load() != 1 {

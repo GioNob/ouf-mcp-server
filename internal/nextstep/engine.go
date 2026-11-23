@@ -96,6 +96,11 @@ func incompleteColumn(obs Object) Object {
 
 func get(obs, input Object, paths string) any {
 	switch paths {
+	case "executionProposalRequired":
+		if required, ok := obs[paths].(bool); ok {
+			return required
+		}
+		return nil
 	case "#incompleteColumn":
 		return incompleteColumn(obs) != nil
 	case "#distinctCursor":
@@ -244,6 +249,9 @@ func discoveryWork(obs Object) any {
 
 func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 	args := Object{}
+	if r.CopyInput {
+		maps.Copy(args, input)
+	}
 	for k, selector := range r.Args {
 		value := get(obs, input, selector)
 		switch selector {
@@ -392,6 +400,60 @@ func PermissionDenied(capability, reason string) Object {
 	return s
 }
 
+// ProposalSections projects only contract section names into the receipt and message.
+func ProposalSections(values []any) []string {
+	sections := []string{}
+	for _, value := range values {
+		name, _ := value.(string)
+		switch name {
+		case "semanticBindings", "semanticPublicationSetRef", "udp.resolution", "udp.materialization", "limits":
+			if !slices.Contains(sections, name) {
+				sections = append(sections, name)
+			}
+		}
+	}
+	return sections
+}
+
+func (e Engine) blockedRule(r manifest.Rule, obs, input Object) Object {
+	if strings.Contains(r.Message, "{missingSections}") {
+		sections, _ := obs["missingSections"].([]any)
+		label := strings.Join(ProposalSections(sections), ", ")
+		if label == "" {
+			label = "le sezioni richieste della proposta esecutiva"
+		}
+		r.Message = strings.ReplaceAll(r.Message, "{missingSections}", label)
+	}
+	s := Block(r.Reason, r.Tool, r.Message)
+	if len(r.Alternatives) > 0 {
+		alts := make([]Object, 0, len(r.Alternatives))
+		for _, option := range r.Alternatives {
+			alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
+			if args := e.project(option, obs, input); len(args) > 0 {
+				alt["arguments"] = args
+			}
+			alts = append(alts, alt)
+		}
+		s["alternatives"] = alts
+	}
+	if r.Actor == "OPERATOR" && r.Tool == "" {
+		return ManualBlock(r.Reason, r.Message, r.Actor)
+	}
+	if len(r.Args) > 0 {
+		args := e.project(r, obs, input)
+		if e.Valid(r.Tool, args) {
+			if r.Decision != "" && e.Issue != nil {
+				return e.Issue(r, args, obs)
+			}
+			s["alternatives"].([]Object)[0]["arguments"] = args
+		}
+	}
+	if r.Actor != "" {
+		s["actor"] = r.Actor
+	}
+	return s
+}
+
 func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
 	if failed {
 		return e.failure(c, policy, input, owner)
@@ -455,34 +517,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		switch r.Action {
 		case "BLOCKED":
-			s := Block(r.Reason, r.Tool, r.Message)
-			if len(r.Alternatives) > 0 {
-				alts := make([]Object, 0, len(r.Alternatives))
-				for _, option := range r.Alternatives {
-					alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
-					if args := e.project(option, obs, input); len(args) > 0 {
-						alt["arguments"] = args
-					}
-					alts = append(alts, alt)
-				}
-				s["alternatives"] = alts
-			}
-			if r.Actor == "OPERATOR" && r.Tool == "" {
-				return ManualBlock(r.Reason, r.Message, r.Actor)
-			}
-			if len(r.Args) > 0 {
-				args := e.project(r, obs, input)
-				if e.Valid(r.Tool, args) {
-					if r.Decision != "" && e.Issue != nil {
-						return e.Issue(r, args, obs)
-					}
-					s["alternatives"].([]Object)[0]["arguments"] = args
-				}
-			}
-			if r.Actor != "" {
-				s["actor"] = r.Actor
-			}
-			return s
+			return e.blockedRule(r, obs, input)
 		case "DONE":
 			msg := "La lettura degli oggetti è completata."
 			if r.Outcome != "SUCCEEDED" {
@@ -647,7 +682,9 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
 	retryable := obs["retryable"] == true || (obs["retryable"] == nil && (status == "503" || status == "429"))
 	safe := c.OperationClass == "READ" || c.OperationClass == "SEARCH" || (args["commandKey"] != nil && args["commandKey"] != "")
-	flags := Object{"code": code, "tool": c.ToolName, "retryable": retryable, "safeToRepeat": safe}
+	flags := Object{}
+	maps.Copy(flags, obs)
+	flags["code"], flags["tool"], flags["retryable"], flags["safeToRepeat"] = code, c.ToolName, retryable, safe
 	for _, r := range e.Errors {
 		if !matches(r.When, flags, args) {
 			continue
@@ -670,7 +707,8 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 				}
 				return PermissionDenied(capability, code)
 			}
-			return Block(code, target, r.Message)
+			r.Tool, r.Reason = target, code
+			return e.blockedRule(r, obs, args)
 		}
 		projected := e.project(r, obs, args)
 		if r.Action == "POLL" {

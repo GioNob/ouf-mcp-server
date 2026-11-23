@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key. For BLOCKED/AGENT choose only a listed alternative, preserve its supplied arguments, and complete missing decision fields from the indicated evidence using its input schema."
+const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key. For BLOCKED/AGENT choose only a listed alternative, preserve its supplied arguments except for a correction explicitly requested by that alternative, and complete missing decision fields from the indicated evidence using its input schema."
 
 type Policy struct {
 	Read       string              `json:"read"`
@@ -24,6 +24,7 @@ type Rule struct {
 	Reason       string            `json:"reason"`
 	Tool         string            `json:"tool,omitempty"`
 	Args         map[string]string `json:"args,omitempty"`
+	CopyInput    bool              `json:"copyInput,omitempty"`
 	Decision     string            `json:"decision,omitempty"`
 	Terminal     []string          `json:"terminal,omitempty"`
 	Actor        string            `json:"actor,omitempty"`

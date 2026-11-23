@@ -13,6 +13,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/trustedclaims"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -556,6 +557,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 			return revisionCSVError(result.Body), nil, nil
 		}
 		problem := result.Problem
+		if projected := onboardingProblem(c.ToolName, problem, result.Body); projected != nil {
+			return projected, nil, nil
+		}
 		if isValueTypeTool(c.ToolName) && (problem.Status == http.StatusBadRequest || problem.Status == http.StatusUnprocessableEntity) {
 			// Owner validation details can contain source data. Preserve the
 			// stable problem fields and the existing error envelope.
@@ -571,6 +575,44 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		return content, json.RawMessage(result.Body), nil
 	}
 	return content, nil, nil
+}
+
+// Each Onboarding refusal has its own public diagnostic. Never include the
+// owner's free-form problem detail, even on an internal review failure.
+func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.CallToolResult {
+	out := map[string]any{"code": p.Code, "Status": p.Status}
+	var fields struct {
+		MissingSections []any  `json:"missingSections"`
+		Index           *int   `json:"index"`
+		SemanticRef     string `json:"semanticRef"`
+		FieldName       string `json:"fieldName"`
+	}
+	switch {
+	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_EXECUTION_PROPOSAL_REQUIRED":
+		if json.Unmarshal(body, &fields) != nil {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+		out["missingSections"] = nextstep.ProposalSections(fields.MissingSections)
+	case tool == "source.onboarding.create" && p.Status == 422 && p.Code == "ONB_SEMANTIC_REF_FORM_INVALID":
+		if json.Unmarshal(body, &fields) != nil || fields.Index == nil || *fields.Index < 0 {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+		out["index"] = *fields.Index
+	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_SEMANTIC_REF_VERSION_MISMATCH":
+		if json.Unmarshal(body, &fields) != nil || fields.SemanticRef == "" {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+		out["semanticRef"] = fields.SemanticRef
+	case tool == "source.onboarding.create" && p.Status == 422 && p.Code == "ONB_READER_UNSUPPORTED":
+		if json.Unmarshal(body, &fields) != nil || fields.FieldName == "" {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+		out["fieldName"] = fields.FieldName
+	case tool == "source.onboarding.review.prepare" && p.Status == 500 && p.Code == "ONB_REVIEW_INTERNAL_ERROR":
+	default:
+		return nil
+	}
+	return workflowError(out)
 }
 
 func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallToolResult {

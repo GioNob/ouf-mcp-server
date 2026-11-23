@@ -54,7 +54,61 @@ func checkNext(t *testing.T, contract *jsonschema.Resolved, result *mcp.CallTool
 	if err := contract.Validate(envelope.Next); err != nil {
 		t.Fatalf("invalid next: %v", err)
 	}
+	if result.IsError && !reflect.DeepEqual(textError(t, result)["next"], envelope.Next) {
+		t.Fatal("text-only client received a different next")
+	}
 	return envelope.Next
+}
+
+// MCP-50P-002. Read only the textual MCP content, as the E2E client does.
+func textError(t *testing.T, result *mcp.CallToolResult) nextstep.Object {
+	t.Helper()
+	for _, item := range result.Content {
+		if text, ok := item.(*mcp.TextContent); ok {
+			var body nextstep.Object
+			if json.Unmarshal([]byte(text.Text), &body) == nil && body["next"] != nil {
+				return body
+			}
+		}
+	}
+	t.Fatal("error has no JSON next in content[].text")
+	return nil
+}
+
+func checkErrorText(t *testing.T, result *mcp.CallToolResult, wantJSON string) {
+	t.Helper()
+	checkNext(t, nextContract(t), result)
+	body := textError(t, result)
+	delete(body, "next")
+	var want nextstep.Object
+	if json.Unmarshal([]byte(wantJSON), &want) != nil || !reflect.DeepEqual(body, want) {
+		t.Fatalf("error diagnostic = %v, want %s", body, wantJSON)
+	}
+}
+
+// MCP-50P-005. Even the budget fallback must fit with both copies of next.
+func TestBoundedErrorText(t *testing.T) {
+	snapshot, err := manifest.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := workflowServer{manifest: snapshot}
+	for _, tool := range []string{"source.onboarding.create", "ouf.wait"} {
+		t.Run(tool, func(t *testing.T) {
+			reg := registeredTool{capability: manifest.Capability{ToolName: tool, NextPolicy: "onboarding"}, limit: 1024}
+			result := s.boundedResult(workflowError(nextstep.Object{"padding": strings.Repeat("x", reg.limit)}), reg)
+			if !result.IsError || checkNext(t, nextContract(t), result)["reasonCode"] != "TOOL_RESULT_LIMIT" {
+				t.Fatal("oversize error lost the bounded continuation")
+			}
+			wire, err := json.Marshal(result)
+			if err != nil || len(wire) > reg.limit {
+				t.Fatal("error text exceeded the serialized result limit")
+			}
+			if tool == "ouf.wait" && textError(t, result)["changed"] != false {
+				t.Fatal("wait fallback lost observation status")
+			}
+		})
+	}
 }
 
 func checkOwnerAndNext(t *testing.T, result *mcp.CallToolResult, owner map[string]any) {
@@ -146,6 +200,7 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 	case "ouf.managed-source.onboarding.read":
 		if args["ifObservationVersion"] == nil {
 			obs["workflowState"], obs["allowedActions"], obs["lockVersion"] = "DRAFT", []string{"PREPARE_REVIEW"}, 1
+			obs["reasonCode"], obs["executionProposalRequired"] = "DRAFT_READY", false
 			break
 		}
 		if args["ifObservationVersion"] != "sha256:"+strings.Repeat("a", 64) || req.Identity.PrincipalID != "user-a" {
