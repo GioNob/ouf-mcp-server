@@ -59,7 +59,7 @@ class ValueTypeSchemas(unittest.TestCase):
     def setUpClass(cls):
         cls.contract = json.loads(CONTRACT.read_bytes())
         cls.value_maps = json.loads(VALUE_MAP_CONTRACT.read_bytes())
-        cls.tools = {c["toolName"]: c for c in json.loads(MANIFEST.read_bytes())["capabilities"]}
+        cls.tools = {c["toolName"]: c for c in json.loads(MANIFEST.read_bytes())["capabilities"] if "toolName" in c}
         cls.schemas = {}
         for name in (SEMANTIC, CREATE, REVISION, "semantic.search"):
             schema = cls.tools[name]["inputSchema"]
