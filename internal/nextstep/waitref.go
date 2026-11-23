@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
 type WaitRef struct {
@@ -260,12 +261,15 @@ func (r WaitRef) Next(token string) Object {
 		s["human"].(Object)["expiresAt"] = r.LinkEnd
 	}
 	s["userMessage"] = "Apri il collegamento di revisione. La chat attenderà la decisione."
+	if r.Reason == "HUMAN_ACTIVATION_REQUIRED" {
+		s["userMessage"] = "Apri la revisione della fonte nella THS e conferma l’attivazione. La chat attenderà il nuovo stato."
+	}
 	return s
 }
 
 func (r WaitRef) Poll(token string) Object {
 	s := call("POLL", r.Reason, "ouf.wait", Object{"waitRef": token})
-	s["pollAfterSeconds"], s["terminalStates"] = 5, []string{"CALL_TOOL", "WAIT_FOR_HUMAN", "BLOCKED", "DONE"}
+	s["pollAfterSeconds"], s["terminalStates"] = orchestration.PollIntervalSeconds, []string{"CALL_TOOL", "WAIT_FOR_HUMAN", "BLOCKED", "DONE"}
 	s["deadline"] = r.Deadline
 	s["userMessage"] = "La decisione è ancora in attesa. Ricontrolla dopo l’intervallo indicato."
 	return s

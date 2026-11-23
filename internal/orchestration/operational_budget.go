@@ -1,9 +1,6 @@
 package orchestration
 
-import (
-	"errors"
-	"time"
-)
+import "errors"
 
 const OperationalControlBudgetProfile = "ouf.operational-control-budget.v1"
 
@@ -49,7 +46,7 @@ func AdmissionWindowBudget(in AdmissionRequest) (string, Cost, error) {
 		return in.ManifestChecksum, Cost{ToolCalls: in.Maximum.ToolCalls * int64(in.RetryThreshold), ResultBytes: in.Maximum.ResultBytes * int64(in.RetryThreshold), DistinctObjects: in.Maximum.DistinctObjects * int64(in.RetryThreshold)}, nil
 	}
 	if in.BudgetProfile != OperationalControlBudgetProfile || !IsOperationalControlRead(in.CapabilityID, in.OperationClass) ||
-		in.Window != time.Minute || in.RetryThreshold != 3 || in.Maximum.ToolCalls != 1 || in.Maximum.ResultBytes < 1 ||
+		in.Window != AdmissionWindow || in.RetryThreshold != AdmissionRetryThreshold || in.Maximum.ToolCalls != 1 || in.Maximum.ResultBytes < 1 ||
 		in.Maximum.ResultBytes > 512<<10 || in.Maximum.DistinctObjects < 0 || in.Maximum.DistinctObjects > 100 {
 		return "", Cost{}, errors.New("unsupported operational control budget")
 	}

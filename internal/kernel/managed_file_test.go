@@ -83,6 +83,7 @@ func TestManagedFileDistinctValuesPassThrough(t *testing.T) {
 func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T) {
 	const capID = "ouf.managed-source.file.profile"
 	const createCap = "ouf.managed-source.onboarding.create"
+	const createKey = "00000000-0000-4000-8000-000000000003"
 	const asset = "00000000-0000-4000-8000-000000000001"
 	now := time.Now().UTC()
 	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{
@@ -115,7 +116,7 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/internal/capabilities/v1/execute/managed.file/create" {
-			if in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
+			if in.IdempotencyKey != createKey || in.CapabilityID != createCap || args["profileId"] != "00000000-0000-4000-8000-000000000002" || args["sourceId"] != "cinema" || len(args) != 9 {
 				t.Error("unsafe onboarding draft arguments")
 			}
 			if len(args["fields"].([]any)) != 1024 || len(args["semanticRefs"].([]any)) != 1024 || len(args["sourceObjectKeyFields"].([]any)) != 1024 {
@@ -170,6 +171,7 @@ func TestManagedFileProfileUsesDelegatedGatewayWithoutRawAttachment(t *testing.T
 		fields[i] = map[string]any{"fieldName": keys[i], "extractionDecision": "INCLUDE", "dataAccessLabel": "RESTRICTED", "targetPropertyIri": property}
 	}
 	draftArgs := map[string]any{
+		"analysisId": strings.Repeat("a", 64), "commandKey": createKey,
 		"assetId": asset, "profileId": "00000000-0000-4000-8000-000000000002", "sourceId": "cinema", "name": "Cinema", "owner": "Comune", "targetClassIri": "https://example.org/Cinema", "semanticRefs": refs, "sourceObjectKeyFields": keys, "fields": fields,
 	}
 	draft, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.onboarding.create", Arguments: draftArgs})

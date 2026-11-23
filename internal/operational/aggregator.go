@@ -226,7 +226,7 @@ func (a Aggregator) callProducer(ctx context.Context, in aggregateRequest, produ
 		GatewayBindingRef: "capability://" + producer.CapabilityID, ManifestChecksum: a.ManifestChecksum,
 		Arguments: arguments, IdempotencyKey: idempotency, CorrelationID: in.CorrelationID,
 		ReadPositionRef: in.ReadPositionRef,
-		Window:          time.Minute, Timeout: 3 * time.Second, RetryThreshold: 3,
+		Window:          orchestration.AdmissionWindow, Timeout: 3 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold,
 		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 100, ResultBytes: 512 << 10},
 	})
 	if err != nil || result.Problem != nil || len(result.Body) == 0 || len(result.Body) > 512<<10 {

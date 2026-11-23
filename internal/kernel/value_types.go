@@ -74,6 +74,14 @@ func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapsh
 				return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 			}
 		}
+		delete(args, "analysisId")
+		if key, ok := args["commandKey"].(string); ok && c.ToolName == "source.onboarding.create" {
+			if identity, present := ctx.Value(identityKey{}).(requestIdentity); present {
+				identity.IdempotencyKey = key
+				ctx = context.WithValue(ctx, identityKey{}, identity)
+			}
+			delete(args, "commandKey")
+		}
 		marshal := json.Marshal
 		if valueMap {
 			marshal = marshalValueMapJSON

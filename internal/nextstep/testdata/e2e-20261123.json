@@ -1,0 +1,406 @@
+{
+  "steps": [
+    {
+      "tool": "source.file.upload",
+      "input": {},
+      "owner": {
+        "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f",
+        "pickerUrl": "https://ths.example.invalid/trusted-human/managed-files/?handoff=fafe72c3-24a9-4c67-bfd2-a408be01d40f",
+        "status": "AWAITING_FILE_SELECTION"
+      }
+    },
+    {
+      "tool": "source.file.upload.status",
+      "input": {
+        "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f"
+      },
+      "owner": {
+        "allowedActions": [
+          "READ_AGAIN"
+        ],
+        "reasonCode": "UPLOAD_PENDING",
+        "status": "PENDING",
+        "workflowState": "PENDING"
+      }
+    },
+    {
+      "tool": "source.file.upload.status",
+      "input": {
+        "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f"
+      },
+      "error": {
+        "code": "TOOL_SELECTION_STALL",
+        "dimension": "EQUIVALENT_ATTEMPTS",
+        "retryAfterSeconds": 23,
+        "retryable": true,
+        "windowEndsAt": "2026-11-23T12:16:00Z"
+      }
+    },
+    {
+      "tool": "source.file.preview",
+      "input": {
+        "assetId": "4875f080-d27f-4d4a-a911-9491883439bb",
+        "profileId": "542a1aac-a45f-416d-8bab-d5ccb90289a4"
+      },
+      "error": {
+        "code": "ADMISSION_WINDOW_BUDGET_EXHAUSTED",
+        "dimension": "TOOL_CALLS",
+        "retryAfterSeconds": 26,
+        "retryable": true,
+        "windowEndsAt": "2026-11-23T12:18:00Z"
+      }
+    },
+    {
+      "tool": "source.file.upload.status",
+      "input": {
+        "handoffId": "fafe72c3-24a9-4c67-bfd2-a408be01d40f"
+      },
+      "owner": {
+        "allowedActions": [
+          "NONE"
+        ],
+        "assetId": "4875f080-d27f-4d4a-a911-9491883439bb",
+        "reasonCode": "UPLOAD_STAGED",
+        "status": "STAGED",
+        "workflowState": "STAGED"
+      }
+    },
+    {
+      "tool": "source.analysis.step",
+      "input": {
+        "analysisId": "a1489b7bd3cafaf5080389b67722f81448373db313b8f05a6a2907d55d51154e",
+        "taskId": "bedfde856f853b8e0251570effcd965c227422065574fe0cbf189cf88b06fef7",
+        "commandKey": "44e1aa2f-f12b-44c8-a0ab-db594151d020"
+      },
+      "owner": {
+        "arguments": {
+          "idempotencyKey": "analysis:9426590eac5d2f5d5778225b9eba9104d22daceabe2df635facef9d39b43c48d",
+          "intent": "id_redazionale",
+          "preferredLanguages": [
+            "it"
+          ],
+          "requestedArtifactType": "PROPERTY"
+        },
+        "attemptId": "bb5f7691-cc92-42c6-8a70-9d8a0f658bea",
+        "attempts": 1,
+        "callTimeMs": 126,
+        "calls": 1,
+        "code": "OWNER_RESPONSE_SAVED_NOT_ADOPTED",
+        "columns": [
+          0
+        ],
+        "completedAt": "2026-11-23T12:18:25.91151Z",
+        "state": "SUCCEEDED",
+        "taskId": "bedfde856f853b8e0251570effcd965c227422065574fe0cbf189cf88b06fef7",
+        "tool": "semantic.discovery.request",
+        "result": {
+          "allowedActions": [
+            "POLL_DISCOVERY"
+          ],
+          "attemptCount": 0,
+          "candidateCount": 0,
+          "pollAfterSeconds": 5,
+          "recoveryState": "ACTIVE",
+          "requestId": "e6d44c2a-ec9f-4cd7-a88b-69238b115ab9",
+          "state": "PENDING"
+        }
+      }
+    },
+    {
+      "tool": "semantic.discovery.status",
+      "input": {
+        "analysisId": "a1489b7bd3cafaf5080389b67722f81448373db313b8f05a6a2907d55d51154e",
+        "requestId": "e6d44c2a-ec9f-4cd7-a88b-69238b115ab9"
+      },
+      "owner": {
+        "allowedActions": [
+          "NONE"
+        ],
+        "attemptCount": 1,
+        "budgetDeadline": "2026-11-24T12:18:26.670+00:00",
+        "candidateCount": 0,
+        "completedAt": "2026-11-23T12:18:27.439+00:00",
+        "createdAt": "2026-11-23T12:18:25.866+00:00",
+        "excludedCandidates": {
+          "CANDIDATE_FETCH_DENIED": 0,
+          "CANDIDATE_RDF_BOUND": 0,
+          "CANDIDATE_RDF_INVALID": 0
+        },
+        "nextAttemptAt": "2026-11-23T12:18:25.866+00:00",
+        "recoveryState": "ACTIVE",
+        "requestId": "e6d44c2a-ec9f-4cd7-a88b-69238b115ab9",
+        "state": "SUCCEEDED"
+      }
+    }
+  ],
+  "profileColumns": [
+    "id_redazionale",
+    "nome",
+    "tipologia",
+    "ente_gestore",
+    "comune",
+    "provincia",
+    "indirizzo",
+    "altri_indirizzi_o_accessi",
+    "codice_strada_comunale",
+    "rione_storico",
+    "circoscrizione_numero",
+    "circoscrizione_nome",
+    "telefono",
+    "fonte_struttura",
+    "fonte_altri_indirizzi",
+    "fonte_rione_circoscrizione",
+    "note",
+    "data_consultazione"
+  ],
+  "catalogue": [
+    {
+      "semantic_id": "https://example.invalid/onto/Place",
+      "canonical_uri": "https://example.invalid/onto/Place",
+      "artifact_type": "CLASS",
+      "local_name": "Place",
+      "label": {
+        "it": "Luogo"
+      },
+      "owner_ref": "owner-example",
+      "revision_id": "00000000-0000-4000-8000-000000000001",
+      "publication_set_id": "55555555-5555-4555-8555-555555555555",
+      "status": "ACTIVE"
+    },
+    {
+      "semantic_id": "https://example.invalid/onto/id",
+      "canonical_uri": "https://example.invalid/onto/id",
+      "artifact_type": "PROPERTY",
+      "local_name": "id_redazionale",
+      "label": {
+        "it": "id_redazionale"
+      },
+      "owner_ref": "owner-example",
+      "revision_id": "00000000-0000-4000-8000-000000000002",
+      "publication_set_id": "55555555-5555-4555-8555-555555555555",
+      "status": "ACTIVE"
+    },
+    {
+      "semantic_id": "https://example.invalid/onto/name",
+      "canonical_uri": "https://example.invalid/onto/name",
+      "artifact_type": "PROPERTY",
+      "local_name": "nome",
+      "label": {
+        "it": "nome"
+      },
+      "owner_ref": "owner-example",
+      "revision_id": "44444444-4444-4444-8444-444444444444",
+      "publication_set_id": "55555555-5555-4555-8555-555555555555",
+      "status": "ACTIVE"
+    }
+  ],
+  "continuation": {
+    "profileJob": {
+      "jobId": "22222222-2222-4222-8222-222222222222",
+      "status": "QUEUED"
+    },
+    "jobComplete": {
+      "status": "SUCCEEDED",
+      "jobId": "22222222-2222-4222-8222-222222222222",
+      "resultRef": "542a1aac-a45f-416d-8bab-d5ccb90289a4"
+    },
+    "candidatePage": {
+      "state": "SUCCEEDED",
+      "adoptableCandidateIds": [
+        "22222222-2222-4222-8222-222222222222"
+      ],
+      "candidates": [
+        {
+          "candidate_id": "22222222-2222-4222-8222-222222222222",
+          "canonical_uri": "https://example.invalid/onto/name"
+        }
+      ],
+      "allowedActions": [
+        "ADOPT_CANDIDATE"
+      ]
+    },
+    "adoption": {
+      "requestId": "11111111-1111-4111-8111-111111111111",
+      "candidateId": "22222222-2222-4222-8222-222222222222",
+      "artifactId": "33333333-3333-4333-8333-333333333333",
+      "revisionId": "44444444-4444-4444-8444-444444444444",
+      "expectedRowVersion": 0,
+      "semanticId": "https://example.invalid/onto/name",
+      "status": "DRAFT",
+      "provenance": {
+        "providerId": "SCHEMA_GOV_IT",
+        "canonicalUri": "https://example.invalid/onto/name",
+        "sourceLocation": "https://example.invalid/catalogue/place.ttl",
+        "publisher": "https://example.invalid/publisher",
+        "license": null,
+        "licenseWarning": "licenza mancante",
+        "snapshotId": "55555555-5555-4555-8555-555555555555",
+        "rdfSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "receiptSemantics": "DURABLE_COMMAND_RESULT_NOT_CURRENT_STATE",
+      "runtimeAuthorityIssued": false,
+      "notReleaseAcceptance": true
+    },
+    "validated": {
+      "state": "VALIDATED",
+      "allowedActions": [
+        "REQUEST_APPROVAL"
+      ],
+      "revisionId": "44444444-4444-4444-8444-444444444444",
+      "currentValidationRunId": "33333333-3333-4333-8333-333333333333",
+      "rowVersion": 5
+    },
+    "semanticReview": {
+      "state": "UNDER_REVIEW",
+      "rowVersion": 4,
+      "version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "allowedActions": [
+        "WAIT_HUMAN_DECISION"
+      ],
+      "currentChallenge": {
+        "reviewUrl": "https://example.invalid/semantic",
+        "expiresAt": "2099-12-15T12:00:00Z",
+        "challengeId": "11111111-1111-4111-8111-111111111111"
+      }
+    },
+    "semanticActive": {
+      "historicalSnapshot": true,
+      "version": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "state": "ACTIVE",
+      "allowedActions": [
+        "NONE"
+      ],
+      "semanticId": "https://example.invalid/onto/name"
+    },
+    "draft": {
+      "sourceId": "place",
+      "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
+      "state": "DRAFT",
+      "lockVersion": 1
+    },
+    "sourceReview": {
+      "sourceId": "place",
+      "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
+      "state": "IN_REVIEW",
+      "lockVersion": 3,
+      "challengeStatus": "CREATED",
+      "reviewUrl": "https://example.invalid/review",
+      "expiresAt": "2099-12-15T12:00:00Z",
+      "workflowState": "IN_REVIEW",
+      "allowedActions": [
+        "WAIT_HUMAN_REVIEW",
+        "READ_AGAIN"
+      ]
+    },
+    "approved": {
+      "sourceId": "place",
+      "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
+      "state": "APPROVED",
+      "allowedActions": [
+        "READ_AGAIN"
+      ]
+    },
+    "active": {
+      "sourceId": "place",
+      "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
+      "state": "ACTIVE"
+    },
+    "running": {
+      "items": [
+        {
+          "sourceId": "place",
+          "recoveryAction": "NONE",
+          "runState": "RUNNING"
+        }
+      ]
+    },
+    "complete": {
+      "partial": false,
+      "items": [
+        {
+          "source_ref": "place",
+          "runState": "COMPLETED",
+          "run_state": "SUCCEEDED",
+          "udpHandoffConfirmed": true,
+          "recoveryAction": "TERMINAL",
+          "typeCode": "FILE",
+          "canonicalType": "https://example.invalid/onto/Place"
+        }
+      ]
+    },
+    "objects": {
+      "outcome": "COMPLETE",
+      "items": [
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-1"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-2"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-3"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-4"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-5"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-6"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-7"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-8"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-9"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-10"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-11"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-12"
+        },
+        {
+          "type": "https://example.invalid/onto/Place",
+          "objectId": "object-13"
+        }
+      ]
+    },
+    "activate": {
+      "sourceId": "place",
+      "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
+      "state": "APPROVED",
+      "lockVersion": 4,
+      "challengeStatus": "APPROVED",
+      "reviewUrl": "https://example.invalid/review",
+      "expiresAt": "2099-12-15T12:00:00Z",
+      "workflowState": "APPROVED",
+      "allowedActions": [
+        "HUMAN_ACTIVATE"
+      ],
+      "activationProgress": {
+        "humanActivationAllowed": true,
+        "budgetExpiresAt": "2099-12-16T12:00:00Z"
+      }
+    }
+  }
+}

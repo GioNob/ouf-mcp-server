@@ -180,8 +180,10 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 		return nil
 	}
 	if trimmed := bytes.TrimSpace(raw); trimmed[0] == '[' {
-		var items []json.RawMessage
-		if json.Unmarshal(raw, &items) == nil {
+		var items []any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if decoder.Decode(&items) == nil {
 			return nextstep.Object{"legacyList": true, "items": items}
 		}
 		return nil
@@ -268,7 +270,21 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
+	code, _ := structured["code"].(string)
+	windowRefusal := result.IsError && nextstep.AdmissionWindowCode(code)
+	if windowRefusal {
+		// Some MCP clients surface only text content for tool errors.
+		body, _ := json.Marshal(structured)
+		result.Content = []mcp.Content{&mcp.TextContent{Text: string(body)}}
+	}
 	out := s.boundedResult(result, t)
+	if out != result && windowRefusal {
+		// Prefer the complete structured retry if only its text duplicate
+		// overflows the wire budget, as for large preview pages below.
+		compact := *result
+		compact.Content = []mcp.Content{&mcp.TextContent{Text: "Il rifiuto e il passo successivo sono in structuredContent."}}
+		return s.boundedResult(&compact, t)
+	}
 	if out != result && !result.IsError && c.ToolName == "source.file.preview" {
 		// A wave-2 column page can occupy 768 KiB on its own. Keep the
 		// complete structured page when duplicating it as text exceeds the

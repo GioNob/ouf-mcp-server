@@ -16,6 +16,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
 
@@ -117,6 +118,45 @@ func get(obs, input Object, paths string) any {
 			}
 		}
 		return nil
+	case "#resumeTask", "#allTerminal", "#nextTaskOffset":
+		tasks, ok := obs["tasks"].([]any)
+		if !ok || len(tasks) == 0 {
+			return nil
+		}
+		if paths == "#nextTaskOffset" {
+			offset, err := strconv.Atoi(fmt.Sprint(obs["offset"]))
+			if obs["hasMore"] == true && err == nil && offset >= 0 {
+				return offset + len(tasks)
+			}
+			return nil
+		}
+		terminal := true
+		for _, item := range tasks {
+			task, _ := item.(Object)
+			switch task["state"] {
+			case "COMPLETED", "SUCCEEDED":
+				continue
+			case "WAITING", "RUNNING":
+				if paths == "#resumeTask" {
+					return task["taskId"]
+				}
+			case "HELD", "FAILED":
+				if paths == "#resumeTask" && task["retryable"] == true {
+					return task["taskId"]
+				}
+			}
+			terminal = false
+		}
+		if paths == "#allTerminal" {
+			// A caller can resume on a later page. The owner's totals cover
+			// the whole plan, including tasks that are not in this page.
+			if planned := lookup(obs, "budget.plannedCalls"); planned != nil &&
+				fmt.Sprint(planned) != fmt.Sprint(lookup(obs, "budget.completedTasks")) {
+				return false
+			}
+			return terminal && obs["hasMore"] != true
+		}
+		return nil
 	}
 	for _, path := range strings.Split(paths, "|") {
 		if strings.HasPrefix(path, "=") {
@@ -149,6 +189,18 @@ func matches(when map[string]string, obs, input Object) bool {
 			}
 		case string, bool:
 			found = found || slices.Contains(allowed, fmt.Sprint(v))
+		case json.Number, float64, float32, int, int64, int32, int16, int8, uint, uint64, uint32, uint16, uint8:
+			if found {
+				continue
+			}
+			number, ok := new(big.Rat).SetString(fmt.Sprint(v))
+			for _, literal := range allowed {
+				want, valid := new(big.Rat).SetString(literal)
+				if ok && valid && number.Cmp(want) == 0 {
+					found = true
+					break
+				}
+			}
 		}
 		if !found {
 			return false
@@ -195,6 +247,17 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 			value = true
 		case "#uuid":
 			continue
+		case "#decisionKey":
+			// The agent has not authored the intent yet. Allocate a key for
+			// this offered command; retries use the completed arguments.
+			value = uuid.NewString()
+		case "#searchQuery":
+			// Discovery intents can exceed the search schema's query limit.
+			// Only bind the original wording when it is executable as a query.
+			value = nil
+			if intent := get(obs, input, "intent|@intent"); intent != nil && e.Valid(r.Tool, Object{"q": intent}) {
+				value = intent
+			}
 		case "#zero":
 			value = 0
 		case "#discovery":
@@ -337,6 +400,13 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		tool, _ := obs["readTool"].(string)
 		args, _ := obs["readArguments"].(Object)
 		if tool == policy.Read && args != nil && e.Valid(tool, args) {
+			if id := input["analysisId"]; id != nil {
+				contextual := maps.Clone(args)
+				contextual["analysisId"] = id
+				if e.Valid(tool, contextual) {
+					args = contextual
+				}
+			}
 			return call("CALL_TOOL", "READ_ORIGINAL_RECEIPT", tool, args)
 		}
 		return Block("READ_ORIGINAL_RECEIPT", policy.Read, "Consulta la ricevuta del comando originale.")
@@ -362,6 +432,20 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		switch r.Action {
 		case "BLOCKED":
 			s := Block(r.Reason, r.Tool, r.Message)
+			if len(r.Alternatives) > 0 {
+				alts := make([]Object, 0, len(r.Alternatives))
+				for _, option := range r.Alternatives {
+					alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
+					if args := e.project(option, obs, input); len(args) > 0 {
+						alt["arguments"] = args
+					}
+					alts = append(alts, alt)
+				}
+				s["alternatives"] = alts
+			}
+			if r.Actor == "OPERATOR" && r.Tool == "" {
+				return ManualBlock(r.Reason, r.Message, r.Actor)
+			}
 			if len(r.Args) > 0 {
 				args := e.project(r, obs, input)
 				if e.Valid(r.Tool, args) {
@@ -479,6 +563,19 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	if !reasonPattern.MatchString(code) {
 		code = "OWNER_REQUEST_FAILED"
 	}
+	if AdmissionWindowCode(code) {
+		// The admission store refused before dispatch. It knows the exact
+		// remaining window even for a command with no owner commandKey.
+		delay, err := strconv.Atoi(fmt.Sprint(obs["retryAfterSeconds"]))
+		end, _ := obs["windowEndsAt"].(string)
+		deadline, dateErr := time.Parse(time.RFC3339Nano, end)
+		if obs["retryable"] == true && err == nil && delay > 0 && delay <= 3600 && dateErr == nil && !deadline.IsZero() && e.Valid(c.ToolName, args) {
+			s := call("POLL", code, c.ToolName, args)
+			s["pollAfterSeconds"], s["deadline"], s["terminalStates"] = delay, end, []string{"ADMITTED", "BLOCKED"}
+			return s
+		}
+		return ManualBlock(code, "Verifica il budget di ammissione e la disponibilità di una finestra di ripresa.", "OPERATOR")
+	}
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
 	retryable := obs["retryable"] == true || (obs["retryable"] == nil && (status == "503" || status == "429"))
 	safe := c.OperationClass == "READ" || c.OperationClass == "SEARCH" || (args["commandKey"] != nil && args["commandKey"] != "")
@@ -533,21 +630,25 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	return Block(code, p.Read, "Verifica il motivo del rifiuto.")
 }
 
+func AdmissionWindowCode(code string) bool {
+	return code == "TOOL_SELECTION_STALL" || strings.HasSuffix(code, "_WINDOW_BUDGET_EXHAUSTED")
+}
+
 func retryDelay(obs Object, now time.Time) (int, bool) {
 	raw := get(obs, nil, "RetryAfter|retryAfterSeconds|pollAfterSeconds")
 	if obs["recoveryAction"] != nil && obs["retryAt"] != nil && obs["RetryAfter"] == nil {
 		raw = nil
 	}
 	if raw == nil {
-		if at := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt"); at != nil {
+		if at := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); at != nil {
 			t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(at))
 			if err != nil {
 				return 0, false
 			}
-			delay := max(5, int((t.Sub(now)+time.Second-1)/time.Second))
+			delay := max(orchestration.PollIntervalSeconds, int((t.Sub(now)+time.Second-1)/time.Second))
 			return delay, delay <= 3600
 		}
-		return 5, true
+		return orchestration.PollIntervalSeconds, true
 	}
 	s := fmt.Sprint(raw)
 	n, err := strconv.Atoi(s)
@@ -559,5 +660,5 @@ func retryDelay(obs Object, now time.Time) (int, bool) {
 		n = int((date.Sub(now) + time.Second - 1) / time.Second)
 		n = max(n, 0)
 	}
-	return max(n, 5), n >= 0 && n <= 3600
+	return max(n, orchestration.PollIntervalSeconds), n >= 0 && n <= 3600
 }

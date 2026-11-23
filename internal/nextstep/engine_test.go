@@ -11,6 +11,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 )
@@ -220,7 +221,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 					}
 				}
 			}
-			if tc.Delay != 0 && result["pollAfterSeconds"] != float64(tc.Delay) {
+			if tc.Delay != 0 && result["pollAfterSeconds"] != float64(max(tc.Delay, orchestration.PollIntervalSeconds)) {
 				t.Fatal("wrong poll delay", result)
 			}
 		})

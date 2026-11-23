@@ -120,9 +120,9 @@ func (s *workflowServer) bindTHSLinks(service *orchestration.Service) error {
 				Arguments:                 raw,
 				CorrelationID:             identity.CorrelationID,
 				IdempotencyKey:            uuid.NewString(),
-				Window:                    time.Minute,
+				Window:                    orchestration.AdmissionWindow,
 				Timeout:                   3 * time.Second,
-				RetryThreshold:            3,
+				RetryThreshold:            orchestration.AdmissionRetryThreshold,
 				Maximum:                   orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 8192},
 			})
 			return classifyLink(c.RequiredAuthorization, response, err)

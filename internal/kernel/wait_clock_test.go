@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -97,17 +98,17 @@ func TestWaitUnchangedCoalescesAndExpires(t *testing.T) {
 		for range 2 {
 			body := ownerObject(<-results)
 			again := body["next"].(nextstep.Object)
-			if body["changed"] != false || again["action"] != "POLL" || again["pollAfterSeconds"].(json.Number).String() != "5" ||
+			if body["changed"] != false || again["action"] != "POLL" || again["pollAfterSeconds"].(json.Number).String() != strconv.Itoa(orchestration.PollIntervalSeconds) ||
 				len(again["terminalStates"].([]any)) == 0 || again["deadline"] != owner["expiresAt"] || again["arguments"].(nextstep.Object)["waitRef"] != token {
 				t.Fatal("wait extended or replaced an unchanged reference")
 			}
 		}
-		if time.Since(start) != 45*time.Second || reads.Load() != 8 {
+		if time.Since(start) != 45*time.Second || reads.Load() != 1 {
 			t.Fatalf("duration %s, shared reads %d", time.Since(start), reads.Load())
 		}
 		time.Sleep(16 * time.Second)
 		expired := ownerObject(s.wait(ctx, &req, token))["next"].(nextstep.Object)
-		if expired["reasonCode"] != "WAIT_DEADLINE_EXPIRED" || reads.Load() != 8 {
+		if expired["reasonCode"] != "WAIT_DEADLINE_EXPIRED" || reads.Load() != 1 {
 			t.Fatal("expired reference made another owner read")
 		}
 	})

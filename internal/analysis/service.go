@@ -76,7 +76,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	}
 	preview, _ := Find(c.Manifest, "source.file.preview")
 	args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": 0, "limit": 1})
-	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: 10 * time.Second, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
 	if e != nil {
 		return View{}, e
 	}
@@ -138,7 +138,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return task, nil
 	}
 	start := time.Now()
-	r, callErr := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef, ManifestChecksum: checksum, Arguments: task.Arguments, IdempotencyKey: "analysis:" + Digest([]any{id, task.ID, task.Attempts}), CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes}})
+	r, callErr := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef, ManifestChecksum: checksum, Arguments: task.Arguments, IdempotencyKey: "analysis:" + Digest([]any{id, task.ID, task.Attempts}), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes}})
 	f := Finish{State: "HELD", Code: "OUTCOME_REQUIRES_RECONCILIATION", ElapsedMS: time.Since(start).Milliseconds()}
 	if r.AttemptID != uuid.Nil {
 		f.AttemptID = r.AttemptID.String()

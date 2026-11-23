@@ -1,9 +1,6 @@
 package orchestration
 
-import (
-	"errors"
-	"time"
-)
+import "errors"
 
 const DiscoveryBudgetProfile = "ouf.semantic-discovery-budget.v1"
 
@@ -24,7 +21,7 @@ func discoveryWindowBudget(in AdmissionRequest) (string, Cost, error) {
 		maxObjects = 1
 	}
 	if !isDiscoveryOperation(in.CapabilityID, in.OperationClass) || in.ManifestChecksum == "" ||
-		in.Window != time.Minute || in.RetryThreshold != 3 || in.Maximum.ToolCalls != 1 ||
+		in.Window != AdmissionWindow || in.RetryThreshold != AdmissionRetryThreshold || in.Maximum.ToolCalls != 1 ||
 		in.Maximum.ResultBytes < 1 || in.Maximum.ResultBytes > 262144 ||
 		in.Maximum.DistinctObjects < 0 || in.Maximum.DistinctObjects > maxObjects {
 		return "", Cost{}, errors.New("unsupported discovery budget")

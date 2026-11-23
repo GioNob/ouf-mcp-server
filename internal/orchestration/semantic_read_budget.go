@@ -15,7 +15,7 @@ func IsSemanticRead(capability, operation string) bool {
 
 func semanticReadWindowBudget(in AdmissionRequest) (string, Cost, error) {
 	if !IsSemanticRead(in.CapabilityID, in.OperationClass) ||
-		in.ManifestChecksum == "" || in.Window != time.Minute || in.RetryThreshold != 3 ||
+		in.ManifestChecksum == "" || in.Window != AdmissionWindow || in.RetryThreshold != AdmissionRetryThreshold ||
 		in.Maximum.ToolCalls != 1 || in.Maximum.ResultBytes < 1 || in.Maximum.ResultBytes > 262144 ||
 		in.Maximum.DistinctObjects < 0 || in.Maximum.DistinctObjects > 100 {
 		return "", Cost{}, errors.New("unsupported semantic read budget")

@@ -28,8 +28,8 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 		"lockVersion": 1, "rowVersion": 2, "revisionId": id, "currentValidationRunId": id,
 		"assetId": id, "profileId": id, "jobId": id, "resultRef": id, "proposalId": id, "handoffId": id,
 		"onboardingVersionId": id, "runId": id, "nextLineageId": id, "nextHandoffId": id, "requestId": id,
-		"offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
-		"commandKey": "fixture-review-1", "analysisId": strings.Repeat("a", 64),
+		"hasMore": true, "taskId": strings.Repeat("b", 64), "offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
+		"commandKey": id, "analysisId": strings.Repeat("a", 64),
 		"columns": []any{Object{"name": "tipologia", "distinctValuesComplete": false, "distinctValuesCursor": "opaque"}}, "result": Object{"requestId": id},
 		"tasks": []any{Object{"taskId": strings.Repeat("b", 64), "state": "READY"}},
 		"items": []any{Object{"assetId": id, "latestProfileId": id, "semanticId": "urn:example:teatro", "publicationSetId": id, "revisionId": id}},
@@ -52,6 +52,14 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 			case "BLOCKED":
 				if r.Tool != "" && schemas[r.Tool] == nil {
 					t.Errorf("%s/%s: missing alternative", name, r.Reason)
+				}
+				if len(r.Alternatives) > 4 {
+					t.Fatalf("%s/%s: too many alternatives", name, r.Reason)
+				}
+				for _, alt := range r.Alternatives {
+					if schemas[alt.Tool] == nil || alt.Message == "" {
+						t.Errorf("%s/%s: invalid decision alternative %s", name, r.Reason, alt.Tool)
+					}
 				}
 			case "DONE":
 			default:
@@ -98,7 +106,7 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 	}
 	for _, family := range []struct{ policy, field, states string }{
 		{"onboarding", "workflowState|state", "DRAFT IN_REVIEW APPROVED ACTIVE SUPERSEDED REJECTED REVOKED CHANGES_REQUESTED COMMAND_ABSENT ERROR"},
-		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED"},
+		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED EXHAUSTED"},
 		{"semanticDecision", "state", "DRAFT VALIDATED VALIDATION_FAILED UNDER_REVIEW APPROVED REJECTED EXPIRED ACTIVE DEPRECATED RETIRED UNKNOWN"},
 		{"ingestion", "runState|run_state", "AWAITING_START READY PREFLIGHT RUNNING DRAINING RETRY_WAIT SUCCEEDED COMPLETED COMPLETED_WITH_WARNINGS FAILED PAUSED ABORTED DISABLED BLOCKED"},
 		{"ingestion", "recoveryAction", "NONE AUTOMATIC_RETRY AUTOMATIC_RECONCILIATION HUMAN_RESUME_OR_ABORT HUMAN_ABORT_REQUIRED HUMAN_QUARANTINE_REVIEW HUMAN_SCHEDULE_REVIEW WAITING_FOR_PUBLICATION_VERIFICATION NEW_PUBLICATION_REQUIRED TERMINAL"},

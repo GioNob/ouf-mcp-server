@@ -270,8 +270,8 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 			result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID,
 				Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef,
 				ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey,
-				CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: 30 * time.Second,
-				RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 4096},
+				CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: 30 * time.Second,
+				RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 4096},
 				Upload: &orchestration.UploadStream{Reader: staged.File, Size: staged.Size, SHA256: staged.SHA256, FileID: descriptor.FileID}})
 			if err != nil {
 				return governedCallErrorResult(err), nil, nil
@@ -497,7 +497,7 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if isSourcePreparationCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.preview" || c.CapabilityID == "ouf.managed-source.onboarding.create" {
 		timeout = 10 * time.Second
 	}
-	in := orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: time.Minute, Timeout: timeout, RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	in := orchestration.Invocation{AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
 	if c.ToolName == "semantic.discovery.adopt" {
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}

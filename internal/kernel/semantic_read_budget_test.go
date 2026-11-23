@@ -1,8 +1,10 @@
 package kernel
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -35,5 +37,39 @@ func TestSemanticReadBudgetDoesNotMakeOtherErrorsRetryable(t *testing.T) {
 		if windowAdmissionErrorResult(err) != nil {
 			t.Fatal("untyped or permanent error became retryable", err)
 		}
+	}
+}
+
+type refusedWindow struct {
+	statusAdmission
+	code string
+}
+
+func (a *refusedWindow) Reserve(_ context.Context, _ orchestration.AdmissionRequest) (orchestration.AdmissionDecision, error) {
+	end := time.Now().UTC().Truncate(orchestration.AdmissionWindow).Add(orchestration.AdmissionWindow)
+	return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(errors.New("window"), a.code, "TOOL_CALLS", end.Add(-time.Second), end)
+}
+
+func TestAdmissionRefusalOverMCP(t *testing.T) {
+	for _, code := range []string{"TOOL_SELECTION_STALL", "ADMISSION_WINDOW_BUDGET_EXHAUSTED"} {
+		t.Run(code, func(t *testing.T) {
+			owner := &analysisSDKGateway{}
+			service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &refusedWindow{code: code},
+				Gateway: owner, FingerprintKey: make([]byte, 32)}
+			session := revisionSession(t, service, "ouf.managed-source.profile")
+			args := map[string]any{"assetId": "11111111-1111-4111-8111-111111111111", "commandKey": "22222222-2222-4222-8222-222222222222"}
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "source.file.profile", Arguments: args})
+			if err != nil || !result.IsError || owner.calls != 0 {
+				t.Fatal("admission error crossed the dispatch boundary", err)
+			}
+			next := checkNext(t, nextContract(t), result)
+			var text map[string]any
+			if json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &text) != nil || len(text) != 6 ||
+				text["code"] != code || text["retryable"] != true || !reflect.DeepEqual(text["next"], next) ||
+				next["action"] != "POLL" || next["tool"] != "source.file.profile" || !reflect.DeepEqual(next["arguments"], args) ||
+				next["deadline"] != text["windowEndsAt"] || next["pollAfterSeconds"] != float64(1) {
+				t.Fatal("client lost the governed retry", result)
+			}
+		})
 	}
 }

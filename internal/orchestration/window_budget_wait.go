@@ -2,6 +2,15 @@ package orchestration
 
 import "time"
 
+// An ordinary poll can follow a burst of other calls in the same policy
+// window. Waiting one whole admission window also covers a full retry group,
+// regardless of the phase of the database clock.
+const (
+	AdmissionWindow         = time.Minute
+	AdmissionRetryThreshold = 3
+	PollIntervalSeconds     = int(AdmissionWindow / time.Second)
+)
+
 // A proven admission refusal before dispatch. This supplies timing, never authority.
 type WindowBudgetExhaustedError struct {
 	Cause             error

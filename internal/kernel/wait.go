@@ -15,6 +15,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sync/singleflight"
@@ -230,7 +231,11 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 
 	var last nextstep.Object
 	for {
-		timer := time.NewTimer(w.interval)
+		interval := w.interval
+		if last != nil {
+			interval = max(interval, orchestration.AdmissionWindow)
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -271,7 +276,17 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			body := ownerObject(result)
 			obs := nextstep.Observation(ref.Read, ref.Args, body)
 			if result.IsError {
-				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], ref.Args, body, true)
+				if code, ok := body["code"].(string); ok && nextstep.AdmissionWindowCode(code) {
+					// The client invoked ouf.wait. Retry the signed wait, which
+					// rechecks identity and expiry before the bound read.
+					outer := s.tools["ouf.wait"]
+					next := s.engine(ctx).Evaluate(outer.capability, s.manifest.NextPolicies[outer.capability.NextPolicy],
+						nextstep.Object{"waitRef": token}, body, true)
+					body["changed"], body["observation"], body["next"] = false, nil, next
+					wire, _ := json.Marshal(body)
+					return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
+				}
+				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
 				denial := waitResult(false, nil, next)
 				denial.IsError = true
 				return denial
