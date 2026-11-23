@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -577,6 +579,15 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	return content, nil, nil
 }
 
+var onboardingReaderCode = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+var onboardingSourceID = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,160}$`)
+
+type readerDiagnostic struct {
+	FieldName         string   `json:"fieldName"`
+	Transform         string   `json:"transform"`
+	AllowedTransforms []string `json:"allowedTransforms"`
+}
+
 // Each Onboarding refusal has its own public diagnostic. Never include the
 // owner's free-form problem detail, even on an internal review failure.
 func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.CallToolResult {
@@ -585,7 +596,6 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 		MissingSections []any  `json:"missingSections"`
 		Index           *int   `json:"index"`
 		SemanticRef     string `json:"semanticRef"`
-		FieldName       string `json:"fieldName"`
 	}
 	switch {
 	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_EXECUTION_PROPOSAL_REQUIRED":
@@ -603,11 +613,46 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 			return errorResult("OWNER_PROBLEM_INVALID", false)
 		}
 		out["semanticRef"] = fields.SemanticRef
-	case tool == "source.onboarding.create" && p.Status == 422 && p.Code == "ONB_READER_UNSUPPORTED":
-		if json.Unmarshal(body, &fields) != nil || fields.FieldName == "" {
+	case tool == "source.onboarding.create" && p.Status == 422 && p.Code == "ONB_READER_UNSUPPORTED",
+		tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_DATATYPE_UNRESOLVED",
+		tool == "source.onboarding.create" && p.Status == 409 && p.Code == "ONB_REVISION_ASSET_SOURCE_CONFLICT":
+		var problem struct {
+			Fields        []readerDiagnostic `json:"fields"`
+			FieldName     string             `json:"fieldName"`
+			Resolutions   []string           `json:"resolutions"`
+			BoundSourceID string             `json:"boundSourceId"`
+		}
+		if json.Unmarshal(body, &problem) != nil {
 			return errorResult("OWNER_PROBLEM_INVALID", false)
 		}
-		out["fieldName"] = fields.FieldName
+		if p.Status == 422 && problem.Fields != nil {
+			for _, f := range problem.Fields {
+				if f.FieldName == "" || utf8.RuneCountInString(f.FieldName) > 256 || !onboardingReaderCode.MatchString(f.Transform) || f.AllowedTransforms == nil ||
+					slices.ContainsFunc(f.AllowedTransforms, func(reader string) bool { return !onboardingReaderCode.MatchString(reader) }) {
+					return errorResult("OWNER_PROBLEM_INVALID", false)
+				}
+			}
+			out["fields"] = problem.Fields
+		}
+		if p.Code == "ONB_READER_UNSUPPORTED" {
+			if problem.Fields == nil {
+				if problem.FieldName == "" {
+					return errorResult("OWNER_PROBLEM_INVALID", false)
+				}
+				out["fieldName"] = problem.FieldName // Pre-52d owner.
+			}
+			break
+		}
+		actions := slices.DeleteFunc(problem.Resolutions, func(action string) bool {
+			return action != "CREATE_REVISION" && action != "UPLOAD_NEW_FILE" && !(p.Code == "ONB_DATATYPE_UNRESOLVED" && action == "REPLACE_DRAFT")
+		})
+		if len(actions) > 0 {
+			out["resolutions"] = actions
+		}
+		if slices.Contains(actions, "CREATE_REVISION") && onboardingSourceID.MatchString(problem.BoundSourceID) {
+			out["boundSourceId"] = problem.BoundSourceID
+		}
+	case tool == "source.onboarding.create" && p.Status == 412 && p.Code == "ONB_REVIEW_STALE_VERSION":
 	case tool == "source.onboarding.review.prepare" && p.Status == 500 && p.Code == "ONB_REVIEW_INTERNAL_ERROR":
 	default:
 		return nil

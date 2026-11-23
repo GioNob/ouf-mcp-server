@@ -255,6 +255,17 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 	for k, selector := range r.Args {
 		value := get(obs, input, selector)
 		switch selector {
+		case "#deferredAssetRef":
+			value = nil
+			if lookup(obs, "deferredReaderChecks.0.fieldName") != nil && (obs["sourceId"] == nil || obs["sourceId"] == input["sourceId"]) {
+				ref := draftAssetRef(input)
+				if ref == nil {
+					ref = draftAssetRef(obs)
+				}
+				if ref != nil {
+					value = ref
+				}
+			}
 		case "#true":
 			value = true
 		case "#uuid":
@@ -459,6 +470,11 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		return e.failure(c, policy, input, owner)
 	}
 	obs := Observation(c.ToolName, input, owner)
+	if c.ToolName == onboardingRead && input["view"] == "LATEST" {
+		if next := e.afterDraftRecoveryRead(input, obs); next != nil {
+			return next
+		}
+	}
 	if c.ToolName == "source.file.upload.status" || c.ToolName == "source.file.upload" {
 		if obs["legacy"] == true {
 			return (WaitRef{Read: "source.file.upload", Args: Object{}}).Block("HANDOFF_NOT_ISSUED", "Apri un nuovo selettore per scegliere il file.")
@@ -517,6 +533,9 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		switch r.Action {
 		case "BLOCKED":
+			if r.Reason == "EXECUTION_PROPOSAL_REQUIRED" && lookup(obs, "deferredReaderChecks.0.fieldName") != nil {
+				r.Message = "Completa executionProposal ({missingSections}) con semanticId, semanticVersion, revisionId e publicationSetId da semantic.get. Usa quel publicationSetId per semanticPublicationSetRef e i limiti della preview. I campi in deferredReaderChecks saranno verificati in preparazione. Per un CSV, IDENTITY è sempre preparabile."
+			}
 			return e.blockedRule(r, obs, input)
 		case "DONE":
 			msg := "La lettura degli oggetti è completata."
@@ -660,6 +679,10 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	if !reasonPattern.MatchString(code) {
 		code = "OWNER_REQUEST_FAILED"
 	}
+	status := fmt.Sprint(get(obs, nil, "Status|status"))
+	if next := e.draftFailure(c.ToolName, code, status, args, obs); next != nil {
+		return next
+	}
 	if c.ToolName == "source.file.upload" && code == "HANDOFF_DEADLINE_REQUIRED" {
 		return ManualBlock(code, "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
 	}
@@ -679,7 +702,6 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		}
 		return ManualBlock(code, "Verifica il budget di ammissione e la disponibilità di una finestra di ripresa.", "OPERATOR")
 	}
-	status := fmt.Sprint(get(obs, nil, "Status|status"))
 	retryable := obs["retryable"] == true || (obs["retryable"] == nil && (status == "503" || status == "429"))
 	safe := c.OperationClass == "READ" || c.OperationClass == "SEARCH" || (args["commandKey"] != nil && args["commandKey"] != "")
 	flags := Object{}
