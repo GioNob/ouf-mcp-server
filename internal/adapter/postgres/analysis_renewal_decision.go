@@ -14,11 +14,24 @@ import (
 )
 
 func lockRenewalRun(ctx context.Context, tx pgx.Tx, i orchestration.Identity, id string) (analysis.RunRecord, error) {
-	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtextextended($1,5018))", analysis.Digest([]string{i.Issuer, i.TenantID}))
+	// Read the immutable installation identity without locking the row first.
+	const scope = " from ouf_mcp.analysis_run where analysis_id=$1 and issuer=$2 and tenant=$3 and subject=$4"
+	var installation string
+	err := tx.QueryRow(ctx, "select "+runInstallationSQL+scope, id, i.Issuer, i.TenantID, i.PrincipalID).Scan(&installation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return analysis.RunRecord{}, analysis.ErrScope
+	}
 	if err != nil {
 		return analysis.RunRecord{}, err
 	}
-	return scanRun(tx.QueryRow(ctx, "select "+runColumns+` from ouf_mcp.analysis_run where analysis_id=$1 and issuer=$2 and tenant=$3 and subject=$4 for update`, id, i.Issuer, i.TenantID, i.PrincipalID))
+	if err = lockRunAdmission(ctx, tx, installation, i.Issuer, i.TenantID, id); err != nil {
+		return analysis.RunRecord{}, err
+	}
+	r, err := scanRun(tx.QueryRow(ctx, "select "+runColumns+scope+" for update", id, i.Issuer, i.TenantID, i.PrincipalID))
+	if err == nil && r.Installation() != installation {
+		return analysis.RunRecord{}, analysis.ErrRunDrift
+	}
+	return r, err
 }
 
 func renewalReplay(ctx context.Context, tx pgx.Tx, r analysis.RunRecord, key, fingerprint string) (json.RawMessage, error) {
@@ -67,7 +80,7 @@ func (s *Store) DecideRenewal(ctx context.Context, i orchestration.Identity, c a
 	// Check twice under the same lock order. A competing replica may have
 	// committed the command (or superseded the link) during the Gateway call.
 	local := func(commit bool) (json.RawMessage, error) {
-		tx, err := s.pool.Begin(ctx)
+		tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +139,9 @@ func (s *Store) DecideRenewal(ctx context.Context, i orchestration.Identity, c a
 		switch c.Decision {
 		case "APPROVE":
 			state = "APPROVED"
-			err = s.renewRunBudgetTx(ctx, tx, initial, r, check, decision)
+			if err = s.renewRunBudgetTx(ctx, tx, initial, r, check, decision); err != nil {
+				return nil, persistRenewalWait(ctx, tx, r, err)
+			}
 		case "CHANGES_REQUESTED":
 			state = c.Decision
 			err = advanceRenewalSeq(ctx, tx, &r)

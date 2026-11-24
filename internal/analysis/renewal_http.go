@@ -111,6 +111,7 @@ func (c RenewalChannel) identity(r *http.Request, gateway, action string, raw []
 type RenewalBackoff struct {
 	Cause      error
 	RetryAfter string
+	NotBefore  time.Time
 }
 
 func (e *RenewalBackoff) Error() string { return e.Cause.Error() }
@@ -135,11 +136,15 @@ func renewalProblem(w http.ResponseWriter, err error) {
 		status, code = 429, ErrRunPressure.Error()
 	}
 	var retry *RenewalBackoff
+	body := map[string]string{"code": code}
 	if (status == 429 || status == 503) && errors.As(err, &retry) && retry.RetryAfter != "" {
 		w.Header().Set("Retry-After", retry.RetryAfter)
+		if !retry.NotBefore.IsZero() {
+			body["notBefore"] = retry.NotBefore.UTC().Format(time.RFC3339Nano)
+		}
 	}
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code})
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func RenewalHandler(store RenewalStore, authority RunRenewalAuthority, c RenewalChannel, gateway string, clock func() time.Time) http.Handler {

@@ -19,6 +19,34 @@ func runFailure(code string, status int) *mcp.CallToolResult {
 	return result
 }
 
+// startBackoff turns a start refused before any plan exists (installation,
+// subject, tenant or source quota; MCP-55E-02) into a POLL that repeats the same
+// idempotent command, with the same commandKey, after the admitted notBefore.
+func (s *workflowServer) startBackoff(ctx context.Context, args nextstep.Object, err error) *mcp.CallToolResult {
+	var wait *analysis.RenewalBackoff
+	if !errors.As(err, &wait) || wait.NotBefore.IsZero() {
+		return nil
+	}
+	if key, _ := args["commandKey"].(string); key == "" {
+		return nil
+	}
+	if e := s.engine(ctx); e.Valid != nil && !e.Valid("source.analysis.plan", args) {
+		return nil
+	}
+	delay := time.Until(wait.NotBefore)
+	if delay > time.Hour {
+		return nil
+	}
+	delay = max(delay, time.Second)
+	next := nextstep.Object{"contract": nextstep.Contract, "action": "POLL", "reasonCode": "ANALYSIS_BACKOFF", "tool": "source.analysis.plan",
+		"arguments": args, "pollAfterSeconds": int((delay + time.Second - 1) / time.Second),
+		"terminalStates": []string{"RUNNING", "COMPLETE", "PARTIAL", "BLOCKED"},
+		"userMessage":    "La capacità di analisi è occupata: ripeti la stessa richiesta dopo l’attesa indicata."}
+	out := workflowError(nextstep.Object{"code": "ANALYSIS_BACKOFF", "notBefore": wait.NotBefore.UTC().Format(time.RFC3339Nano), "next": next})
+	out.Meta = mcp.Meta{"ouf/httpStatus": 429}
+	return out
+}
+
 func (s *workflowServer) startRun(ctx context.Context, svc *orchestration.Service, i orchestration.Identity, args nextstep.Object) (result *mcp.CallToolResult) {
 	store, _ := svc.Admission.(analysis.Store)
 	c := analysis.Coordinator{Service: svc, Store: store, Manifest: s.manifest}
@@ -65,6 +93,9 @@ func (s *workflowServer) startRun(ctx context.Context, svc *orchestration.Servic
 		case errors.Is(err, analysis.ErrRunExhausted):
 			return runFailure(err.Error(), 409)
 		case errors.Is(err, analysis.ErrRunPressure):
+			if out := s.startBackoff(ctx, args, err); out != nil {
+				return out
+			}
 			return runFailure("ANALYSIS_BACKOFF", 429)
 		case errors.Is(err, analysis.ErrMandateExpired):
 			return runFailure(err.Error(), 410)

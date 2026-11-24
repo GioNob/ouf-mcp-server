@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -47,8 +48,21 @@ type RunLimits struct {
 	Shared                                                                                  RunSharedLimits
 	ProofSeconds, WaitSeconds, LifetimeSeconds, ActivePlans, ProviderSlots, PreviewPageSize int
 
-	RenewalPercent int `json:",omitempty"`
-	RenewalSeconds int `json:",omitempty"`
+	InstallationRef         string `json:",omitempty"`
+	InstallationActivePlans int    `json:",omitempty"`
+	RenewalPercent          int    `json:",omitempty"`
+	RenewalSeconds          int    `json:",omitempty"`
+}
+
+const defaultInstallationActivePlans = 4
+
+var installationRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+
+func (l RunLimits) InstallationPlanLimit() int {
+	if l.InstallationActivePlans == 0 {
+		return defaultInstallationActivePlans
+	}
+	return l.InstallationActivePlans
 }
 
 type RunSharedLimits struct {
@@ -71,6 +85,7 @@ func (l RunSharedLimits) Valid() bool {
 
 func (l RunLimits) Valid() bool {
 	return l.ProofSeconds >= 1 && l.ProofSeconds <= 30 && l.Shared.Valid() && l.PreviewPageSize >= 1 && l.PreviewPageSize <= 128 && (RunCost{1, 1, 1, 1, 1}).Fits(l.Maximum) && l.Maximum.Fits(RunCost{1000000, 1000000, 100000000, 1 << 40, 86400000}) &&
+		(l.InstallationRef == "" || installationRefPattern.MatchString(l.InstallationRef)) && l.InstallationActivePlans >= 0 && l.InstallationActivePlans <= 128 &&
 		l.WaitSeconds >= 1 && l.WaitSeconds <= 3600 && l.LifetimeSeconds >= 1 && l.LifetimeSeconds <= 86400 &&
 		l.RenewalPercent >= 0 && l.RenewalPercent <= maxRenewalPercent && l.RenewalSeconds >= 0 && l.RenewalSeconds <= maxRenewalSeconds &&
 		l.ActivePlans >= 1 && l.ActivePlans <= 128 && l.ProviderSlots >= 1 && l.ProviderSlots <= 128
@@ -87,6 +102,14 @@ type RunSpec struct {
 }
 
 func (s RunSpec) ID() string { return AnalysisID(s.Scope, s.Profile) }
+
+// The configured service workload is already pinned in predecessor plans.
+func (s RunSpec) Installation() string {
+	if s.Limits.InstallationRef == "" {
+		return s.Workload
+	}
+	return s.Limits.InstallationRef
+}
 
 func (s RunSpec) Valid() bool {
 	key, err := uuid.Parse(s.CommandKey)

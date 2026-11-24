@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -143,13 +142,12 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 		strings.TrimSpace(decision.GrantRef) == "" || len(decision.GrantRef) > 256 {
 		return orchestration.ErrUnauthorized
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, "select pg_advisory_xact_lock(hashtextextended($1,5018))", analysis.Digest([]string{r.Issuer, r.Scope.Tenant}))
-	if err != nil {
+	if err = lockRunAdmission(ctx, tx, r.Installation(), r.Issuer, r.Scope.Tenant, r.ID()); err != nil {
 		return err
 	}
 	current, err := scanRun(tx.QueryRow(ctx, "select "+runColumns+" from ouf_mcp.analysis_run where analysis_id=$1 for update", r.ID()))
@@ -157,7 +155,7 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 		return err
 	}
 	if err = s.renewRunBudgetTx(ctx, tx, r, current, check, decision); err != nil {
-		return err
+		return persistRenewalWait(ctx, tx, current, err)
 	}
 	return tx.Commit(ctx)
 }
@@ -195,8 +193,7 @@ func (s *Store) renewRunBudgetTx(ctx context.Context, tx pgx.Tx, r, current anal
 		return analysis.ErrFenced
 	}
 	if current.NotBefore.After(now) {
-		seconds := int64((current.NotBefore.Sub(now) + time.Second - 1) / time.Second)
-		return &analysis.RenewalBackoff{Cause: analysis.ErrRunPressure, RetryAfter: strconv.FormatInt(seconds, 10)}
+		return runAdmissionBackoff(now, current.NotBefore)
 	}
 	var busy bool
 	err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_run_attempt where analysis_id=$1 and (proof_until>$2 or (finished_at is null and superseded_at is null)))
@@ -207,15 +204,8 @@ func (s *Store) renewRunBudgetTx(ctx context.Context, tx pgx.Tx, r, current anal
 	if busy {
 		return analysis.ErrFenced
 	}
-	var plans, tenantPlans, sourcePlans int
-	err = tx.QueryRow(ctx, `select count(*) filter(where subject=$3),count(*),count(*) filter(where spec->'Profile'->>'assetId'=$4)
-		from ouf_mcp.analysis_run where issuer=$1 and tenant=$2 and state in ('ISSUING','RUNNING') and budget_end>$5`,
-		r.Issuer, r.Scope.Tenant, r.Scope.Principal, r.Profile.AssetID, now).Scan(&plans, &tenantPlans, &sourcePlans)
-	if err != nil {
+	if err = admitRun(ctx, tx, current.RunSpec, now); err != nil {
 		return err
-	}
-	if plans >= r.Limits.ActivePlans || tenantPlans >= r.Limits.Shared.TenantQueue || sourcePlans >= r.Limits.Shared.SourceQueue {
-		return analysis.ErrRunPressure
 	}
 	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run_incident set state='RECOVERING'
 		where analysis_id=$1 and incident_id=$2 and state='OPEN'`, r.ID(), want.IncidentID)

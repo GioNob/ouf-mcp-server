@@ -58,16 +58,12 @@ func (s *Store) BeginRun(ctx context.Context, p analysis.RunSpec) (analysis.RunR
 	if !p.Valid() {
 		return r, analysis.ErrInvalid
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return r, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "select pg_advisory_xact_lock(hashtextextended($1,5018))",
-		analysis.Digest([]string{p.Issuer, p.Scope.Tenant})); err != nil {
-		return r, err
-	}
-	if err = lockAnalysisMode(ctx, tx, p.ID()); err != nil {
+	if err = lockRunAdmission(ctx, tx, p.Installation(), p.Issuer, p.Scope.Tenant, p.ID()); err != nil {
 		return r, err
 	}
 	var legacy bool
@@ -89,15 +85,12 @@ func (s *Store) BeginRun(ctx context.Context, p analysis.RunSpec) (analysis.RunR
 	}
 	r, err = scanRun(tx.QueryRow(ctx, "select "+runColumns+" from ouf_mcp.analysis_run where analysis_id=$1 for update", p.ID()))
 	if errors.Is(err, analysis.ErrScope) {
-		var active, tenantActive, sourceActive int
-		err = tx.QueryRow(ctx, `select count(*) filter(where subject=$3),count(*),count(*) filter(where spec->'Profile'->>'assetId'=$4) from ouf_mcp.analysis_run where issuer=$1 and tenant=$2
-			and state in ('ISSUING','RUNNING') and budget_end>clock_timestamp()
-			and (mandate is null or (mandate->>'expiresAt')::timestamptz>clock_timestamp())`, p.Issuer, p.Scope.Tenant, p.Scope.Principal, p.Profile.AssetID).Scan(&active, &tenantActive, &sourceActive)
+		now, err := s.runClock(ctx, tx)
 		if err != nil {
 			return r, err
 		}
-		if active >= p.Limits.ActivePlans || tenantActive >= p.Limits.Shared.TenantQueue || sourceActive >= p.Limits.Shared.SourceQueue {
-			return r, analysis.ErrRunPressure
+		if err = admitRun(ctx, tx, p, now); err != nil {
+			return r, err
 		}
 		initial, err := analysis.NewRunCheckpoint(p.Profile, p.Limits.PreviewPageSize)
 		if err != nil {
@@ -112,8 +105,8 @@ func (s *Store) BeginRun(ctx context.Context, p analysis.RunSpec) (analysis.RunR
 		r, err = scanRun(tx.QueryRow(ctx, `insert into ouf_mcp.analysis_run
 			(analysis_id,issuer,workload,tenant,subject,spec,started,not_before,budget_end,deadline,state,checkpoint,counts)
 			select $1,$2,$3,$4,$5,$6,t,t,t+$7::integer*interval '1 second',
-			t+least($7::integer,$8::integer)*interval '1 second','ISSUING',$9,$10 from (select clock_timestamp() t) x returning `+runColumns,
-			p.ID(), p.Issuer, p.Scope.Service, p.Scope.Tenant, p.Scope.Principal, raw, p.Limits.LifetimeSeconds, p.Limits.WaitSeconds, cp, counts))
+			t+least($7::integer,$8::integer)*interval '1 second','ISSUING',$9,$10 from (select $11::timestamptz t) x returning `+runColumns,
+			p.ID(), p.Issuer, p.Scope.Service, p.Scope.Tenant, p.Scope.Principal, raw, p.Limits.LifetimeSeconds, p.Limits.WaitSeconds, cp, counts, now))
 		if err != nil {
 			return r, err
 		}
@@ -152,11 +145,15 @@ func (s *Store) AttachMandate(ctx context.Context, spec analysis.RunSpec, raw []
 		return analysis.RunRecord{}, analysis.ErrRunDrift
 	}
 	if r.State == "ISSUING" {
-		r, err = scanRun(tx.QueryRow(ctx, `update ouf_mcp.analysis_run set mandate=$2,not_before=clock_timestamp(),seq=seq+1,mandate_state=case when $3<=clock_timestamp() then 'EXPIRED' else 'ACTIVE' end,
-			deadline=least(deadline,$3),state=case when least($3,budget_end)<=clock_timestamp() then 'BLOCKED' else 'RUNNING' end,
-			reason=case when $3<=clock_timestamp() then 'ANALYSIS_MANDATE_EXPIRED'
-			when budget_end<=clock_timestamp() then 'ANALYSIS_BUDGET_EXHAUSTED' else 'ANALYSIS_RUNNING' end
-			where analysis_id=$1 returning `+runColumns, spec.ID(), raw, m.Expires))
+		now, e := s.runClock(ctx, tx)
+		if e != nil {
+			return r, e
+		}
+		r, err = scanRun(tx.QueryRow(ctx, `update ouf_mcp.analysis_run set mandate=$2,not_before=$4,seq=seq+1,mandate_state=case when $3::timestamptz<=$4 then 'EXPIRED' else 'ACTIVE' end,
+			deadline=least(deadline,$3),state=case when least($3,budget_end)<=$4 then 'BLOCKED' else 'RUNNING' end,
+			reason=case when $3<=$4 then 'ANALYSIS_MANDATE_EXPIRED'
+			when budget_end<=$4 then 'ANALYSIS_BUDGET_EXHAUSTED' else 'ANALYSIS_RUNNING' end
+			where analysis_id=$1 returning `+runColumns, spec.ID(), raw, m.Expires, now))
 		if err != nil {
 			return r, err
 		}

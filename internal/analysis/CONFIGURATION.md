@@ -89,6 +89,7 @@ Default del profilo:
   "LifetimeSeconds": 86400,
   "PreviewPageSize": 64,
   "ActivePlans": 1,
+  "InstallationActivePlans": 4,
   "ProviderSlots": 1,
   "Maximum": {"Calls":4096,"Attempts":4096,"Objects":409600,"Bytes":67108864,"Millis":3600000},
   "Shared": {
@@ -111,6 +112,30 @@ La lease di verifica dura al massimo `ProofSeconds` (1–30 s) e termina comunqu
 | `analysis_run_incident`, `analysis_run_budget_session` | Incidente stabile, versione attesa, attore HUMAN, motivo, riferimento alla decisione, limiti e storia delle sessioni. Il punto di confine fra sessioni è una fence. |
 
 La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding HUMAN di esercizio e la qualifica con gli owner reali restano aperti. Per il controllo del mandato in pausa e la retention si applica l’addendum 50v seguente.
+
+### Ammissione dei piani · D-091 / 55e
+
+| Campo di `OUF_ANALYSIS_RUN_LIMITS` | Default | Valori ammessi |
+|---|---|---|
+| `InstallationActivePlans` | 4 piani | Intero da 1 a 128 |
+| `InstallationRef` | Valore configurato di `OUF_ANALYSIS_WORKLOAD` | Riferimento opaco di 1–128 caratteri ASCII, iniziale alfanumerica, seguita da alfanumerici o `_.:-` |
+
+Tutte le repliche usano lo stesso database, riferimento logico e profilo di capacità. Per più workload della stessa installazione si configura lo stesso `InstallationRef`. I piani precedenti hanno già il workload di servizio in `spec.Workload`. Per l'aggiornamento si mantiene quell'identità. Un riferimento esplicito uguale al workload e il limite esplicito 4 si normalizzano come i campi omessi. L'introduzione di un'identità diversa o di limiti diversi richiede la riconciliazione dei piani del profilo precedente.
+
+Avvio e approvazione del rinnovo usano una transazione PostgreSQL `READ COMMITTED`. L'ordine degli advisory lock di transazione è installazione (5022), emittente e tenant (5018), identificativo del piano (5021). Segue il lock della riga del piano, se presente. Dopo l'eventuale attesa la query di ammissione vede il commit del concorrente. La chiamata di verifica al Gateway avviene prima della transazione che consuma il posto.
+
+Ogni riga `ISSUING` o `RUNNING` con budget valido e mandato ancora valido, se emesso, occupa un posto. Il conteggio per installazione comprende tutti i tenant e gli emittenti. `ActivePlans` limita il soggetto identificato da emittente e principal anche fra tenant. `TenantQueue` e `SourceQueue` mantengono gli scope emittente–tenant ed emittente–tenant–asset. Il replay del piano e il cambio di fence conservano il posto. Le prenotazioni owner continuano a usare `DependencySlots`.
+
+Sotto pressione lo store restituisce `ANALYSIS_BACKOFF` con `notBefore`. Prima dell'ammissione il chiamante conserva il comando di avvio. Per il rinnovo la transazione salva `not_before` sul piano bloccato, con incidente aperto e proposta ancora approvabile. La risposta HTTP di rinnovo comunica `Retry-After` in secondi. Il nuovo controllo richiede una prova valida. La quota globale entra in vigore quando tutti i processi che ammettono piani usano il candidato. La versione 021 dello schema contiene già i dati necessari.
+
+| PET PostgreSQL | Verifica |
+|---|---|
+| `MCP-55E-01` | Quattro posti condivisi fra repliche, tenant, client e workload |
+| `MCP-55E-02` | Quinto piano e secondo piano del soggetto in attesa, limiti di tenant e sorgente |
+| `MCP-55E-03` | Ordine dei lock osservato in PostgreSQL e gara sull'ultimo posto per avvio e rinnovo diretto o THS |
+| `MCP-55E-04` | Ripresa con un'altra connessione, nuova fence e alias a installazione piena |
+
+Le prove richiamano `PET-mcp-068` e `PET-mcp-115`.
 
 ### Rinnovo del budget di piano · D-091 / 55a
 
