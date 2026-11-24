@@ -118,7 +118,7 @@ if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
   purge='ouf_mcp.purge_analysis_run_history(text,timestamptz,timestamptz,timestamptz)'
   [[ "$(sql -c "select to_regprocedure('$purge') is null")" == t ]]
 fi
-if [[ "$after" == 19 ]]; then
+if (( after >= 19 )); then
   source "$dir/retention_019.sh"
   retention_smoke
 fi
@@ -131,6 +131,13 @@ if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
 fi
 if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
   [[ "$before" == 17 && "$after" == 18 ]]
+fi
+# MCP-58A-02: the T1 release in esercizio (release/d090-t1-mcp 4b39568, PR #107)
+# contains 50t and 50s. It takes the 50t plan probes against the full T2 schema.
+deployedT1=4b395686ab1dccb80e37e63d26a8228b472d05ac
+if [[ "${PREDECESSOR:-}" == "$deployedT1" ]]; then
+  [[ "$before" == 17 && "$after" == 21 ]]
+  base50t=$deployedT1
 fi
 start "$NEW_IMAGE" candidate
 if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 || "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; then
@@ -203,7 +210,7 @@ if [[ "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; t
 fi
 # MCP-55I-03: the pinned predecessor has just read, written and replayed
 # commands on the expanded database. Resume on the same candidate image.
-if [[ "$after" == 19 ]]; then
+if (( after >= 19 )); then
   if [[ "${PREDECESSOR:-}" != "$base50u" && "${PREDECESSOR:-}" != "$base50t" ]]; then
     stop
     start "$NEW_IMAGE" candidate-resume
