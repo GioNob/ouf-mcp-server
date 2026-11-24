@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -143,8 +144,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
-	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
-		mode := map[string]string{"ouf.semantic.propose": "create", "ouf.semantic.review.prepare": "validate", "ouf.semantic.approval.request": "review", "ouf.semantic.proposal.read": "read"}[in.CapabilityID]
+	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.semantic.proposal.read":
+		mode := map[string]string{"ouf.semantic.discovery.adopt": "discovery/adopt", "ouf.semantic.propose": "create", "ouf.semantic.review.prepare": "validate", "ouf.semantic.approval.request": "review", "ouf.semantic.proposal.read": "read"}[in.CapabilityID]
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/" + mode
 	case "authorization.permissions.read", "authorization.permissions.propose", "authorization.proposal.read":
 		mode := map[string]string{"authorization.permissions.read": "read", "authorization.permissions.propose": "propose", "authorization.proposal.read": "status"}[in.CapabilityID]
@@ -198,6 +199,23 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		return orchestration.GatewayResponse{}, e
 	}
 	headers(req, token, in.CorrelationID, in.IdempotencyKey, in.AttemptID)
+	replacingAsset := false
+	if in.CapabilityID == "ouf.onboarding.revision.prepare" {
+		var revision struct {
+			AssetRef        json.RawMessage `json:"assetRef"`
+			ExpectedVersion *int64          `json:"expectedVersion"`
+		}
+		if err := json.Unmarshal(in.Arguments, &revision); err != nil {
+			return orchestration.GatewayResponse{}, errors.New("invalid revision arguments")
+		}
+		replacingAsset = revision.AssetRef != nil
+		if replacingAsset {
+			if revision.ExpectedVersion == nil {
+				return orchestration.GatewayResponse{}, errors.New("missing revision expectedVersion")
+			}
+			req.Header.Set("If-Match", fmt.Sprintf(`W/"ov:%d"`, *revision.ExpectedVersion))
+		}
+	}
 	if in.Upload != nil {
 		req.ContentLength = in.Upload.Size
 		req.Header.Set("Content-Type", "text/csv")
@@ -207,29 +225,38 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	if in.Identity.Delegation != "" {
 		req.Header.Set("X-OUF-Delegation", in.Identity.Delegation)
 	}
-	res, e := c.Client.Do(req)
-	if e != nil {
-		return orchestration.GatewayResponse{}, e
-	}
-	defer res.Body.Close()
 	limit := in.MaxResultBytes
 	if limit < 1 {
 		limit = 1 << 20
 	}
-	payload, e := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	var payload []byte
+	res, e := c.Client.Do(req)
+	if e == nil {
+		defer res.Body.Close()
+		payload, e = io.ReadAll(io.LimitReader(res.Body, limit+1))
+	}
 	if e != nil {
+		if replacingAsset {
+			// The owner may have prepared the revision before the response was lost.
+			return orchestration.GatewayResponse{}, errors.New("SOURCE_REVIEW_READ_REQUIRED")
+		}
 		return orchestration.GatewayResponse{}, e
 	}
 	out := orchestration.GatewayResponse{Status: res.StatusCode, Body: payload, BackendRequestID: res.Header.Get("X-Backend-Request-ID")}
 	if res.StatusCode/100 != 2 {
 		var p orchestration.Problem
-		_ = json.Unmarshal(payload, &p)
+		if replacingAsset && res.StatusCode == http.StatusServiceUnavailable {
+			p.Code = "SOURCE_REVIEW_READ_REQUIRED"
+		} else {
+			_ = json.Unmarshal(payload, &p)
+		}
 		p.RetryAfter = res.Header.Get("Retry-After")
 		p.Status = res.StatusCode
 		out.Problem = &p
 	}
 	return out, nil
 }
+
 func governed(raw string) (*url.URL, error) {
 	u, e := url.Parse(raw)
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

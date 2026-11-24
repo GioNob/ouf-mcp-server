@@ -37,6 +37,8 @@ type Capability struct {
 	BaseCostEnvelope      json.RawMessage `json:"baseCostEnvelope"`
 	ConditionalCost       json.RawMessage `json:"conditionalOutcomeCost"`
 	ToolEligible          bool            `json:"toolEligible"`
+	AllowedActors         []string        `json:"allowedActors,omitempty"`
+	RequiredScope         string          `json:"requiredScope,omitempty"`
 	InputSchema           json.RawMessage `json:"inputSchema"`
 }
 

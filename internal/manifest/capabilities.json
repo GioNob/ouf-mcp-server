@@ -1,5 +1,5 @@
 {
-  "version": "1.10.0-profile-analysis-and-discovery",
+  "version": "1.13.0-source-revision-and-discovery-adoption",
   "capabilities": [
     {
       "toolName": "urban.object.related_search",
@@ -2503,6 +2503,82 @@
       }
     },
     {
+      "toolName": "semantic.discovery.adopt",
+      "capabilityId": "ouf.semantic.discovery.adopt",
+      "purpose": "Adopt the selected discovery candidate as one semantic DRAFT",
+      "useWhen": [
+        "a human has selected a candidate from a successful discovery request"
+      ],
+      "doNotUseWhen": [
+        "approving or publishing a revision: use the Trusted Human Surface (THS)"
+      ],
+      "preferredAlternatives": [
+        "semantic.discovery.candidates",
+        "semantic.review.prepare",
+        "Trusted Human Surface"
+      ],
+      "operationalLimits": {
+        "maxArtifacts": 1,
+        "maxRequestBytes": 65536,
+        "profile": "ouf.semantic-proposal-channel.v1"
+      },
+      "resultSemantics": "The historical owner receipt includes provenance, revisionId and expectedRowVersion for validation with semantic.review.prepare.",
+      "securityNotes": [
+        "HUMAN with current discovery grant and signed delegation required",
+        "Keep commandKey stable. After an uncertain outcome use semantic.proposal.read with the original commandKey and current read and adoption grants."
+      ],
+      "mcpClass": "MCP_PROPOSAL_ONLY",
+      "owner": "semantic",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.semantic.discovery.adopt",
+      "gatewayBindingRef": "capability://ouf.semantic.discovery.adopt",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 1,
+        "hardMaxResultBytes": 262144,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 1
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "candidateId",
+          "commandKey"
+        ],
+        "properties": {
+          "requestId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "candidateId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+          }
+        },
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          }
+        }
+      },
+      "allowedActors": [
+        "HUMAN"
+      ],
+      "requiredScope": "ouf.semantic.discovery"
+    },
+    {
       "toolName": "semantic.propose",
       "capabilityId": "ouf.semantic.propose",
       "purpose": "Create one native semantic DRAFT or bounded Turtle ontology DRAFT with a durable caller-scoped receipt",
@@ -2901,7 +2977,7 @@
       "capabilityId": "ouf.semantic.proposal.read",
       "purpose": "Read this caller’s durable semantic command receipt after interruption",
       "useWhen": [
-        "preparing authorized native semantic proposals for human review"
+        "reconciling a semantic proposal or discovery adoption with its original commandKey"
       ],
       "doNotUseWhen": [
         "approving, publishing, activating, adopting external terms or bypassing owner decisions"
@@ -4169,21 +4245,24 @@
     {
       "toolName": "source.onboarding.revision.prepare",
       "capabilityId": "ouf.onboarding.revision.prepare",
-      "purpose": "Prepare explicit property-policy changes on the same ACTIVE source for native human review",
+      "purpose": "Prepare a revision of an ACTIVE source for native human review",
       "useWhen": [
-        "the user needs to revise an existing source while preserving its identity, source asset and acquisition configuration"
+        "the user wants to revise property policies on the current file using changes",
+        "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
+        "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one"
       ],
       "doNotUseWhen": [
+        "the file belongs to a new source. Use source.onboarding.create",
         "human approval, activation, arbitrary configuration replacement or historical replay is requested"
       ],
       "preferredAlternatives": [
-        "source.onboarding.revision.read with the original sourceId, parentVersionId and commandKey after an ambiguous preparation"
+        "source.onboarding.revision.read with the original sourceId, parentVersionId and commandKey after HTTP 503 or a lost response. Retain the original commandKey even if the owner reports ABSENT"
       ],
       "operationalLimits": {
         "maxArgumentsBytes": 65536,
         "maxResultBytes": 65536
       },
-      "resultSemantics": "Version/hash/lock and bounded rule projection or native review receipt; preparation never publishes or acquires. Activation can start a new acquisition under retained scheduler configuration.",
+      "resultSemantics": "File replacement returns a native review receipt with assetRef, the recorded newColumns decisions in order and empty diagnostics. ONB_REVISION_CSV_INCOMPATIBLE lists the differences by column. The parent stays active during review. Subsequent HUMAN activation can start acquisition.",
       "securityNotes": [
         "Exact source/version authorization and existing managed-file ownership remain enforced",
         "Keep the same commandKey after interruptions; changed intent is a new governed revision",
@@ -4216,9 +4295,11 @@
           "expectedVersion",
           "configurationHash",
           "commandKey",
-          "publicationEffect",
-          "changes"
+          "publicationEffect"
         ],
+        "if": { "required": ["assetRef"] },
+        "then": { "not": { "required": ["changes"] } },
+        "else": { "required": ["changes"], "not": { "required": ["newColumns"] } },
         "properties": {
           "sourceId": {
             "type": "string",
@@ -4243,6 +4324,79 @@
           },
           "publicationEffect": {
             "const": "NEW_PUBLICATION_MAY_START_ACQUISITION"
+          },
+          "assetRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["assetId", "profileId"],
+            "properties": {
+              "assetId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"
+              },
+              "profileId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"
+              }
+            }
+          },
+          "newColumns": {
+            "type": "array",
+            "maxItems": 1024,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["column", "decision"],
+              "if": { "properties": { "decision": { "const": "MAP" } } },
+              "then": { "required": ["mapping"] },
+              "else": { "not": { "required": ["mapping"] } },
+              "properties": {
+                "column": { "type": "string", "minLength": 1 },
+                "decision": { "enum": ["EXCLUDE", "MAP"] },
+                "mapping": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["propertyIri", "transform", "reconciliation"],
+                  "properties": {
+                    "propertyIri": { "type": "string", "format": "iri", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
+                    "transform": { "enum": ["IDENTITY", "DECIMAL_DOT_V1", "DECIMAL_COMMA_V1", "DATE_ISO_V1", "DATE_DMY_V1"] },
+                    "reconciliation": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["policyRef", "cardinality", "normalizerRef", "normalizerVersion", "validity"],
+                      "properties": {
+                        "policyRef": { "const": "urn:ouf:policy:linked-object-property-reconciliation:v1" },
+                        "cardinality": { "enum": ["SINGLE", "MULTI"] },
+                        "normalizerRef": { "enum": ["EXACT_TYPED", "NFC_TRIM"] },
+                        "normalizerVersion": { "const": 1 },
+                        "validity": { "enum": ["UNBOUNDED", "SOURCE_INTERVAL"] },
+                        "revisionField": { "type": "string", "minLength": 1, "maxLength": 2048 },
+                        "deletionField": { "type": "string", "minLength": 1, "maxLength": 2048 }
+                      }
+                    },
+                    "accessLabel": { "enum": ["OPEN", "ANONYMOUS", "PERSONAL", "SENSITIVE", "RESTRICTED"] },
+                    "authorityOrder": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "uniqueItems": true,
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "comparison": {
+                      "type": "object",
+                      "description": "Required when the parent uses governedIdentity.",
+                      "additionalProperties": false,
+                      "required": ["comparator", "assertionRef"],
+                      "properties": {
+                        "comparator": { "enum": ["CONCEPT", "TEXT_V1", "DECIMAL_V1", "JSON_V1"] },
+                        "assertionRef": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
           "changes": {
             "type": "array",
@@ -4325,7 +4479,8 @@
       "capabilityId": "ouf.onboarding.revision.read",
       "purpose": "Read property rules of a source version, or reconcile an exact revision command after a lost response",
       "useWhen": [
-        "the user needs to revise an existing source while preserving its identity, source asset and acquisition configuration"
+        "read the active parent before changing property policies or replacing its CSV",
+        "recover the current review receipt after a lost prepare response using the original sourceId, parentVersionId and commandKey"
       ],
       "doNotUseWhen": [
         "human approval, activation, arbitrary configuration replacement or historical replay is requested"
@@ -4337,7 +4492,7 @@
         "maxArgumentsBytes": 4096,
         "maxResultBytes": 65536
       },
-      "resultSemantics": "Version/hash/lock and bounded rule projection or native review receipt; preparation never publishes or acquires. Activation can start a new acquisition under retained scheduler configuration.",
+      "resultSemantics": "Version/hash/lock and bounded rule projection or native review receipt. For a file replacement the receipt includes the recorded newColumns decisions and mappings for that version, including an empty array for historical replacements. Activation can start a new acquisition under retained scheduler configuration.",
       "securityNotes": [
         "Exact source/version authorization and existing managed-file ownership remain enforced",
         "Keep the same commandKey after interruptions; changed intent is a new governed revision",

@@ -19,6 +19,11 @@ import (
 )
 
 var (
+	ErrIdempotencyConflict       = errors.New("idempotency key reused with different request")
+	ErrIdempotencyOutcomeUnknown = errors.New("idempotency outcome unknown")
+)
+
+var (
 	ErrUnauthorized       = errors.New("authorization denied")
 	ErrResultLimit        = errors.New("gateway result exceeds governed byte limit")
 	ErrToolSelectionStall = errors.New("tool selection stalled")
@@ -317,11 +322,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		MaxResultBytes: in.Maximum.ResultBytes,
 		Upload:         in.Upload,
 	}, in.Timeout)
-	if permit != nil && callErr != nil {
+	if in.CapabilityID == "ouf.semantic.discovery.adopt" && callErr == nil && response.Status >= 500 {
+		// A Gateway failure after forwarding cannot establish whether the owner committed.
+		callErr = ErrIdempotencyOutcomeUnknown
+	}
+	if (permit != nil || in.CapabilityID == "ouf.semantic.discovery.adopt") && callErr != nil {
 		// Dispatch may have reached the owner. Preserve the finite lease and
 		// reservation for native UNKNOWN recovery; never infer a known failure
 		// or make this one-use session available for another dispatch.
-		if s.Audit != nil {
+		if permit != nil && s.Audit != nil {
 			_ = s.Audit.Audit(ctx, AuditEvent{EventType: "SEMANTIC_REPROCESSING_OUTCOME_UNCERTAIN", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: "OWNER_OUTCOME_UNCERTAIN", AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel})
 		}
 		return Result{AttemptID: admitted.AttemptID}, callErr
@@ -332,6 +341,10 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	}
 	if response.Problem != nil && response.Problem.Code != "" {
 		outcome.Code = response.Problem.Code
+	}
+	if in.CapabilityID == "ouf.semantic.discovery.adopt" && response.Problem != nil {
+		outcome.Code = adoptionProblemCode(response.Problem.Code)
+		response.Problem = &Problem{Status: response.Status, Code: outcome.Code}
 	}
 	actual := Cost{ToolCalls: 1, ResultBytes: int64(len(response.Body))}
 	redacted := false
@@ -371,6 +384,18 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	return Result{Body: response.Body, Problem: response.Problem, AttemptID: admitted.AttemptID}, nil
 }
 
+func adoptionProblemCode(code string) string {
+	switch code {
+	case "SEM_PROPOSAL_RECEIPT_INVALID", "SEM_CAPABILITY_REQUIRED:ouf.semantic.discovery.adopt",
+		"SEMANTIC_CANDIDATE_NOT_FOUND", "CANDIDATE_EXPIRED", "IDEMPOTENCY_KEY_REUSE",
+		"CANDIDATE_ALREADY_ADOPTED", "SEMANTIC_ID_CONFLICT", "CANDIDATE_PUBLISHER_MISSING",
+		"CANDIDATE_METADATA_AMBIGUOUS", "CANDIDATE_METADATA_UNRESOLVED",
+		"CANDIDATE_REFERENCE_UNRESOLVED", "CANDIDATE_VOCABULARY_UNRESOLVED":
+		return code
+	}
+	return "SEMANTIC_ADOPTION_REJECTED"
+}
+
 func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (string, error) {
 	if len(key) < 32 {
 		return "", errors.New("fingerprint key must contain at least 32 bytes")
@@ -380,7 +405,7 @@ func SemanticFingerprint(key []byte, capability string, raw json.RawMessage) (st
 		return "", err
 	}
 	switch capability {
-	case "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
+	case "ouf.semantic.discovery.adopt", "ouf.semantic.propose", "ouf.semantic.review.prepare", "ouf.semantic.approval.request", "ouf.managed-source.onboarding.review.prepare":
 		if args, ok := value.(map[string]any); ok {
 			delete(args, "commandKey")
 		}

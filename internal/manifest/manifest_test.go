@@ -36,6 +36,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"ouf.operations.summary",
 		"ouf.system.status",
 		"semantic.approval.request",
+		"semantic.discovery.adopt",
 		"semantic.discovery.candidates",
 		"semantic.discovery.request",
 		"semantic.discovery.status",

@@ -19,7 +19,7 @@ func TestDiscoveryPublicationKeepsOwnerAndOperationContracts(t *testing.T) {
 		if capability.PublicationState != "ACTIVE" || capability.Owner != "semantic" {
 			t.Fatal("discovery publication or owner changed")
 		}
-		if capability.ToolName == "semantic.discovery.request" {
+		if capability.ToolName == "semantic.discovery.request" || capability.ToolName == "semantic.discovery.adopt" {
 			if capability.OperationClass != "COMMAND" {
 				t.Fatal("discovery request mislabelled as read")
 			}
@@ -27,8 +27,8 @@ func TestDiscoveryPublicationKeepsOwnerAndOperationContracts(t *testing.T) {
 			t.Fatal("discovery result read mislabelled")
 		}
 	}
-	if count != 3 {
-		t.Fatalf("expected three discovery candidates, got %d", count)
+	if count != 4 {
+		t.Fatalf("expected four discovery candidates, got %d", count)
 	}
 	eligible := 0
 	for _, capability := range snapshot.ToolEligible() {
@@ -36,7 +36,7 @@ func TestDiscoveryPublicationKeepsOwnerAndOperationContracts(t *testing.T) {
 			eligible++
 		}
 	}
-	if eligible != 3 {
-		t.Fatalf("expected three published discovery tools, got %d", eligible)
+	if eligible != 4 {
+		t.Fatalf("expected four published discovery tools, got %d", eligible)
 	}
 }
