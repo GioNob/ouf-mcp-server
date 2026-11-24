@@ -36,6 +36,10 @@ func main() {
 		os.Exit(2)
 	}
 	databaseURL := os.Getenv("MCP_DATABASE_URL")
+	switch os.Args[1] {
+	case "migrate-analysis-retention-019", "analysis-retention-once":
+		os.Exit(runRetentionCommand(ctx, os.Stdout, os.Args[1:], databaseURL))
+	}
 	if databaseURL == "" {
 		logger.Error("MCP_DATABASE_URL is required")
 		os.Exit(2)
