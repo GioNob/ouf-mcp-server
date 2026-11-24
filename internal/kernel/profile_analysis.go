@@ -55,15 +55,20 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		switch c.ToolName {
 		case "source.analysis.plan":
 			var args struct {
-				AssetID          string          `json:"assetId"`
-				ProfileID        string          `json:"profileId"`
-				ExpectedRevision int64           `json:"expectedRevision"`
-				Work             []analysis.Work `json:"work"`
+				UnitProfileRef   *analysis.UnitProfileRef `json:"unitProfileRef"`
+				AssetID          string                   `json:"assetId"`
+				ProfileID        string                   `json:"profileId"`
+				ExpectedRevision int64                    `json:"expectedRevision"`
+				Work             []analysis.Work          `json:"work"`
 			}
 			if json.Unmarshal(raw, &args) != nil {
 				return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 			}
-			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
+			if args.UnitProfileRef != nil {
+				out, err = coordinator.PlanUnit(ctx, i.Identity, *args.UnitProfileRef, args.ExpectedRevision, args.Work)
+			} else {
+				out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
+			}
 		case "source.analysis.read":
 			if input["view"] != nil {
 				return server.analysisSummary(ctx, coordinator, i.Identity, input), nil, nil

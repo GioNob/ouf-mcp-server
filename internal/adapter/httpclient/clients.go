@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 )
@@ -239,13 +240,14 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	replacingAsset := false
 	if in.CapabilityID == "ouf.onboarding.revision.prepare" {
 		var revision struct {
+			UnitProfileRef  json.RawMessage `json:"unitProfileRef"`
 			AssetRef        json.RawMessage `json:"assetRef"`
 			ExpectedVersion *int64          `json:"expectedVersion"`
 		}
 		if err := json.Unmarshal(in.Arguments, &revision); err != nil {
 			return orchestration.GatewayResponse{}, errors.New("invalid revision arguments")
 		}
-		replacingAsset = revision.AssetRef != nil
+		replacingAsset = revision.AssetRef != nil || revision.UnitProfileRef != nil
 		if replacingAsset {
 			if revision.ExpectedVersion == nil {
 				return orchestration.GatewayResponse{}, errors.New("missing revision expectedVersion")
@@ -255,7 +257,18 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	}
 	if in.Upload != nil {
 		req.ContentLength = in.Upload.Size
-		req.Header.Set("Content-Type", "text/csv")
+		var metadata struct{ MediaType string }
+		if len(in.Arguments) > 0 && json.Unmarshal(in.Arguments, &metadata) != nil {
+			return orchestration.GatewayResponse{}, errors.New("invalid upload metadata")
+		}
+		switch metadata.MediaType {
+		case "", "text/csv":
+			req.Header.Set("Content-Type", "text/csv")
+		case hostfiles.XLSXMediaType:
+			req.Header.Set("Content-Type", metadata.MediaType)
+		default:
+			return orchestration.GatewayResponse{}, errors.New("unsupported upload media type")
+		}
 		req.Header.Set("X-Content-SHA256", in.Upload.SHA256)
 		req.Header.Set("X-OUF-File-ID", in.Upload.FileID)
 	}

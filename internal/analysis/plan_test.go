@@ -16,7 +16,7 @@ func fixture(t *testing.T, n int) (Scope, Profile, *manifest.Snapshot) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	return Scope{"mcp", "actor", "tenant"}, Profile{uuid.NewString(), uuid.NewString(), 1, "sha256:" + strings.Repeat("a", 64), n}, m
+	return Scope{"mcp", "actor", "tenant"}, Profile{AssetID: uuid.NewString(), ProfileID: uuid.NewString(), Version: 1, SchemaHash: "sha256:" + strings.Repeat("a", 64), ColumnCount: n}, m
 }
 func TestPlanActualWorkForWideProfiles(t *testing.T) {
 	for _, n := range []int{20, 50, 100, 200, 300, 400, 1024} {

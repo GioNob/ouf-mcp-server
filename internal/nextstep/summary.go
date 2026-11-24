@@ -1,6 +1,9 @@
 package nextstep
 
-import "github.com/GioNob/ouf-mcp-server/internal/analysis"
+import (
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	"github.com/google/uuid"
+)
 
 func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object {
 	read := Object{"analysisId": id, "view": "SUMMARY"}
@@ -23,6 +26,12 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			args = Object{"assetId": h.AssetID, "profileId": h.ProfileID, "expectedRevision": h.Revision,
 				"work": []Object{{"tool": "semantic.discovery.request", "columns": []int{h.Ordinal},
 					"arguments": Object{"intent": h.Header, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY"}}}}
+			if h.UnitProfileRef != nil {
+				delete(args, "assetId")
+				delete(args, "profileId")
+				ref := h.UnitProfileRef
+				args["unitProfileRef"] = Object{"profileId": ref.ProfileID, "profileVersion": ref.Version, "unitRef": ref.UnitRef, "schemaHash": ref.SchemaHash}
+			}
 		case "semantic.discovery.status", "semantic.discovery.candidates":
 			args = Object{"analysisId": id, "requestId": h.RequestID}
 			if h.Tool == "semantic.discovery.candidates" {
@@ -51,9 +60,16 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			{"semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}},
 			{"source.file.preview", Object{"assetId": h.AssetID, "profileId": h.ProfileID}},
 		} {
+			if option.tool == "source.file.preview" && h.UnitProfileRef != nil {
+				option.args = Object{"view": "UNIT", "profileId": h.ProfileID, "unitRef": h.UnitProfileRef.UnitRef}
+			}
 			if e.Valid(option.tool, option.args) {
 				alts = append(alts, Object{"action": "CALL_TOOL", "tool": option.tool, "arguments": option.args, "reasonCode": "MAPPING_DECISION_REQUIRED", "userMessage": "Consulta l’evidenza per scegliere il mapping."})
 			}
+		}
+		if h.UnitProfileRef != nil {
+			create := Object{"analysisId": id, "unitProfileRef": h.UnitProfileRef, "commandKey": uuid.NewString()}
+			alts = append(alts, alternative("source.onboarding.create", create, "MAPPING_DECISION_REQUIRED", "Completa il mapping del foglio con i riferimenti verificati."))
 		}
 		next["alternatives"] = alts
 		return next

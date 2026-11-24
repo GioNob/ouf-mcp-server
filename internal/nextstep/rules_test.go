@@ -27,6 +27,7 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	fixture := Object{
 		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "FILE", "canonicalType": "urn:example:teatro",
 		"lockVersion": 1, "rowVersion": 2, "revisionId": id, "currentValidationRunId": id,
+		"profileVersion": 1, "unitRef": "sheet:0", "schemaHash": "sha256:" + strings.Repeat("a", 64), "unitSummary": Object{"singleReadyUnitRef": "sheet:0"},
 		"assetId": id, "profileId": id, "jobId": id, "resultRef": id, "proposalId": id, "handoffId": id,
 		"onboardingVersionId": id, "runId": id, "nextLineageId": id, "nextHandoffId": id, "requestId": id,
 		"hasMore": true, "taskId": strings.Repeat("b", 64), "offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,

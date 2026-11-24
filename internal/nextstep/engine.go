@@ -288,11 +288,20 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 			}
 		case "#zero":
 			value = 0
+		case "#unitProfileRef":
+			value = profileRef(obs)
 		case "#discovery":
 			value = e.discoveryWork(obs)
 		}
 		if value != nil {
 			args[k] = value
+		}
+	}
+	if r.Tool == "source.onboarding.create" {
+		if p, ok := obs["profile"].(Object); ok && p["unitRef"] != nil {
+			args["unitProfileRef"] = profileRef(p)
+			delete(args, "assetId")
+			delete(args, "profileId")
 		}
 	}
 	if r.Args["commandKey"] == "#uuid" {
@@ -536,6 +545,9 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		if !matches(r.When, obs, input) {
 			continue
 		}
+		if r.Reason == "SOURCE_UNIT_SELECTION_REQUIRED" {
+			return e.unitSelection(input, obs, r)
+		}
 		switch r.Action {
 		case "BLOCKED":
 			if r.Reason == "EXECUTION_PROPOSAL_REQUIRED" && lookup(obs, "deferredReaderChecks.0.fieldName") != nil {
@@ -724,6 +736,9 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			target = c.ToolName
 		}
 		if r.Action == "BLOCKED" {
+			if target == "source.file.upload" && c.ToolName == target && analysis.OwnerUnitError(code) != nil {
+				return ManualBlock(code, r.Message, "AGENT")
+			}
 			if code == "NO_APPLICABLE_GRANT" && target == "authorization.permissions.propose" {
 				capability := c.RequiredAuthorization
 				if required, ok := obs["requiredCapability"].(string); ok && (obs["authorizationPhase"] == "MCP_PRE_ADMISSION" || obs["authorizationPhase"] == "OWNER") {
@@ -748,6 +763,12 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			return Block(code, target, "Recupera gli argomenti necessari per proseguire.")
 		}
 		s := call(r.Action, code, target, projected)
+		if code == "ONB_UNIT_REJECTED" {
+			rejection, _ := lookup(obs, "rejection.code").(string)
+			if message := UnitRejectionMessage(rejection); message != "" {
+				s["userMessage"] = message
+			}
+		}
 		if r.Action == "POLL" {
 			return e.machinePoll(s, p.Read, obs, projected, r.Terminal)
 		}

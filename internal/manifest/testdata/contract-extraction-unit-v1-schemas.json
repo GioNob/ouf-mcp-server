@@ -1,0 +1,78 @@
+{
+  "schema": "ouf.extraction-unit.v1.argument-schemas",
+  "contract": "contract-extraction-unit-v1.md",
+  "version": "1.1.0",
+  "usage": "Exact JSON Schema fragments for the NEW argument shapes. The MCP manifest (internal/manifest/capabilities.json) and the Gateway dispatch schemas (schemas/*.json) must contain these fragments byte-equivalent (same keywords and values; key order free). Existing branches stay unchanged (D-080). 'Δ' entries describe how an existing schema changes.",
+  "$defs": {
+    "uuid": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "unitRef": {"type": "string", "maxLength": 16, "pattern": "^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"},
+    "unitProfileRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileId", "profileVersion", "unitRef", "schemaHash"],
+      "properties": {
+        "profileId": {"$ref": "#/$defs/uuid"},
+        "profileVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "unitRef": {"$ref": "#/$defs/unitRef"},
+        "schemaHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "uploadMediaType": {"type": "string", "enum": ["text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]},
+    "xlsxReadOptions": {
+      "type": "object", "additionalProperties": false, "required": ["xlsx"],
+      "properties": {
+        "xlsx": {
+          "type": "object", "additionalProperties": false, "required": ["headerRows"],
+          "properties": {
+            "headerRows": {
+              "type": "object", "minProperties": 1, "maxProperties": 64,
+              "propertyNames": {"pattern": "^sheet:(0|[1-9][0-9]{0,3})$"},
+              "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 1048576}
+            }
+          }
+        }
+      }
+    }
+  },
+  "tools": {
+    "source.file.upload": {
+      "Δ": "file.properties.mime_type: replace {const:text/csv} with #/$defs/uploadMediaType. When mime_type is absent the MCP derives it from file_name (.csv, .xlsx, case-insensitive); when neither gives a known type the MCP uses text/csv (historical behaviour, D-080) and the owner content check decides. GeoPackage joins the enum with F3."
+    },
+    "source.file.profile": {
+      "Δ": "add optional property readOptions: #/$defs/xlsxReadOptions. Same asset + same readOptions -> same profile (idempotent); different readOptions -> new profile version. Owner rejects readOptions on a non-XLSX asset with 422 ONB_READ_OPTIONS_UNSUPPORTED."
+    },
+    "source.file.preview": {
+      "Δ": "top-level properties: view.enum gains UNITS and UNIT; add unitRef (#/$defs/unitRef). oneOf gains exactly the three branches below. Existing branches unchanged.",
+      "newOneOfBranches": [
+        {"type": "object", "additionalProperties": false, "required": ["view", "profileId"],
+         "properties": {"view": {"const": "UNITS"}, "profileId": {"$ref": "#/$defs/uuid"}, "assetId": {"$ref": "#/$defs/uuid"},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": 63}, "limit": {"type": "integer", "minimum": 1, "maximum": 64}}},
+        {"type": "object", "additionalProperties": false, "required": ["view", "profileId", "unitRef"],
+         "properties": {"view": {"const": "UNIT"}, "profileId": {"$ref": "#/$defs/uuid"}, "unitRef": {"$ref": "#/$defs/unitRef"}, "assetId": {"$ref": "#/$defs/uuid"},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": 1023}, "limit": {"type": "integer", "minimum": 1, "maximum": 128}}},
+        {"type": "object", "additionalProperties": false, "required": ["view", "profileId", "unitRef", "distinctValuesCursor"],
+         "properties": {"view": {"const": "UNIT"}, "profileId": {"$ref": "#/$defs/uuid"}, "unitRef": {"$ref": "#/$defs/unitRef"}, "assetId": {"$ref": "#/$defs/uuid"},
+                        "distinctValuesCursor": {"type": "string", "minLength": 1}}}
+      ]
+    },
+    "source.analysis.plan": {
+      "Δ": "required becomes [expectedRevision, work]; add property unitProfileRef (#/$defs/unitProfileRef); add the oneOf below. All other properties unchanged.",
+      "oneOf": [
+        {"required": ["assetId", "profileId"], "not": {"required": ["unitProfileRef"]}},
+        {"required": ["unitProfileRef"], "not": {"anyOf": [{"required": ["assetId"]}, {"required": ["profileId"]}]}}
+      ]
+    },
+    "source.onboarding.create": {
+      "Δ": "required loses assetId and profileId; add property unitProfileRef (#/$defs/unitProfileRef); add the anyOf below. When unitProfileRef is present, assetId/profileId/layer are optional and, if present, must agree (owner: 409 ONB_UNIT_SELECTION_CHANGED).",
+      "anyOf": [
+        {"required": ["assetId", "profileId"]},
+        {"required": ["unitProfileRef"]}
+      ]
+    },
+    "source.onboarding.review.prepare": {
+      "Δ": "add optional property unitProfileRef (#/$defs/unitProfileRef); executionProposal becomes {oneOf:[<typed-csv:v2 unchanged>, <managed-unit v1>]} where managed-unit v1 = the typed-csv:v2 schema with: $id 'urn:ouf:managed-unit-execution-proposal:v1'; required gains 'contract'; properties gains contract {const:'ouf.managed-unit-execution-proposal.v1'}; description updated to be format-neutral. udp stays closed exactly as in typed-csv:v2 (udp.spatial is added with F3). typed-csv:v2 must NOT gain a 'contract' property, so the two branches are mutually exclusive."
+    },
+    "source.onboarding.revision.prepare": {
+      "Δ": "add optional property unitProfileRef (#/$defs/unitProfileRef): the incoming unit of a replacement, as an alternative to assetRef. Exactly one of assetRef or unitProfileRef in the replacement branch; unitProfileRef is forbidden together with changes. newColumns rules apply to both replacement forms."
+    }
+  }
+}

@@ -4,9 +4,14 @@ package manifest
 
 //go:generate go run generate_analysis_compatibility.go
 
-// Only the three approved batch installation states may resume an ea4033e plan.
 func AnalysisPredecessor(current string) string {
 	switch current {
+	case "5a546effadc79170d78b9452f8456f59037ee93b2e44d51af4492b370db6c67a":
+		return "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"
+	case "220a55b9c9653b9969bb0f3b59074764a272f6eeac00a10c0d5dc8efbcdcc543":
+		return "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f"
+	case "4c89f4fcfa2e13efd74a32c19af04b4b507e75d332b51e7d5f44cd8f60aecd31":
+		return "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab"
 	case "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa",
 		"42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f",
 		"e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab":

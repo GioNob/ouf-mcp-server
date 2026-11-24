@@ -378,7 +378,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		// complete structured page when duplicating it as text exceeds the
 		// wire limit. Older, unpaged owner receipts keep their text form.
 		next := structured["next"].(nextstep.Object)
-		if args["distinctValuesCursor"] != nil || next["reasonCode"] == "DISTINCT_VALUES_PAGE" || hasPagedValues(obs) {
+		if args["view"] == "UNIT" || args["view"] == "UNITS" || args["distinctValuesCursor"] != nil || next["reasonCode"] == "DISTINCT_VALUES_PAGE" || hasPagedValues(obs) {
 			page := *result
 			page.Content = []mcp.Content{&mcp.TextContent{Text: "La pagina completa dei valori e il passo successivo sono in structuredContent."}}
 			return s.boundedResult(&page, t)
