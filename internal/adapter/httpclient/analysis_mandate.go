@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -14,7 +15,16 @@ import (
 )
 
 func (c *GatewayClient) MandateCall(ctx context.Context, action string, raw json.RawMessage, delegation string, limit int64, timeout time.Duration) (orchestration.MandateResponse, error) {
-	var out orchestration.MandateResponse
+	out, err := c.mandateCall(ctx, action, raw, delegation, limit, timeout)
+	return out.MandateResponse, err
+}
+
+func (c *GatewayClient) DispatchMandate(ctx context.Context, raw json.RawMessage, limit int64, timeout time.Duration) (analysis.DispatchResponse, error) {
+	return c.mandateCall(ctx, "dispatch", raw, "", limit, timeout)
+}
+
+func (c *GatewayClient) mandateCall(ctx context.Context, action string, raw json.RawMessage, delegation string, limit int64, timeout time.Duration) (analysis.DispatchResponse, error) {
+	var out analysis.DispatchResponse
 	if (action != "issue" && action != "dispatch" && action != "revoke" && action != "status" && action != "renewal-check") || ((action == "issue" || action == "renewal-check") && delegation == "") || (action == "renewal-check" && c.Endpoint.Path != analysis.RenewalCheckPath) || ((action == "dispatch" || action == "status") && delegation != "") ||
 		c.Endpoint.Scheme != "https" || limit < 1 || limit > 1<<20 || timeout <= 0 || timeout > 30*time.Second {
 		return out, errors.New("invalid analysis mandate invocation")
@@ -42,8 +52,16 @@ func (c *GatewayClient) MandateCall(ctx context.Context, action string, raw json
 		return out, orchestration.ErrMandateTransportUncertain
 	}
 	defer res.Body.Close()
-	out = orchestration.MandateResponse{Status: res.StatusCode, Decision: res.Header.Get("X-OUF-Analysis-Decision"), Correlation: res.Header.Get("X-Correlation-ID"),
+	out.MandateResponse = orchestration.MandateResponse{Status: res.StatusCode, Decision: res.Header.Get("X-OUF-Analysis-Decision"), Correlation: res.Header.Get("X-Correlation-ID"),
 		Effect: res.Header.Get("X-OUF-Analysis-Effect"), RetryAfter: res.Header.Get("Retry-After")}
+	for _, header := range res.Header.Values("X-OUF-Analysis-Stale-Cause") {
+		for _, token := range strings.Split(header, ",") {
+			cause := strings.TrimSpace(token)
+			if cause == "REVOKED" || (cause == "SUPERSEDED" && out.StaleCause == "") {
+				out.StaleCause = cause
+			}
+		}
+	}
 	out.Body, err = io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil {
 		return out, orchestration.ErrMandateTransportUncertain

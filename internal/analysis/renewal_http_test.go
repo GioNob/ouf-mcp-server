@@ -29,6 +29,16 @@ type renewalRelayFixture struct {
 	proposal RenewalProposal
 	seen     orchestration.Identity
 	command  RenewalCommand
+	status   orchestration.MandateResponse
+}
+
+func (f *renewalRelayFixture) MandateCall(_ context.Context, op string, raw json.RawMessage, delegation string, _ int64, _ time.Duration) (orchestration.MandateResponse, error) {
+	var target map[string]string
+	if op != "status" || delegation != "" || json.Unmarshal(raw, &target) != nil || len(target) != 2 ||
+		target["mandateId"] != f.proposal.MandateID || target["generation"] != f.proposal.Generation || f.seen.PrincipalID != "holder" {
+		return orchestration.MandateResponse{}, ErrInvalid
+	}
+	return f.status, nil
 }
 
 func (f *renewalRelayFixture) ReadRenewal(_ context.Context, i orchestration.Identity, _ string) (RenewalProposal, error) {
@@ -73,7 +83,9 @@ func TestRenewalGatewayFixture(t *testing.T) {
 		Issuer: "https://issuer.invalid", Audience: "gateway", Workload: "worker", THSClient: "ths"}
 	now := time.Unix(1001, 0)
 	peer, _ := url.Parse("spiffe://gateway.invalid/relay")
-	h := RenewalHandler(&store, &store, c, peer.String(), func() time.Time { return now })
+	store.status = orchestration.MandateResponse{Status: 200}
+	store.status.Body, _ = json.Marshal(map[string]any{"mandateId": p.MandateID, "generation": p.Generation, "state": "ACTIVE", "decisionRef": "fixture", "expiresAt": now.Add(time.Hour)})
+	h := RenewalHandler(&store, &store, &store, c, peer.String(), func() time.Time { return now })
 	post := func(action, body, proof string, verified bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", renewalRoutes+action, strings.NewReader(body))
 		if verified {
@@ -90,6 +102,23 @@ func TestRenewalGatewayFixture(t *testing.T) {
 	if res.Code != 200 || json.Unmarshal(res.Body.Bytes(), &got) != nil || json.Unmarshal(f.Read, &want) != nil || !reflect.DeepEqual(got, want) {
 		t.Fatal("closed read response", res.Code, res.Body.String())
 	}
+	t.Run("MCP-58E-03", func(t *testing.T) {
+		for _, tc := range []struct {
+			status, want int
+			code, public string
+		}{
+			{403, 404, "ANALYSIS_AUTHORITY_DENIED", "ANALYSIS_MANDATE_UNKNOWN"},
+			{503, 503, "ANALYSIS_AUTHORITY_UNAVAILABLE", "ANALYSIS_AUTHORITY_UNAVAILABLE"},
+		} {
+			store.status.Status = tc.status
+			store.status.Body, _ = json.Marshal(map[string]string{"code": tc.code})
+			res := post("read", read, f.ReadProof, true)
+			var problem map[string]string
+			if res.Code != tc.want || json.Unmarshal(res.Body.Bytes(), &problem) != nil || len(problem) != 1 || problem["code"] != tc.public {
+				t.Fatal(res.Code, res.Body.String())
+			}
+		}
+	})
 	res = post("decide", f.CommandWire, f.DecideProof, true)
 	if res.Code != 200 || store.seen.Delegation != f.DecideProof || store.seen.TenantID != "tenant" || store.seen.PrincipalID != "holder" || !reflect.DeepEqual(store.command, f.Command) {
 		t.Fatal("decision relay", res.Code)
@@ -103,7 +132,7 @@ func TestRenewalGatewayFixture(t *testing.T) {
 	if post("read", read, f.ReadProof, true).Code != 403 {
 		t.Fatal("expired proof")
 	}
-	h = RenewalHandler(&store, nil, RenewalChannel{}, peer.String(), time.Now)
+	h = RenewalHandler(&store, nil, nil, RenewalChannel{}, peer.String(), time.Now)
 	if res = post("read", read, f.ReadProof, true); res.Code != 503 || !bytes.Contains(res.Body.Bytes(), []byte("ANALYSIS_AUTHORITY_UNAVAILABLE")) {
 		t.Fatal(res.Code, res.Body.String())
 	}

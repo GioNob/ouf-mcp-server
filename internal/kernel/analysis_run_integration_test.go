@@ -29,6 +29,11 @@ type fixtureMandates struct {
 	validUntil int64
 }
 
+func (g *fixtureMandates) DispatchMandate(ctx context.Context, raw json.RawMessage, limit int64, timeout time.Duration) (analysis.DispatchResponse, error) {
+	reply, err := g.MandateCall(ctx, "dispatch", raw, "", limit, timeout)
+	return analysis.DispatchResponse{MandateResponse: reply}, err
+}
+
 // Use the durable verifier for every owner call. The listener PET tests
 // the authenticated wire protocol independently.
 func (g *fixtureMandates) MandateCall(ctx context.Context, action string, raw json.RawMessage, delegation string, _ int64, _ time.Duration) (orchestration.MandateResponse, error) {

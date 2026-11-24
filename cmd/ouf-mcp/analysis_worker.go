@@ -17,8 +17,17 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/analysisworker"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
+
+func ordinaryMandateGateway(endpoint string) (*httpclient.GatewayClient, error) {
+	source, err := configuredTokenSource(httpclient.NewMandateTokenSource)
+	if err != nil {
+		return nil, err
+	}
+	return httpclient.NewGatewayWithTokenSource(endpoint, source)
+}
 
 func runAnalysisWorker(ctx context.Context, logger *slog.Logger, dsn string) error {
 	m, err := manifest.Load()
@@ -40,11 +49,7 @@ func runAnalysisWorker(ctx context.Context, logger *slog.Logger, dsn string) err
 	if err = store.Ready(ctx); err != nil {
 		return err
 	}
-	source, err := workloadTokenSource()
-	if err != nil {
-		return err
-	}
-	gateway, err := httpclient.NewGatewayWithTokenSource(os.Getenv("MCP_GATEWAY_ENDPOINT"), source)
+	gateway, err := ordinaryMandateGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"))
 	if err != nil || gateway.Endpoint.Scheme != "https" {
 		return fmt.Errorf("analysis gateway requires HTTPS")
 	}
@@ -94,13 +99,12 @@ func serveAnalysisReservations(ctx context.Context, dsn string) error {
 		return err
 	}
 	var authority analysis.RunRenewalAuthority
+	var statusGateway orchestration.AnalysisMandatePort
 	if channel.Configured() {
-		var source httpclient.TokenSource
-		if os.Getenv("MCP_OIDC_TOKEN_ENDPOINT") != "" {
-			source, err = httpclient.NewRenewalTokenSource(os.Getenv("MCP_OIDC_TOKEN_ENDPOINT"), os.Getenv("MCP_OIDC_CLIENT_ID"), os.Getenv("MCP_OIDC_CLIENT_SECRET_FILE"))
-		} else {
-			source, err = workloadTokenSource()
+		if g, e := ordinaryMandateGateway(channel.CheckEndpoint); e == nil {
+			statusGateway = g
 		}
+		source, err := configuredTokenSource(httpclient.NewRenewalTokenSource)
 		if err == nil {
 			authority, err = httpclient.NewGatewayWithTokenSource(channel.CheckEndpoint, source)
 		}
@@ -108,7 +112,7 @@ func serveAnalysisReservations(ctx context.Context, dsn string) error {
 			authority = nil
 		}
 	}
-	handler := analysis.RenewalHandler(store, authority, channel, identity, time.Now)
+	handler := analysis.RenewalHandler(store, authority, statusGateway, channel, identity, time.Now)
 	mux.Handle("/internal/analysis/v1/renewals/read", handler)
 	mux.Handle("/internal/analysis/v1/renewals/decide", handler)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 30 * time.Second, // renewals/decide waits for the nested Gateway renewal-check (hop timeout <= 30 s).

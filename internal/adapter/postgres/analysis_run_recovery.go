@@ -223,7 +223,9 @@ func (s *Store) renewRunBudgetTx(ctx context.Context, tx pgx.Tx, r, current anal
 		return err
 	}
 	tag, err = tx.Exec(ctx, `update ouf_mcp.analysis_run set budget_end=$4,poll_seq=null,poll_after=null,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,
-		seq=seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3 where analysis_id=$1 and seq=$2`, r.ID(), want.ExpectedSeq, now, end)
+		seq=seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',
+		not_before=greatest($3::timestamptz,(checkpoint #>> '{Queue,0,Task,notBefore}')::timestamptz)
+		where analysis_id=$1 and seq=$2`, r.ID(), want.ExpectedSeq, now, end)
 	if err != nil {
 		return err
 	}

@@ -74,10 +74,13 @@ Predecessore `9be4dd80e1e7c6a0d1b3f86eda8fb02c4909fc91`, migrazione additiva 018
 | `OUF_ANALYSIS_RUN_ENABLED` | Booleano stretto. Assente o `false` conserva la preview T1 e produce `ANALYSIS_EXECUTOR_DISABLED` per uno start T2 esplicito. `true` carica il profilo e il manifest. |
 | `OUF_ANALYSIS_MANIFEST_FILE` | File UTF-8 immutabile, distribuito byte per byte anche come `manifestFile` al Gateway. Il contenuto JSON deve coincidere con il catalogo compilato. Il mandato usa SHA-256 del file effettivo, inclusi terminatori di riga. |
 | `OUF_ANALYSIS_WORKLOAD` | Identità del client di servizio verificata dal Gateway al dispatch. È separata dall'identità del client interattivo memorizzata nello scope. |
+| `OUF_ANALYSIS_MANDATE_SCOPES` | Lista OAuth separata da spazi per il client SERVICE ordinario di issue, dispatch, revoke e status. Default `ouf.analysis.mandate.issue ouf.analysis.mandate.dispatch ouf.analysis.mandate.revoke ouf.analysis.mandate.status`. Con bearer statico predisporre gli scope sul token. |
 | `OUF_ANALYSIS_RUN_LIMITS` | Oggetto JSON completo del profilo seguente. L'installazione conserva gli stessi parametri sulle repliche. Un cambio incompatibile ferma il piano per riconciliazione. |
 | `OUF_ANALYSIS_RESERVATION_LISTEN` | Bind privato del comando `analysis-reservations`. Il Gateway invia POST a `/internal/analysis/v1/reservations/check`. |
 | `OUF_ANALYSIS_RESERVATION_CERT_FILE`, `OUF_ANALYSIS_RESERVATION_KEY_FILE` | Identità TLS server del listener privato. |
 | `OUF_ANALYSIS_GATEWAY_CA_FILE`, `OUF_ANALYSIS_GATEWAY_CLIENT_URI` | Trust store dedicato e URI SAN esatto del certificato client Gateway. Il listener richiede mTLS e TLS 1.3. |
+
+La ricevuta di creazione della discovery e ogni risposta che richiede un altro status fissano il prossimo poll tramite `pollAfterSeconds`. In assenza del valore, il worker attende cinque secondi. Il checkpoint conserva la scadenza anche dopo un riavvio.
 
 Default del profilo:
 
@@ -189,15 +192,23 @@ L’installazione configura i valori interi seguenti e li rilegge al riavvio. Il
 
 **Rilascio 018→019 (D-072, D-080).** Eseguire `migrate` con il normale ruolo applicativo proprietario dello schema. La 019 registra il checksum, aggiunge i dati di stato e gli archivi e crea la vista di eleggibilità. Il percorso amministrativo `MigrateSemanticReprocessing` è vincolato alla transizione 012→013.
 
-Prima di avviare il job di retention, eseguire il comando seguente dalla radice del sorgente del candidato, con la connessione amministrativa autorizzata puntata allo stesso database.
+Prima di avviare la retention, impostare `MCP_DATABASE_URL` sulla connessione amministrativa autorizzata, `MCP_MIGRATION_DATABASE_OID` sull’OID del database e `MCP_MIGRATION_APPLICATION_ROLE` sul ruolo applicativo. Usare il binario del candidato.
 
 ```sh
-psql -X -v ON_ERROR_STOP=1 -f internal/adapter/postgres/maintenance/019_analysis_run_retention.sql
+ouf-mcp migrate-analysis-retention-019
 ```
 
-Distribuire questo file SQL insieme al candidato. La transazione verifica la presenza della 019 e il ruolo NOLOGIN, prende lo stesso lock delle migrazioni, installa il corpo della funzione e ne trasferisce la proprietà a `ouf_mcp_retention_owner`. Solo questo ruolo riceve i privilegi di tabella necessari alla pulizia. Il ruolo di manutenzione riceve `EXECUTE`. L’amministratore effettua il trasferimento direttamente, senza concedere membership al ruolo applicativo. La fase può essere ripetuta. Se manca o fallisce alla prima installazione, il piano resta leggibile e il job di pulizia fallisce conservando i dati. La readiness dello schema certifica solo la fase ordinaria.
+Il binario include l’SQL della 019. La transazione verifica il database, il ruolo applicativo e il ruolo NOLOGIN, prende lo stesso lock delle migrazioni, installa le funzioni e ne trasferisce la proprietà a `ouf_mcp_retention_owner`. Solo questo ruolo riceve i privilegi di tabella necessari alla pulizia. Il ruolo di manutenzione riceve `EXECUTE`. L’amministratore effettua il trasferimento direttamente. La fase può essere ripetuta. Se manca o fallisce alla prima installazione, il piano resta leggibile e il job di pulizia fallisce conservando i dati. La readiness dello schema certifica solo la fase ordinaria.
 
-**Retention.** Il job monouso `go run ./internal/analysisworker/retention` usa `MCP_DATABASE_URL` con il ruolo di manutenzione e `OUF_ANALYSIS_WORKLOAD`. Lo scheduler d’installazione ne stabilisce la frequenza in base ai volumi. Ogni invocazione elimina al massimo 256 righe per tabella, in una transazione. Per la riga condivisa prenotazione/tentativo vale il maggiore dei due TTL. Devono essere abbastanza vecchi sia l’ultimo snapshot del piano sia la riga candidata. I piani RUNNING e ISSUING, i BLOCKED con coda o ordinali pendenti e quelli con lavori owner aperti, effetti da riconciliare o quarantene conservano il grafo. Le letture hanno precedenza nella pulizia. L’ultimo snapshot e quelli con letture ancora in retention restano consultabili. Gli esiti ordinali, le sessioni e le chiavi di deduplicazione restano persistiti.
+**Retention.** Il job monouso `ouf-mcp analysis-retention-once` usa `MCP_DATABASE_URL` con il ruolo di manutenzione e `OUF_ANALYSIS_WORKLOAD` per selezionare il workload. `OUF_ANALYSIS_RETENTION_BATCH` limita le righe per tabella e invocazione (default 256, intervallo 1–256). Lo scheduler d’installazione ne stabilisce la frequenza in base ai volumi. Per la riga condivisa prenotazione/tentativo vale il maggiore dei due TTL. Devono essere abbastanza vecchi sia l’ultimo snapshot del piano sia la riga candidata. I piani RUNNING e ISSUING, i BLOCKED con coda o ordinali pendenti e quelli con lavori owner aperti, effetti da riconciliare o quarantene conservano il grafo. Le letture hanno precedenza nella pulizia. L’ultimo snapshot e quelli con letture ancora in retention restano consultabili. Gli esiti ordinali, le sessioni e le chiavi di deduplicazione restano persistiti.
+
+Entrambi i comandi emettono su stdout un oggetto JSON. Con uscita 0, `status` vale `VERIFIED`, `sqlSha256` identifica l’SQL incorporato, `ownerAclSha256` identifica i privilegi verificati e `counts` contiene gli interi `reads`, `snapshots` e `attempts`. La migrazione restituisce conteggi zero. In caso di errore, `status` vale `UNVERIFIED`, `ownerAclSha256` e `counts` valgono `null` e il processo termina con codice diverso da zero.
+
+Esempio di uscita di `analysis-retention-once` con digest segnaposto.
+
+```json
+{"status":"VERIFIED","sqlSha256":"<digest SQL>","ownerAclSha256":"<digest ACL>","counts":{"reads":2,"snapshots":1,"attempts":0}}
+```
 
 **Incidenti di dipendenza.** La vista protetta `analysis_dependency_counts` espone episodio, scope opaco, dipendenza, causa e conteggi distinti di piani, coppie piano–intento e coppie piano–ordinale. Lo scope include issuer, workload, servizio e tenant. Per il rate limit comprende anche il soggetto, perché il codice owner da solo non dimostra una quota condivisa fra soggetti. La correlazione usa i codici espliciti di indisponibilità dell’autorità Gateway e di indisponibilità o rate limit del lotto Semantic. La sola pressione locale non identifica un guasto condiviso. Per la preview il gruppo semantico deve ancora essere identificato. Le osservazioni ripetute conservano gli stessi conteggi. L’episodio si chiude dopo riscontri positivi su tutti gli ordinali interessati. Il dettaglio del lavoro in quarantena resta nell’archivio protetto. La vista degli incidenti espone riferimenti e conteggi.
 
@@ -217,6 +228,8 @@ Il processo `analysis-reservations` serve anche le due POST `/internal/analysis/
 | `OUF_ANALYSIS_RENEWAL_PROPOSAL_SECONDS` | Intero opzionale da 1 a 3600, default 3600. Ogni scadenza è limitata anche dal mandato e dalla durata assoluta del piano. `RenewalSeconds` regola la durata della sessione concessa. |
 
 Configurare gli stessi parametri di canale nel processo MCP e nel listener. Con un profilo incompleto le rotte restituiscono `503 ANALYSIS_AUTHORITY_UNAVAILABLE`. Il client riusa le credenziali SERVICE di installazione. Il flusso client credentials richiede lo scope `ouf.analysis.mandate.renewal-check` con una propria cache. Un bearer statico, se configurato, deve già possedere questo scope. La verifica IAM corrente appartiene al Gateway.
+
+Per ogni lettura della scheda, il listener risolve `reviewRef` nello scope del titolare e interroga `mandates/status` presso lo stesso Gateway con il client SERVICE ordinario. Un mandato attivo, corrente e della generazione della proposta autorizza la risposta. Se il diritto è decaduto, la rotta restituisce `404 ANALYSIS_MANDATE_UNKNOWN`. Se IAM è indisponibile, restituisce `503 ANALYSIS_AUTHORITY_UNAVAILABLE`.
 
 La 021 aggiunge lo storico delle proposte e delle ricevute. Un incidente aperto dal predecessore può materializzare la propria prima proposta alla lettura autorizzata dello stato. Il materiale di revisione conserva basename e numero di colonne quando la preview owner espone `fileName`. Per i profili privi di questo metadato usa il numero di colonne. Un esaurimento precedente all'emissione del mandato o con tutte le dimensioni di incremento a zero mantiene l'incidente aperto.
 

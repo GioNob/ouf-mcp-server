@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -13,8 +12,7 @@ import (
 // The read-only control call uses the workload credential and carries no
 // owner arguments. Bind positive evidence to the exact issued generation.
 func observeMandate(ctx context.Context, gateway orchestration.AnalysisMandatePort, m analysis.Mandate) (state, decision, retry string) {
-	raw, _ := json.Marshal(map[string]string{"mandateId": m.ID, "generation": m.Generation})
-	reply, err := gateway.MandateCall(ctx, "status", raw, "", 4096, 3*time.Second)
+	reply, err := analysis.FetchMandateStatus(ctx, gateway, m.ID, m.Generation)
 	if errors.Is(err, orchestration.ErrMandateTransportUncertain) {
 		return "UNAVAILABLE", "", ""
 	}

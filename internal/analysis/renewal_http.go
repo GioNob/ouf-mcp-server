@@ -147,7 +147,35 @@ func renewalProblem(w http.ResponseWriter, err error) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func RenewalHandler(store RenewalStore, authority RunRenewalAuthority, c RenewalChannel, gateway string, clock func() time.Time) http.Handler {
+func authorizeProposalRead(ctx context.Context, gateway orchestration.AnalysisMandatePort, p RenewalProposal, clock func() time.Time) error {
+	reply, err := FetchMandateStatus(ctx, gateway, p.MandateID, p.Generation)
+	if err != nil {
+		return ErrIssueUnavailable
+	}
+	if reply.Status == http.StatusOK {
+		status, ok := decodeMandateStatus(p.MandateID, reply.Body)
+		if !ok {
+			return ErrIssueUnavailable
+		}
+		if status.Generation != p.Generation || status.State != "ACTIVE" || !clock().Before(status.ExpiresAt) {
+			return ErrScope
+		}
+		return nil
+	}
+	var problem struct{ Code string }
+	if ValidEvidenceJSON(reply.Body) && json.Unmarshal(reply.Body, &problem) == nil {
+		switch {
+		case reply.Status == 403 && problem.Code == "ANALYSIS_AUTHORITY_DENIED",
+			reply.Status == 404 && problem.Code == "ANALYSIS_MANDATE_UNKNOWN",
+			reply.Status == 409 && problem.Code == "ANALYSIS_STALE_EXECUTION",
+			reply.Status == 410 && problem.Code == "ANALYSIS_MANDATE_EXPIRED":
+			return ErrScope
+		}
+	}
+	return ErrIssueUnavailable
+}
+
+func RenewalHandler(store RenewalStore, authority RunRenewalAuthority, statusGateway orchestration.AnalysisMandatePort, c RenewalChannel, gateway string, clock func() time.Time) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -161,7 +189,7 @@ func RenewalHandler(store RenewalStore, authority RunRenewalAuthority, c Renewal
 			w.WriteHeader(405)
 			return
 		}
-		if !c.Configured() || authority == nil || store == nil {
+		if !c.Configured() || store == nil || (action == "decide" && authority == nil) || (action == "read" && statusGateway == nil) {
 			renewalProblem(w, ErrIssueUnavailable)
 			return
 		}
@@ -189,7 +217,12 @@ func RenewalHandler(store RenewalStore, authority RunRenewalAuthority, c Renewal
 				renewalProblem(w, ErrInvalid)
 				return
 			}
-			out, err = store.ReadRenewal(ctx, i, b.ReviewRef)
+			var proposal RenewalProposal
+			proposal, err = store.ReadRenewal(ctx, i, b.ReviewRef)
+			if err == nil {
+				err = authorizeProposalRead(ctx, statusGateway, proposal, clock)
+			}
+			out = proposal
 		} else {
 			var command RenewalCommand
 			command, err = ParseRenewalCommand(raw)

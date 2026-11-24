@@ -118,7 +118,7 @@ func TestRunAtomicAliasAndFenceLease(t *testing.T) { // MCP-50U-04, MCP-50U-05
 	if err = s.FinishRunWork(ctx, c, workers[0], nil, RunReceipt{}); !errors.Is(err, analysis.ErrFenced) {
 		t.Fatal("late publication", err)
 	}
-	if err = s.RecordCrossing(ctx, c, workers[0], "fixture-decision", "fixture-correlation", []byte(`{"state":"IN_FLIGHT"}`)); err != nil {
+	if err = s.RecordCrossing(ctx, c, workers[0], "fixture-decision", "fixture-correlation", []byte(`{"state":"IN_FLIGHT"}`), true); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -145,6 +145,42 @@ func claimFixture(t *testing.T, ctx context.Context, s *Store, r analysis.RunRec
 		t.Fatal(err)
 	}
 	return work, check
+}
+
+func TestSupersededCrossingOnlyRecordsAttempt(t *testing.T) { // MCP-58E-01
+	ctx, s, r := fixtureRun(t)
+	w, c := claimFixture(t, ctx, s, r)
+	if _, err := s.pool.Exec(ctx, "insert into ouf_mcp.analysis_run_incident(analysis_id,incident_id,state) values($1,$2,'RECOVERING')", r.ID(), uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() string {
+		t.Helper()
+		var raw string
+		err := s.pool.QueryRow(ctx, `select jsonb_build_array(to_jsonb(r),to_jsonb(i))::text from ouf_mcp.analysis_run r
+			join ouf_mcp.analysis_run_incident i using(analysis_id) where analysis_id=$1`, r.ID()).Scan(&raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	before := snapshot()
+	body := []byte(`{"code":"ANALYSIS_STALE_EXECUTION"}`)
+	if err := s.RecordCrossing(ctx, c, w.Worker, "fixture", "correlation", body, false); err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	err := s.pool.QueryRow(ctx, `select crossing_hash from ouf_mcp.analysis_run_attempt
+		where attempt_id=$1 and crossing_decision='fixture' and crossing_correlation='correlation' and finished_at is null`, c.AttemptID).Scan(&digest)
+	if err != nil || digest != analysis.BytesDigest(body) || snapshot() != before {
+		t.Fatal("crossing changed the plan or lost attempt evidence", err)
+	}
+	if err := s.RecordCrossing(ctx, c, w.Worker, "fixture", "correlation", body, true); err != nil {
+		t.Fatal(err)
+	}
+	current, err := s.ReadRun(ctx, r.Scope, r.Issuer, r.ID())
+	if err != nil || current.State != "BLOCKED" || current.MandateState != "REVOKED" {
+		t.Fatal("revocation crossing", current.State, current.MandateState, err)
+	}
 }
 
 func fixturePreview(t *testing.T, r analysis.RunRecord) []byte {

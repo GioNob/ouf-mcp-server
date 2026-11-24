@@ -152,6 +152,9 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 	if json.Unmarshal(itemRaw, &item) != nil {
 		return check, analysis.ErrRunDrift
 	}
+	if now.Before(item.Task.NotBefore) {
+		return check, analysis.ErrRunPressure
+	}
 	planned := item.Work(work.Worker)
 	plannedHash, err := analysis.MandateHash(planned.Arguments)
 	if err != nil || work.Intent != planned.Intent || hash != plannedHash || work.Operation != planned.Operation || !slices.Equal(work.Ordinals, planned.Ordinals) || work.Maximum != planned.Maximum {

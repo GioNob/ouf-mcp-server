@@ -189,6 +189,8 @@ func TestPartialClosePreservesIndependentOutcomes(t *testing.T) { // MCP-55B-04
 	if err = s.FinishRunWork(ctx, c, w.Worker, nil, receipt); err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(5 * time.Second)
+	verifyPausedRun(t, ctx, s, r)
 	w, c = claimFixture(t, ctx, s, r)
 	receipt.Body = []byte(`{"state":"SUCCEEDED","completedCandidateCount":0,"requestId":"` + job + `"}`)
 	if err = s.FinishRunWork(ctx, c, w.Worker, nil, receipt); err != nil {
