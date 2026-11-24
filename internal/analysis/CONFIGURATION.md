@@ -64,3 +64,162 @@ La colonna additiva `analysis_column.published_first` e il relativo indice danno
 | MCP-50T-07 | Errori A.3, compatibilità, riapertura della connessione e scadenza del budget |
 | MCP-50T-08 | Path HTTP, busta effettiva e soglia di trasporto |
 | MCP-50T-09 | Migrazione 016 → 017, esecuzione del piano ea4033e e ritorno del predecessore |
+
+## Piano server T2 · analysis-run-v2
+
+Predecessore `9be4dd80e1e7c6a0d1b3f86eda8fb02c4909fc91`, migrazione additiva 018. I tre processi sono il server MCP, `analysis-worker` e `analysis-reservations`. Usano lo stesso PostgreSQL. Il listener delle prenotazioni ha un proprio pool e un proprio endpoint HTTPS. Lo start richiede la delega HUMAN corrente. Il worker usa la credenziale di workload già configurata per il Gateway.
+
+| Parametro di installazione | Uso |
+|---|---|
+| `OUF_ANALYSIS_RUN_ENABLED` | Booleano stretto. Assente o `false` conserva la preview T1 e produce `ANALYSIS_EXECUTOR_DISABLED` per uno start T2 esplicito. `true` carica il profilo e il manifest. |
+| `OUF_ANALYSIS_MANIFEST_FILE` | File UTF-8 immutabile, distribuito byte per byte anche come `manifestFile` al Gateway. Il contenuto JSON deve coincidere con il catalogo compilato. Il mandato usa SHA-256 del file effettivo, inclusi terminatori di riga. |
+| `OUF_ANALYSIS_WORKLOAD` | Identità del client di servizio verificata dal Gateway al dispatch. È separata dall'identità del client interattivo memorizzata nello scope. |
+| `OUF_ANALYSIS_RUN_LIMITS` | Oggetto JSON completo del profilo seguente. L'installazione conserva gli stessi parametri sulle repliche. Un cambio incompatibile ferma il piano per riconciliazione. |
+| `OUF_ANALYSIS_RESERVATION_LISTEN` | Bind privato del comando `analysis-reservations`. Il Gateway invia POST a `/internal/analysis/v1/reservations/check`. |
+| `OUF_ANALYSIS_RESERVATION_CERT_FILE`, `OUF_ANALYSIS_RESERVATION_KEY_FILE` | Identità TLS server del listener privato. |
+| `OUF_ANALYSIS_GATEWAY_CA_FILE`, `OUF_ANALYSIS_GATEWAY_CLIENT_URI` | Trust store dedicato e URI SAN esatto del certificato client Gateway. Il listener richiede mTLS e TLS 1.3. |
+
+Default del profilo:
+
+```json
+{
+  "OwnerDedupQualified": false,
+  "ProofSeconds": 5,
+  "WaitSeconds": 3600,
+  "LifetimeSeconds": 86400,
+  "PreviewPageSize": 64,
+  "ActivePlans": 1,
+  "InstallationActivePlans": 4,
+  "ProviderSlots": 1,
+  "Maximum": {"Calls":4096,"Attempts":4096,"Objects":409600,"Bytes":67108864,"Millis":3600000},
+  "Shared": {
+    "TenantQueue":32,"SourceQueue":4,"TenantSlots":4,"SourceSlots":1,"DependencySlots":4,
+    "TenantPerMinute":120,"SourcePerMinute":30,"DependencyPerMinute":120,
+    "TenantBytes":1073741824,"SourceBytes":134217728
+  }
+}
+```
+
+`OwnerDedupQualified` registra la decisione d'installazione dopo la qualificazione owner. Il worker richiede entrambi i flag. Il Gateway mantiene il proprio gate indipendente. Il deploy attiva i processi dopo le prove D-090. Per il ritorno, fermare i worker, chiudere il dispatch Gateway e attendere scadenza delle prove concesse e riconciliazione degli effetti in volo.
+
+La lease di verifica dura al massimo `ProofSeconds` (1–30 s) e termina comunque entro la scadenza del tentativo, del mandato e del budget. Il tetto per incidente è 128 tentativi per operazione e intento in una sessione finita. Chiamate e tentativi sono unità intere, byte e millisecondi contano sul piano. Le frequenze condivise usano una finestra mobile di 60 secondi. Il calcolo dei byte condivisi conserva le riserve incerte e addebita anche payload già ridotti a evidenza. Lo scope sorgente usa il riferimento immutabile all'asset. I pool di dipendenza sono Onboarding e Semantic. Le lease dei provider remoti dietro Semantic richiedono la verifica owner.
+
+| Archivio PostgreSQL, schema `ouf_mcp` | Contenuto protetto |
+|---|---|
+| `analysis_run`, `analysis_run_command` | Scope, profilo e policy fissati, configurazione, mandato, prima chiave e alias, attesa, fence, coda e checkpoint. |
+| `analysis_run_attempt`, `analysis_run_request` | Prenotazione, hash, ordinali, worker, prova concessa, limiti e consuntivo, riferimenti di decisione e relazione job–intento. Le prenotazioni con effetto incerto mantengono il massimo originario. |
+| `analysis_run_outcome`, `analysis_run_snapshot`, `analysis_run_read` | Versioni degli esiti per ordinale, contatori e audit delle pagine. `STATUS` legge dati locali. |
+| `analysis_run_incident`, `analysis_run_budget_session` | Incidente stabile, versione attesa, attore HUMAN, motivo, riferimento alla decisione, limiti e storia delle sessioni. Il punto di confine fra sessioni è una fence. |
+
+La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding HUMAN di esercizio e la qualifica con gli owner reali restano aperti. Per il controllo del mandato in pausa e la retention si applica l’addendum 50v seguente.
+
+### Ammissione dei piani · D-091 / 55e
+
+| Campo di `OUF_ANALYSIS_RUN_LIMITS` | Default | Valori ammessi |
+|---|---|---|
+| `InstallationActivePlans` | 4 piani | Intero da 1 a 128 |
+| `InstallationRef` | Valore configurato di `OUF_ANALYSIS_WORKLOAD` | Riferimento opaco di 1–128 caratteri ASCII, iniziale alfanumerica, seguita da alfanumerici o `_.:-` |
+
+Tutte le repliche usano lo stesso database, riferimento logico e profilo di capacità. Per più workload della stessa installazione si configura lo stesso `InstallationRef`. I piani precedenti hanno già il workload di servizio in `spec.Workload`. Per l'aggiornamento si mantiene quell'identità. Un riferimento esplicito uguale al workload e il limite esplicito 4 si normalizzano come i campi omessi. L'introduzione di un'identità diversa o di limiti diversi richiede la riconciliazione dei piani del profilo precedente.
+
+Avvio e approvazione del rinnovo usano una transazione PostgreSQL `READ COMMITTED`. L'ordine degli advisory lock di transazione è installazione (5022), emittente e tenant (5018), identificativo del piano (5021). Segue il lock della riga del piano, se presente. Dopo l'eventuale attesa la query di ammissione vede il commit del concorrente. La chiamata di verifica al Gateway avviene prima della transazione che consuma il posto.
+
+Ogni riga `ISSUING` o `RUNNING` con budget valido e mandato ancora valido, se emesso, occupa un posto. Il conteggio per installazione comprende tutti i tenant e gli emittenti. `ActivePlans` limita il soggetto identificato da emittente e principal anche fra tenant. `TenantQueue` e `SourceQueue` mantengono gli scope emittente–tenant ed emittente–tenant–asset. Il replay del piano e il cambio di fence conservano il posto. Le prenotazioni owner continuano a usare `DependencySlots`.
+
+Sotto pressione lo store restituisce `ANALYSIS_BACKOFF` con `notBefore`. Prima dell'ammissione il chiamante conserva il comando di avvio. Per il rinnovo la transazione salva `not_before` sul piano bloccato, con incidente aperto e proposta ancora approvabile. La risposta HTTP di rinnovo comunica `Retry-After` in secondi. Il nuovo controllo richiede una prova valida. La quota globale entra in vigore quando tutti i processi che ammettono piani usano il candidato. La versione 021 dello schema contiene già i dati necessari.
+
+| PET PostgreSQL | Verifica |
+|---|---|
+| `MCP-55E-01` | Quattro posti condivisi fra repliche, tenant, client e workload |
+| `MCP-55E-02` | Quinto piano e secondo piano del soggetto in attesa, limiti di tenant e sorgente |
+| `MCP-55E-03` | Ordine dei lock osservato in PostgreSQL e gara sull'ultimo posto per avvio e rinnovo diretto o THS |
+| `MCP-55E-04` | Ripresa con un'altra connessione, nuova fence e alias a installazione piena |
+
+Le prove richiamano `PET-mcp-068` e `PET-mcp-115`.
+
+### Rinnovo del budget di piano · D-091 / 55a
+
+Il profilo iniziale del piano fissa due campi opzionali di `OUF_ANALYSIS_RUN_LIMITS`. I profili creati prima della 020 usano i default. Un valore esplicito deve essere un intero.
+
+| Campo | Default | Intervallo e unità |
+|---|---:|---|
+| `RenewalPercent` | 25 | 1–25 per cento del tetto iniziale di ciascuna dimensione |
+| `RenewalSeconds` | 3600 | 1–3600 secondi per sessione di rinnovo |
+
+Per ogni voce di `increment` il massimo è `floor(initialMaximum × RenewalPercent / 100)`. Sono ammessi zeri in singole dimensioni e almeno una voce deve crescere. La prenotazione verifica `totalMaximum = initialMaximum + increment` su `Calls, Attempts, Objects, Bytes, Millis`, addebitando anche la spesa precedente alla fence di rinnovo. La sessione termina alla prima fra la fine della durata approvata, `expiresAt` della proposta, la scadenza del mandato e `started + LifetimeSeconds` del piano. La deadline del poll conserva il valore originario.
+
+La transazione confronta `expectedSeq`, consuma il diritto per `(analysisId, incidentId)` e registra sessione e ripresa insieme. Un secondo esaurimento riapre lo stesso incidente. Un’ulteriore approvazione autorizzata riceve `ANALYSIS_RENEWAL_USED`. Il verificatore attesta la decisione del titolare per `renew-budget`. Il ledger conserva `requestHash, decisionRef, grantRef` e i riferimenti alla proposta. Prima del dispatch riparte il controllo del mandato.
+
+La migrazione additiva 020 riconosce il primo rinnovo già presente nella 019 e conserva anche le eventuali sessioni successive. Il predecessore esatto è `563acd3e506230e205eeb0ae9a858d52bbaf6ac8`. Per il ritorno si usa il suo profilo di configurazione e la procedura di arresto del dispatch descritta sopra. Il predecessore può leggere nelle colonne originarie la fence e il residuo spendibile, limitato al massimo di sessione che la 019 sa rappresentare. Le sue scritture di prima sessione consumano il diritto anche sulla 020.
+
+| PET PostgreSQL | Verifica |
+|---|---|
+| `MCP-55A-01` | Due approvazioni della stessa sequenza, una sola sessione e un solo avanzamento |
+| `MCP-55A-02` | Esaurimento dopo la ripresa, lettura da un nuovo pool, storico 019 e unicità attraverso la migrazione |
+| `MCP-55A-03` | Arrotondamento per difetto in cinque dimensioni, incremento minimo positivo, durata, scadenze e override D-065 |
+| `MCP-55A-04` | Pressione, revoca durante l’approvazione, prenotazione owner incerta, prova o sequenza invalida |
+
+I PET `MCP-50U-01`–`16` coprono file e hash, configurazione, deadline, alias, claim concorrenti, lease, fixture SDK a 18 colonne, crash, rinnovo HUMAN, autenticazione del listener, ritorno 017→018→50t→candidato, pausa/revoca, disattivazione, ripresa, schemi e retry finiti di issue. Le fixture usano riferimenti sintetici. La fixture SDK misura separatamente il percorso pubblico e le chiamate interne; il PET del listener verifica mTLS su loopback.
+
+### Addendum T2 del task-50v · D-058, D-065, D-082
+
+L’installazione configura i valori interi seguenti e li rilegge al riavvio. Il job di manutenzione legge i TTL a ogni invocazione.
+
+| Parametro | Default | Intervallo |
+|---|---:|---:|
+| `OUF_ANALYSIS_STATUS_SECONDS` | 30 s | 5–300 s |
+| `OUF_ANALYSIS_RESERVATION_DAYS` | 30 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_ATTEMPT_DAYS` | 90 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_SNAPSHOT_DAYS` | 30 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_READ_DAYS` | 90 giorni | 1–3650 giorni |
+
+**Mandato in pausa.** Il worker interroga `POST /internal/analysis/v1/mandates/status` con la credenziale del workload e i soli campi `mandateId` e `generation`. Ogni turno serve al massimo un controllo e una prenotazione owner. Il primo controllo è dovuto all’ingresso in backoff, in attesa di capacità, di osservazione owner o di riconciliazione. PostgreSQL assegna una lease di 5 s e il client usa un timeout di 3 s. Token, versione e generazione proteggono il commit. Un riscontro ACTIVE successivo a `not_before` abilita una sola prenotazione entro una cadenza. Un crash che supera questa finestra richiede un nuovo controllo. Il Gateway resta responsabile dell’autorizzazione a ogni dispatch.
+
+| Evento | Scope e transizione |
+|---|---|
+| REVOKED o 404 `ANALYSIS_MANDATE_UNKNOWN` | Intero mandato, `BLOCKED / ANALYSIS_MANDATE_REVOKED`. Si conservano checkpoint, prove e addebiti. |
+| EXPIRED o scadenza locale del mandato | Intero mandato, `BLOCKED / ANALYSIS_MANDATE_EXPIRED`. |
+| 409 stale, risposta con identità, generazione o scadenza incoerente, drift di profilo, manifest o policy | Intero piano, `ANALYSIS_SCOPE_DRIFT`. |
+| Trasporto del poll indisponibile, 429, 502, 503 o 504 | Rimane attivo il vincolo sulla prenotazione. Il controllo segue la cadenza, il backoff e Retry-After. La deadline originaria delimita l’attesa del Gateway e produce `WAIT_DEADLINE_EXPIRED`. |
+| Errore permanente di discovery o evidenza owner invalida | Si conserva l’eventuale requestId e si scrive `BLOCKED` con motivo per ogni ordinale dell’intento. Il worker avanza gli intenti indipendenti. Il riepilogo con esiti misti chiude `PARTIAL`. Se tutti gli ordinali sono bloccati vale lo stato B `BLOCKED`. |
+| Lettura a lotti respinta | Divisione del lotto multi-intento in letture più piccole. Il singolo intento fallito conserva il motivo per tutti i suoi ordinali. Un rifiuto owner di una pagina preview interessa gli ordinali di quella pagina. Una risposta incompatibile col profilo fissato ferma il piano. |
+| Effetto incerto | La riconciliazione ammessa riusa la chiave owner. Se richiede intervento, la quarantena conserva il lavoro, la prenotazione e l’eventuale slot owner. Gli altri gruppi restano soggetti alla capacità effettivamente disponibile. |
+| Massimo tentativi per operazione e intento | Quarantena dell’elemento di coda, un incidente OPEN per piano e chiave di scope. Gli ordinali ricevono `ANALYSIS_BUDGET_EXHAUSTED`. La quarantena protegge il lavoro originario per la riconciliazione. |
+| Limite cumulativo o scadenza del budget del piano | Quarantena di piano con l’incidente stabile 018. Una nuova sessione governata verifica anche il mandato prima del primo invio. |
+
+**Rilascio 018→019 (D-072, D-080).** Eseguire `migrate` con il normale ruolo applicativo proprietario dello schema. La 019 registra il checksum, aggiunge i dati di stato e gli archivi e crea la vista di eleggibilità. Il percorso amministrativo `MigrateSemanticReprocessing` è vincolato alla transizione 012→013.
+
+Prima di avviare il job di retention, eseguire il comando seguente dalla radice del sorgente del candidato, con la connessione amministrativa autorizzata puntata allo stesso database.
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -f internal/adapter/postgres/maintenance/019_analysis_run_retention.sql
+```
+
+Distribuire questo file SQL insieme al candidato. La transazione verifica la presenza della 019 e il ruolo NOLOGIN, prende lo stesso lock delle migrazioni, installa il corpo della funzione e ne trasferisce la proprietà a `ouf_mcp_retention_owner`. Solo questo ruolo riceve i privilegi di tabella necessari alla pulizia. Il ruolo di manutenzione riceve `EXECUTE`. L’amministratore effettua il trasferimento direttamente, senza concedere membership al ruolo applicativo. La fase può essere ripetuta. Se manca o fallisce alla prima installazione, il piano resta leggibile e il job di pulizia fallisce conservando i dati. La readiness dello schema certifica solo la fase ordinaria.
+
+**Retention.** Il job monouso `go run ./internal/analysisworker/retention` usa `MCP_DATABASE_URL` con il ruolo di manutenzione e `OUF_ANALYSIS_WORKLOAD`. Lo scheduler d’installazione ne stabilisce la frequenza in base ai volumi. Ogni invocazione elimina al massimo 256 righe per tabella, in una transazione. Per la riga condivisa prenotazione/tentativo vale il maggiore dei due TTL. Devono essere abbastanza vecchi sia l’ultimo snapshot del piano sia la riga candidata. I piani RUNNING e ISSUING, i BLOCKED con coda o ordinali pendenti e quelli con lavori owner aperti, effetti da riconciliare o quarantene conservano il grafo. Le letture hanno precedenza nella pulizia. L’ultimo snapshot e quelli con letture ancora in retention restano consultabili. Gli esiti ordinali, le sessioni e le chiavi di deduplicazione restano persistiti.
+
+**Incidenti di dipendenza.** La vista protetta `analysis_dependency_counts` espone episodio, scope opaco, dipendenza, causa e conteggi distinti di piani, coppie piano–intento e coppie piano–ordinale. Lo scope include issuer, workload, servizio e tenant. Per il rate limit comprende anche il soggetto, perché il codice owner da solo non dimostra una quota condivisa fra soggetti. La correlazione usa i codici espliciti di indisponibilità dell’autorità Gateway e di indisponibilità o rate limit del lotto Semantic. La sola pressione locale non identifica un guasto condiviso. Per la preview il gruppo semantico deve ancora essere identificato. Le osservazioni ripetute conservano gli stessi conteggi. L’episodio si chiude dopo riscontri positivi su tutti gli ordinali interessati. Il dettaglio del lavoro in quarantena resta nell’archivio protetto. La vista degli incidenti espone riferimenti e conteggi.
+
+**PET e ritorno.** `MCP-50V-01` verifica il client fittizio. `02–03` coprono osservatori concorrenti, esiti terminali, indisponibilità e deadline. `04–06` coprono indipendenza, quarantena e correlazione fra piani. `07` verifica i TTL e gli snapshot referenziati. `08` estende la prova D-080 in `scripts/predecessor_return/run.sh` con `PREDECESSOR=fbeb46eeb9e9499a544e34220505b1c2a711581e` e immagini locali esatte. `09` verifica i limiti d’installazione. `MCP-50V-10` verifica la seconda installazione amministrativa, il proprietario, i privilegi e la pulizia effettiva come ruolo di manutenzione. Il ciclo D-080 controlla anche i privilegi del ruolo applicativo di runtime. Per il ritorno si fermano worker, dispatch e job di pulizia secondo la procedura 50u. Lo schema 019 e gli archivi restano installati. Il predecessore legge e scrive lo schema 018 con i propri gate.
+
+### Rinnovo tramite THS (021)
+
+Il processo `analysis-reservations` serve anche le due POST `/internal/analysis/v1/renewals/read` e `/internal/analysis/v1/renewals/decide`. Usa la CA e il SAN URI Gateway già richiesti dal listener TLS. Il Gateway attesta i byte inoltrati su quel canale. MCP controlla emittente, destinatario, client, soggetto, tenant, scopo, scadenza e SHA-256 del corpo. La chiave HMAC resta al Gateway, che verifica nuovamente la firma su `renewal-check`.
+
+| Parametro | Valore ammesso |
+|---|---|
+| `OUF_ANALYSIS_RENEWAL_REVIEW_BASE` | URL HTTPS della scheda, con percorso esatto `/trusted-human/analysis-renewal/` e slash finale. |
+| `OUF_ANALYSIS_RENEWAL_CHECK_ENDPOINT` | URL HTTPS completo con percorso `/internal/analysis/v1/mandates/renewal-check`. Entrambi gli URL escludono credenziali, query e frammenti. |
+| `OUF_ANALYSIS_RENEWAL_ISSUER`, `OUF_ANALYSIS_RENEWAL_AUDIENCE` | Valori esatti di `iss` e `aud` della delega. |
+| `OUF_ANALYSIS_WORKLOAD`, `OUF_ANALYSIS_RENEWAL_THS_CLIENT` | Client distinti per il servizio MCP e la THS, identici ai valori configurati nel Gateway. |
+| `OUF_ANALYSIS_RENEWAL_BODY_BYTES` | Limite del corpo sulle rotte MCP, da 1 a 131072 byte, default 131072. |
+| `OUF_ANALYSIS_RENEWAL_PROPOSAL_SECONDS` | Intero opzionale da 1 a 3600, default 3600. Ogni scadenza è limitata anche dal mandato e dalla durata assoluta del piano. `RenewalSeconds` regola la durata della sessione concessa. |
+
+Configurare gli stessi parametri di canale nel processo MCP e nel listener. Con un profilo incompleto le rotte restituiscono `503 ANALYSIS_AUTHORITY_UNAVAILABLE`. Il client riusa le credenziali SERVICE di installazione. Il flusso client credentials richiede lo scope `ouf.analysis.mandate.renewal-check` con una propria cache. Un bearer statico, se configurato, deve già possedere questo scope. La verifica IAM corrente appartiene al Gateway.
+
+La 021 aggiunge lo storico delle proposte e delle ricevute. Un incidente aperto dal predecessore può materializzare la propria prima proposta alla lettura autorizzata dello stato. Il materiale di revisione conserva basename e numero di colonne quando la preview owner espone `fileName`. Per i profili privi di questo metadato usa il numero di colonne. Un esaurimento precedente all'emissione del mandato o con tutte le dimensioni di incremento a zero mantiene l'incidente aperto.
+
+Il rinnovo acquisisce fuori transazione la prova legata al comando. Al rientro ricontrolla ricevuta, versione, mandato, fence, budget e scadenza. Le tre decisioni persistono la prova e la ricevuta con i loro effetti. La chiusura conserva la quarantena per intento e le prenotazioni da riconciliare. Lo store controlla la scadenza a ogni accesso. Un turno libero del worker di controllo materializza anche la scadenza di una proposta senza richieste THS.
+
+Le prove `MCP-55B-01…05` coprono il catalogo, il canale Gateway, revisione, replay, concorrenza, esiti indipendenti e quarantena. Richiamano `PET-mcp-057` e `PET-mcp-163`. Per le prove PostgreSQL impostare `MCP_TEST_DATABASE_URL` su un database di test dedicato.

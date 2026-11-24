@@ -274,7 +274,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 			delay := []time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(task.Attempts-1, 4)]
 			delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
 			f.NotBefore = time.Now().Add(delay)
-			if requested := retryAfter(r.Problem.RetryAfter, time.Now()); requested.After(f.NotBefore) {
+			if requested := OwnerRetryAfter(r.Problem.RetryAfter, time.Now()); requested.After(f.NotBefore) {
 				f.NotBefore = requested
 			}
 			if task.Attempts < MaxRetryAttempts && f.NotBefore.Before(task.FirstAttemptAt.Add(24*time.Hour)) {
@@ -311,7 +311,7 @@ type OwnerDenial struct{ ReasonCode, CapabilityID string }
 
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 
-func retryAfter(value string, now time.Time) time.Time {
+func OwnerRetryAfter(value string, now time.Time) time.Time {
 	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 {
 		n = min(n, 86401)
 		return now.Add(time.Duration(n) * time.Second)

@@ -367,9 +367,19 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			state := nextstep.ObservedState(obs)
 			stateChanged := obs["unchanged"] != true && obs["changed"] != false && ref.State != "" && state != "" && ref.State != state
 			invalidHandoff := ref.Decision == "CHOOSE_FILE" && (obs["legacy"] == true || obs["waitUntil"] == nil)
-			changed := nextstep.Version(obs) != ref.Version || stateChanged || invalidHandoff
+			version := nextstep.Version(obs)
+			if ref.Read == "source.analysis.read" {
+				version, _ = obs["changeSeq"].(string)
+			}
+			changed := version != ref.Version || stateChanged || invalidHandoff
 			if refreshLink() && (obs["unchanged"] == true || obs["changed"] == false) && len(args) != len(ref.Args) {
 				return waitResult(changed, obs, ref.Refresh())
+			}
+			if changed && ref.Read == "source.analysis.read" {
+				if next, ok := body["next"].(nextstep.Object); ok {
+					return waitResult(true, obs, next)
+				}
+				return stop("WAIT_OBSERVATION_REQUIRED")
 			}
 			if changed || refreshLink() {
 				if ref.Decision == "CHOOSE_FILE" && state == "PENDING" && obs["legacy"] != true {

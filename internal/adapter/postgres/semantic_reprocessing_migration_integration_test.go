@@ -27,6 +27,11 @@ type migrationFixture struct {
 
 func nativeMigrationFixture(t *testing.T) migrationFixture {
 	t.Helper()
+	return migrationFixtureBefore(t, "013_")
+}
+
+func migrationFixtureBefore(t *testing.T, next string) migrationFixture {
+	t.Helper()
 	atomicMigrationFixture.Lock()
 	t.Cleanup(atomicMigrationFixture.Unlock)
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
@@ -71,9 +76,7 @@ func nativeMigrationFixture(t *testing.T) migrationFixture {
 		t.Fatal(e)
 	}
 	for _, entry := range entries {
-		// This fixture is the database before transition 13, not every
-		// migration except 13. Future migrations must not be pre-applied.
-		if entry.Name() >= "013_" {
+		if entry.Name() >= next {
 			continue
 		}
 		raw, e := migrationFiles.ReadFile("migrations/" + entry.Name())

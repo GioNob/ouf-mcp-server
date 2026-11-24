@@ -46,6 +46,17 @@ func main() {
 		addr := flags.String("http", ":8080", "HTTP listen address")
 		_ = flags.Parse(os.Args[2:])
 		runServer(ctx, logger, databaseURL, *addr)
+	case "analysis-worker", "analysis-reservations":
+		var err error
+		if os.Args[1] == "analysis-worker" {
+			err = runAnalysisWorker(ctx, logger, databaseURL)
+		} else {
+			err = serveAnalysisReservations(ctx, databaseURL)
+		}
+		if err != nil {
+			logger.Error("analysis process stopped", "command", os.Args[1], "code", "ANALYSIS_PROCESS_UNAVAILABLE")
+			os.Exit(1)
+		}
 	case "maintenance-worker":
 		flags := flag.NewFlagSet("maintenance-worker", flag.ExitOnError)
 		once := flags.Bool("once", false, "run one maintenance cycle")
@@ -311,7 +322,7 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
-	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	service := &orchestration.Service{AnalysisMandates: gatewayClient, RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	if err := configureReprocessing(service, checksum); err != nil {
 		logger.Error("invalid semantic reprocessing configuration")
 		os.Exit(1)
