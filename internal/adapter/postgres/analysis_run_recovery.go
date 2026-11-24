@@ -97,23 +97,37 @@ func (s *Store) isolateUncertainWork(ctx context.Context, c analysis.Reservation
 // The verifier runs without a transaction. Recheck scope, version, pressure,
 // outstanding effects and expiry under the same locks as first admission.
 func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity, want analysis.RunRenewal, authority analysis.RunRenewalAuthority) error {
-	if authority == nil || actor.ActorType != "HUMAN" || actor.Delegation == "" || strings.TrimSpace(want.Reason) == "" || len(want.Reason) > 256 {
+	if authority == nil || actor.ActorType != "HUMAN" || actor.Delegation == "" {
 		return orchestration.ErrUnauthorized
 	}
 	r, err := s.ReadRun(ctx, analysis.IdentityScope(actor), actor.Issuer, want.AnalysisID)
 	if err != nil {
 		return err
 	}
-	if !(analysis.RunCost{Calls: 1, Attempts: 1, Objects: 1, Bytes: 1, Millis: 1}).Fits(want.Maximum) || !want.Maximum.Fits(r.Limits.Maximum) ||
-		want.Seconds < 1 || want.Seconds > r.Limits.LifetimeSeconds || want.ExpectedSeq != r.Seq || r.Reason != "ANALYSIS_BUDGET_EXHAUSTED" ||
-		want.IncidentID != analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}) {
+	if r.ID() != want.AnalysisID || r.Scope != analysis.IdentityScope(actor) || r.Issuer != actor.Issuer {
+		return analysis.ErrRunDrift
+	}
+	if strings.TrimSpace(want.Reason) == "" || len(want.Reason) > 256 || want.ExpectedSeq < 0 || want.ProposalVersion < 1 || analysis.ValidateID(want.ProposalHash) != nil ||
+		strings.ToLower(want.ProposalHash) != want.ProposalHash || want.Increment == (analysis.RunCost{}) || !want.Increment.Fits(r.Limits.RenewalCeiling()) ||
+		want.Seconds < 1 || want.Seconds > r.Limits.RenewalDuration() || want.ExpiresAt.IsZero() {
+		return analysis.ErrInvalid
+	}
+	if want.IncidentID != analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}) {
 		return analysis.ErrFenced
 	}
-	decision, err := authority.AuthorizeRunRenewal(ctx, actor, r, want)
+	want.ExpiresAt = want.ExpiresAt.UTC()
+	check := analysis.RunRenewalCheck{RunRenewal: want, Contract: "ouf.analysis.authority-check.v1", Action: "renew-budget",
+		Issuer: r.Issuer, Scope: r.Scope, Workload: r.Workload, MandateID: r.Mandate.ID, Generation: r.Mandate.Generation, Fence: r.Fence}
+	hash, err := check.Hash()
 	if err != nil {
 		return err
 	}
-	if decision.Ref == "" || len(decision.Ref) > 256 {
+	decision, err := authority.AuthorizeRunRenewal(ctx, actor, check)
+	if err != nil {
+		return err
+	}
+	if decision.RequestHash != hash || strings.TrimSpace(decision.DecisionRef) == "" || len(decision.DecisionRef) > 256 ||
+		strings.TrimSpace(decision.GrantRef) == "" || len(decision.GrantRef) > 256 {
 		return orchestration.ErrUnauthorized
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -133,12 +147,34 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if err != nil {
 		return err
 	}
-	if current.Seq != want.ExpectedSeq || current.MandateState != "ACTIVE" || current.State != "BLOCKED" || current.Reason != "ANALYSIS_BUDGET_EXHAUSTED" || !r.Mandate.Expires.After(now) ||
-		!decision.ValidUntil.After(now) || current.RunSpec != r.RunSpec {
+	if current.MandateState == "EXPIRED" || !current.Mandate.Expires.After(now) {
+		return analysis.ErrMandateExpired
+	}
+	if current.MandateState != "ACTIVE" || !decision.ValidUntil.After(now) {
+		return orchestration.ErrUnauthorized
+	}
+	if current.RunSpec != r.RunSpec || current.Mandate.ID != check.MandateID || current.Mandate.Generation != check.Generation {
 		return analysis.ErrFenced
 	}
+	var used bool
+	err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_run_budget_session
+		where analysis_id=$1 and incident_id=$2 and renewal_used)`, r.ID(), want.IncidentID).Scan(&used)
+	if err != nil {
+		return err
+	}
+	if used {
+		return analysis.ErrRenewalUsed
+	}
+	if r.Seq != want.ExpectedSeq || current.Seq != want.ExpectedSeq || current.Fence != check.Fence ||
+		current.State != "BLOCKED" || current.Reason != "ANALYSIS_BUDGET_EXHAUSTED" {
+		return analysis.ErrFenced
+	}
+	if current.NotBefore.After(now) {
+		return analysis.ErrRunPressure
+	}
 	var busy bool
-	err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_run_attempt where analysis_id=$1 and (proof_until>$2 or (finished_at is null and superseded_at is null)))`, r.ID(), now).Scan(&busy)
+	err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_run_attempt where analysis_id=$1 and (proof_until>$2 or (finished_at is null and superseded_at is null)))
+		or exists(select 1 from ouf_mcp.analysis_group_quarantine where analysis_id=$1 and reason='ANALYSIS_EFFECT_UNCERTAIN' and state<>'RESOLVED')`, r.ID(), now).Scan(&busy)
 	if err != nil {
 		return err
 	}
@@ -155,35 +191,88 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if plans >= r.Limits.ActivePlans || tenantPlans >= r.Limits.Shared.TenantQueue || sourcePlans >= r.Limits.Shared.SourceQueue {
 		return analysis.ErrRunPressure
 	}
-	maximum, _ := json.Marshal(want.Maximum)
-	_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_run_budget_session(analysis_id,incident_id,expected_seq,actor,reason,decision_ref,maximum,started,ends_at,first_fence)
-		select $1,$2,$3,$4,$5,$6,$7,$8,least($8::timestamptz+$9::int*interval '1 second',$10),(select fence from ouf_mcp.analysis_run where analysis_id=$1)
-		from ouf_mcp.analysis_run_incident where analysis_id=$1 and incident_id=$2 and state='OPEN'`,
-		r.ID(), want.IncidentID, want.ExpectedSeq, actor.PrincipalID, want.Reason, decision.Ref, maximum, now, want.Seconds, r.Mandate.Expires)
-	if err != nil {
-		return err
-	}
-	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run r set budget_end=s.ends_at,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,seq=r.seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3
-		from ouf_mcp.analysis_run_budget_session s where r.analysis_id=$1 and s.analysis_id=r.analysis_id and s.expected_seq=$2 and r.seq=$2`, r.ID(), want.ExpectedSeq, now)
+	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run_incident set state='RECOVERING'
+		where analysis_id=$1 and incident_id=$2 and state='OPEN'`, r.ID(), want.IncidentID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return analysis.ErrFenced
 	}
-	_, err = tx.Exec(ctx, "update ouf_mcp.analysis_run_incident set state='RECOVERING' where analysis_id=$1", r.ID())
+	end := want.SessionEnd(current, now)
+	if !end.After(now) {
+		return analysis.ErrRunExhausted
+	}
+	if err = insertRenewalSession(ctx, tx, current, want, decision, now, end); err != nil {
+		return err
+	}
+	tag, err = tx.Exec(ctx, `update ouf_mcp.analysis_run set budget_end=$4,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,
+		seq=seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3 where analysis_id=$1 and seq=$2`, r.ID(), want.ExpectedSeq, now, end)
 	if err != nil {
 		return err
 	}
+	if tag.RowsAffected() != 1 {
+		return analysis.ErrFenced
+	}
+	now, err = s.runClock(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !decision.ValidUntil.After(now) {
+		return orchestration.ErrUnauthorized
+	}
+	if !current.Mandate.Expires.After(now) {
+		return analysis.ErrMandateExpired
+	}
+	if !end.After(now) {
+		return analysis.ErrRunExhausted
+	}
 	return tx.Commit(ctx)
+}
+
+func insertRenewalSession(ctx context.Context, tx pgx.Tx, r analysis.RunRecord, want analysis.RunRenewal, decision analysis.RenewalDecision, now, end time.Time) error {
+	spent, err := runSpend(ctx, tx, r.ID(), 0)
+	if err != nil {
+		return err
+	}
+	initial := r.Limits.Maximum
+	if !spent.Fits(initial) {
+		return analysis.ErrRunDrift
+	}
+	total := initial.Add(want.Increment)
+	// 019 counts only post-fence attempts and accepts at most the initial
+	// maximum per session. Give it the remaining allowance it can represent.
+	remaining := analysis.RunCost{
+		Calls:    min(initial.Calls, total.Calls-spent.Calls),
+		Attempts: min(initial.Attempts, total.Attempts-spent.Attempts),
+		Objects:  min(initial.Objects, total.Objects-spent.Objects),
+		Bytes:    min(initial.Bytes, total.Bytes-spent.Bytes),
+		Millis:   min(initial.Millis, total.Millis-spent.Millis),
+	}
+	legacyMaximum, _ := json.Marshal(remaining)
+	increment, _ := json.Marshal(want.Increment)
+	tag, err := tx.Exec(ctx, `insert into ouf_mcp.analysis_run_budget_session(analysis_id,incident_id,expected_seq,actor,reason,decision_ref,maximum,
+		started,ends_at,first_fence,request_hash,grant_ref,proposal_version,proposal_hash,increment)
+		select analysis_id,$2,seq,$4,$5,$6,$7,$8,$9,fence,$10,$11,$12,$13,$14 from ouf_mcp.analysis_run where analysis_id=$1 and seq=$3
+		on conflict (analysis_id,incident_id) where renewal_used do nothing`,
+		r.ID(), want.IncidentID, want.ExpectedSeq, r.Scope.Principal, want.Reason, decision.DecisionRef, legacyMaximum, now, end,
+		decision.RequestHash, decision.GrantRef, want.ProposalVersion, want.ProposalHash, increment)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return analysis.ErrRenewalUsed
+	}
+	return nil
 }
 
 func runSession(ctx context.Context, tx pgx.Tx, r analysis.RunRecord) (analysis.RunCost, int64, error) {
 	maximum := r.Limits.Maximum
 	var since int64
 	var raw []byte
-	err := tx.QueryRow(ctx, `select maximum,first_fence from ouf_mcp.analysis_run_budget_session
-		where analysis_id=$1 order by expected_seq desc limit 1`, r.ID()).Scan(&raw, &since)
+	var cumulative bool
+	err := tx.QueryRow(ctx, `select coalesce(increment,maximum),first_fence,increment is not null from ouf_mcp.analysis_run_budget_session
+		where analysis_id=$1 order by expected_seq desc limit 1`, r.ID()).Scan(&raw, &since, &cumulative)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return maximum, 0, nil
 	}
@@ -193,5 +282,20 @@ func runSession(ctx context.Context, tx pgx.Tx, r analysis.RunRecord) (analysis.
 	if err = json.Unmarshal(raw, &maximum); err != nil || !maximum.Fits(r.Limits.Maximum) {
 		return maximum, 0, analysis.ErrRunDrift
 	}
-	return maximum, since, nil
+	if cumulative {
+		if maximum == (analysis.RunCost{}) || !maximum.Fits(r.Limits.RenewalCeiling()) {
+			return maximum, 0, analysis.ErrRunDrift
+		}
+		return r.Limits.Maximum.Add(maximum), 0, nil
+	}
+	return maximum, since, nil // 019 admitted an independent post-fence session.
+}
+
+func runSpend(ctx context.Context, tx pgx.Tx, id string, firstFence int64) (analysis.RunCost, error) {
+	var spent analysis.RunCost
+	err := tx.QueryRow(ctx, `select coalesce(sum(coalesce((actual->>'Calls')::bigint,calls)),0),
+		coalesce(sum(attempts),0), coalesce(sum(coalesce((actual->>'Objects')::bigint,objects)),0),
+		coalesce(sum(coalesce((actual->>'Bytes')::bigint,bytes)),0),coalesce(sum(coalesce((actual->>'Millis')::bigint,millis)),0)
+		from ouf_mcp.analysis_run_attempt where analysis_id=$1 and fence>$2`, id, firstFence).Scan(&spent.Calls, &spent.Attempts, &spent.Objects, &spent.Bytes, &spent.Millis)
+	return spent, err
 }

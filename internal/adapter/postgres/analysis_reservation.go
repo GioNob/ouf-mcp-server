@@ -208,18 +208,13 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 	} else if args.RequestID != "" {
 		return check, analysis.ErrInvalid
 	}
-	var spent analysis.RunCost
-	err = tx.QueryRow(ctx, `select coalesce(sum(coalesce((actual->>'Calls')::bigint,calls)),0),
-		coalesce(sum(attempts),0), coalesce(sum(coalesce((actual->>'Objects')::bigint,objects)),0),
-		coalesce(sum(coalesce((actual->>'Bytes')::bigint,bytes)),0),coalesce(sum(coalesce((actual->>'Millis')::bigint,millis)),0)
-		from ouf_mcp.analysis_run_attempt where analysis_id=$1 and fence>$2`, r.ID(), firstFence).Scan(&spent.Calls, &spent.Attempts, &spent.Objects, &spent.Bytes, &spent.Millis)
+	spent, err := runSpend(ctx, tx, r.ID(), firstFence)
 	if err != nil {
 		return check, err
 	}
 	maximum := work.Maximum
-	total := analysis.RunCost{Calls: spent.Calls + maximum.Calls, Attempts: spent.Attempts + 1, Objects: spent.Objects + maximum.Objects,
-		Bytes: spent.Bytes + maximum.Bytes, Millis: spent.Millis + maximum.Millis}
-	if !maximum.Fits(r.Limits.Maximum) || !total.Fits(sessionMaximum) || now.Add(duration).After(r.BudgetEnd) {
+	total := spent.Add(maximum)
+	if !total.Fits(sessionMaximum) || now.Add(duration).After(r.BudgetEnd) {
 		if err = exhaustRun(ctx, tx, r); err != nil {
 			return check, err
 		}

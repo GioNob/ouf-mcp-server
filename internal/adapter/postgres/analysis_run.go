@@ -10,12 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const runColumns = "spec,mandate,started,deadline,budget_end,not_before,state,reason,seq,mandate_state"
+const runColumns = "spec,mandate,started,deadline,budget_end,not_before,state,reason,seq,mandate_state,fence"
 
 func scanRun(row pgx.Row) (analysis.RunRecord, error) {
 	var r analysis.RunRecord
 	var spec, mandate []byte
-	err := row.Scan(&spec, &mandate, &r.Started, &r.Deadline, &r.BudgetEnd, &r.NotBefore, &r.State, &r.Reason, &r.Seq, &r.MandateState)
+	err := row.Scan(&spec, &mandate, &r.Started, &r.Deadline, &r.BudgetEnd, &r.NotBefore, &r.State, &r.Reason, &r.Seq, &r.MandateState, &r.Fence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, analysis.ErrScope
 	}
@@ -182,7 +182,8 @@ func (s *Store) StopRun(ctx context.Context, r analysis.RunRecord, reason string
 	}
 	tag, err := s.pool.Exec(ctx, `update ouf_mcp.analysis_run set state='BLOCKED',reason=$2,seq=seq+1,mandate_state=case $2
 		when 'ANALYSIS_MANDATE_EXPIRED' then 'EXPIRED' when 'ANALYSIS_MANDATE_REVOKED' then 'REVOKED' else mandate_state end
-		where analysis_id=$1 and issuer=$3 and workload=$4 and tenant=$5 and subject=$6 and seq=$7 and state in ('ISSUING','RUNNING')`,
+		where analysis_id=$1 and issuer=$3 and workload=$4 and tenant=$5 and subject=$6 and seq=$7
+		and (state in ('ISSUING','RUNNING') or (state='BLOCKED' and reason='ANALYSIS_BUDGET_EXHAUSTED'))`,
 		r.ID(), reason, r.Issuer, r.Scope.Service, r.Scope.Tenant, r.Scope.Principal, r.Seq)
 	if err == nil && tag.RowsAffected() != 1 {
 		return analysis.ErrFenced
