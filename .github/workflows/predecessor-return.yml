@@ -1,0 +1,87 @@
+name: MCP predecessor return
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  predecessor-return:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PREDECESSOR_COMMIT: ${{ vars.MCP_PREDECESSOR_COMMIT || '843d22059e03bcd58569fff9960bb46ae552b2b2' }}
+      PREDECESSOR_TESTED_COMMIT: ${{ vars.MCP_PREDECESSOR_TESTED_COMMIT || 'b3d48e541f688378a3dd2ce7e0839e4607748fac' }}
+      PREDECESSOR_RUN: ${{ vars.MCP_PREDECESSOR_RUN || '44904141061' }}
+      PREDECESSOR_ARTIFACT_ID: ${{ vars.MCP_PREDECESSOR_ARTIFACT_ID || '14707905199' }}
+      PREDECESSOR_ZIP_SHA256: ${{ vars.MCP_PREDECESSOR_ZIP_SHA256 || 'bcb6002c844e2e6e3c997f5e3bb10b79f63231ca49d3c1a66de952254b15a3ae' }}
+      PREDECESSOR_IMAGE_ID: ${{ vars.MCP_PREDECESSOR_IMAGE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Download and verify the governed predecessor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PREDECESSOR_COMMIT" =~ ^[0-9a-f]{40}$ &&
+                  "$PREDECESSOR_TESTED_COMMIT" =~ ^[0-9a-f]{40}$ &&
+                  "$PREDECESSOR_RUN" =~ ^[1-9][0-9]*$ &&
+                  "$PREDECESSOR_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
+                  "$PREDECESSOR_ZIP_SHA256" =~ ^[0-9a-f]{64}$ &&
+                  "$PREDECESSOR_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::D-080 requires the MCP_PREDECESSOR_* pins, including MCP_PREDECESSOR_IMAGE_ID from image-id.txt."
+            exit 1
+          fi
+          artifact="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$PREDECESSOR_ARTIFACT_ID"
+          work=$(mktemp -d "$RUNNER_TEMP/mcp-predecessor.XXXXXX")
+          trap 'rm -rf -- "$work"' EXIT
+          github_api() {
+            curl --fail --silent --show-error --connect-timeout 10 --retry 3 --retry-max-time 90 \
+              --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' "$@"
+          }
+          github_api --max-time 30 "$artifact" --output "$work/metadata.json"
+          if ! jq -e --arg id "$PREDECESSOR_ARTIFACT_ID" --arg run "$PREDECESSOR_RUN" \
+              --arg commit "$PREDECESSOR_COMMIT" '
+                (.id | tostring) == $id and (.workflow_run.id | tostring) == $run and
+                .workflow_run.head_sha == $commit and .expired == false and
+                .name == ("acquisition-mcp-image-" + $run)
+              ' "$work/metadata.json" >/dev/null; then
+            echo "::error::The artifact must be the unexpired acquisition image of the pinned run and commit."
+            exit 1
+          fi
+          github_api --location --max-time 180 "$artifact/zip" --output "$work/predecessor.zip"
+          printf '%s  %s\n' "$PREDECESSOR_ZIP_SHA256" "$work/predecessor.zip" | sha256sum --check --status || {
+            echo "::error::Predecessor artifact ZIP SHA-256 mismatch."
+            exit 1
+          }
+          if [[ "$(unzip -p "$work/predecessor.zip" source-commit.txt)" != "$PREDECESSOR_TESTED_COMMIT" ||
+                "$(unzip -p "$work/predecessor.zip" image-id.txt)" != "$PREDECESSOR_IMAGE_ID" ]]; then
+            echo "::error::Predecessor artifact manifest does not match the pinned tested commit and image ID."
+            exit 1
+          fi
+          unzip -p "$work/predecessor.zip" image.tar.gz | docker load
+          if [[ "$(docker image inspect --format '{{.Id}}' "$PREDECESSOR_IMAGE_ID")" != "$PREDECESSOR_IMAGE_ID" ]]; then
+            echo "::error::Loaded Docker image ID does not match the pinned predecessor."
+            exit 1
+          fi
+          printf 'OLD_IMAGE=%s\nPREDECESSOR=%s\n' "$PREDECESSOR_IMAGE_ID" "$PREDECESSOR_COMMIT" >> "$GITHUB_ENV"
+          printf 'Predecessor source `%s` · tested commit `%s` · run `%s` · artifact `%s` · ZIP SHA-256 `%s` · image `%s`\n\n' \
+            "$PREDECESSOR_COMMIT" "$PREDECESSOR_TESTED_COMMIT" "$PREDECESSOR_RUN" "$PREDECESSOR_ARTIFACT_ID" \
+            "$PREDECESSOR_ZIP_SHA256" "$PREDECESSOR_IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build candidate HEAD
+        run: |
+          set -euo pipefail
+          docker build -t d080-candidate .
+          new=$(docker image inspect --format '{{.Id}}' d080-candidate)
+          printf 'NEW_IMAGE=%s\n' "$new" >> "$GITHUB_ENV"
+          printf 'Candidate `%s` · `%s`\n' "$(git rev-parse HEAD)" "$new" >> "$GITHUB_STEP_SUMMARY"
+          docker pull postgres:17
+          docker pull python:3.12-alpine
+      - name: Restart the exact predecessor on candidate writes
+        run: bash scripts/predecessor_return/run.sh

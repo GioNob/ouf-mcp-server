@@ -110,11 +110,28 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	if err != nil {
 		return nil, fmt.Errorf("load capability manifest: %w", err)
 	}
-	server := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs.", Logger: logger})
+	sdk := mcp.NewServer(&mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}, Instructions: "Governed OUF capabilities only. No SQL or arbitrary network access. Operational awareness exposes bounded semantic state, never raw logs. " + manifest.FollowNext, Logger: logger})
+	var installationKey []byte
+	if service != nil {
+		installationKey = service.FingerprintKey
+	}
+	server, err := newWorkflowServer(sdk, snapshot, installationKey)
+	if err != nil {
+		return nil, err
+	}
+	if service != nil {
+		if err := server.bindTHSLinks(service); err != nil {
+			return nil, err
+		}
+	}
 	for _, capability := range snapshot.ToolEligible() {
+		if capability.ToolName == "ouf.wait" {
+			server.registerWait(capability)
+			continue
+		}
 		if capability.ToolName == "source.file.upload" {
 			if service != nil && pickerURL != "" {
-				registerPickerUploadWidget(server, pickerURL)
+				registerPickerUploadWidget(sdk, pickerURL)
 				registerPickerUploadTool(server, capability, snapshot, service, pickerURL)
 				registerPickerHandoffStatusTool(server, capability, snapshot, service)
 			} else if service != nil && originProbe {
@@ -124,26 +141,28 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			}
 			continue
 		}
-		if isSourceRevisionCapability(capability.CapabilityID) {
-			registerSourceRevisionTool(server, capability, snapshot, service)
+		if isValueTypeTool(capability.ToolName) {
+			registerValueTypeTool(server, capability, snapshot, service)
+		} else if capability.ToolName == "source.onboarding.revision.read" {
+			registerSourceRevisionRead(server, capability, snapshot, service)
 		} else if service == nil {
 			registerUnavailableTool(server, capability)
 		} else {
 			registerGovernedTool(server, capability, snapshot, service)
 		}
 	}
-	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
+	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return sdk }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes, PropagateRequestCancellation: true})
 	return modernOnly(streamable), nil
 }
 
-func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, pickerURL string) {
+func registerPickerUploadTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, pickerURL string) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"properties":{}}`), &schema); err != nil {
 		panic(err)
 	}
-	mcp.AddTool(server, &mcp.Tool{
+	addWorkflowTool(server, &mcp.Tool{
 		Name:        "source.file.upload",
-		Description: "Open the governed OUF file picker for an authenticated human. The user chooses a local file; OUF checks its format and reports unsupported formats. MCP Apps hosts can request a chat follow-up; on other MCP clients call source.file.upload.status with the returned handoffId after the user completes the picker. No chat attachment is used.",
+		Description: "Open the governed OUF file picker for an authenticated human. The user chooses a local file; OUF checks its format and reports unsupported formats. The handoffId identifies the status read while the user chooses a file.",
 		InputSchema: &schema,
 		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI, "visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
@@ -154,18 +173,18 @@ func registerPickerUploadTool(server *mcp.Server, capability manifest.Capability
 		id := uuid.NewString()
 		url := pickerURL + "?handoff=" + id
 		result := map[string]any{"status": "AWAITING_FILE_SELECTION", "pickerUrl": url, "handoffId": id}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un file. OUF verificherà il formato; al momento il caricamento gestisce CSV. Torna alla chat dopo il caricamento; l'esito apparirà qui automaticamente."}}, StructuredContent: result}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Apri " + url + " e scegli un file. OUF verificherà il formato; al momento il caricamento gestisce CSV. La chat attenderà l’esito."}}, StructuredContent: result}, nil, nil
 	})
 }
 
 // This result read uses the upload capability's existing governed execution.
 // It has no widget template, so calling it cannot launch a second picker.
-func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerPickerHandoffStatusTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var schema jsonschema.Schema
-	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`), &schema); err != nil {
+	if err := json.Unmarshal([]byte(manifest.PickerStatusInputSchema), &schema); err != nil {
 		panic(err)
 	}
-	mcp.AddTool(server, &mcp.Tool{
+	addWorkflowTool(server, &mcp.Tool{
 		Name:        "source.file.upload.status",
 		Description: "Read the result of a first-party OUF file selection using the handoffId returned by source.file.upload. Call after the user completes the picker; PENDING means the file has not arrived yet. The owner is checked by OUF.",
 		InputSchema: &schema,
@@ -186,13 +205,13 @@ func registerPickerHandoffStatusTool(server *mcp.Server, capability manifest.Cap
 	})
 }
 
-func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
+func registerHostOriginProbe(server *workflowServer, inputSchema json.RawMessage) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(inputSchema, &schema); err != nil {
 		panic(err)
 	}
-	registerAttachmentProbeWidget(server)
-	mcp.AddTool(server, &mcp.Tool{
+	registerAttachmentProbeWidget(server.Server)
+	addWorkflowTool(server, &mcp.Tool{
 		Name:        "source.file.attachment_origin_probe",
 		Description: "Inspect the origin and file ID of a ChatGPT-hosted CSV attachment. Its read-only widget checks whether the browser can read the bytes, without sending them to OUF. Never creates an asset or returns the private URL.",
 		InputSchema: &schema,
@@ -220,13 +239,13 @@ func registerHostOriginProbe(server *mcp.Server, inputSchema json.RawMessage) {
 	})
 }
 
-func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
+func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
 		panic(err)
 	}
 	checksum, _ := snapshot.Checksum()
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema,
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema,
 		Meta: mcp.Meta{"openai/fileParams": []string{"file"}}},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			identity, ok := ctx.Value(identityKey{}).(requestIdentity)
@@ -264,8 +283,7 @@ func registerUploadTool(server *mcp.Server, c manifest.Capability, snapshot *man
 				return denial, nil, nil
 			}
 			if result.Problem != nil {
-				body, _ := json.Marshal(result.Problem)
-				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
+				return ownerProblemResult(result.Problem, result.Body), nil, nil
 			}
 			safe, ok := safeUploadAsset(result.Body)
 			if !ok {
@@ -293,13 +311,14 @@ func safeUploadAsset(body []byte) ([]byte, bool) {
 	return filtered, true
 }
 
+type responseDeadlineKey struct{}
 type identityKey struct{}
 type requestIdentity struct {
 	orchestration.Identity
 	CorrelationID, IdempotencyKey string
 }
 
-func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerGovernedTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	if strings.HasPrefix(c.ToolName, "source.analysis.") {
 		registerAnalysisTool(server, c, snapshot, service)
 		return
@@ -308,13 +327,23 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		registerAcquisitionReadTool(server, c, snapshot, service)
 		return
 	}
-	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.create" || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
+	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 		var inputSchema jsonschema.Schema
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
 		}
 		checksum, _ := snapshot.Checksum()
-		mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+			if inputSchema.Properties["analysisId"] != nil {
+				delete(input, "analysisId")
+			}
+			if key, ok := input["commandKey"].(string); ok && c.ToolName == "source.file.profile" {
+				if identity, present := ctx.Value(identityKey{}).(requestIdentity); present {
+					identity.IdempotencyKey = key
+					ctx = context.WithValue(ctx, identityKey{}, identity)
+				}
+				delete(input, "commandKey")
+			}
 			args, _ := json.Marshal(input)
 			maxObjects, maxBytes := 200, 1<<20
 			if strings.HasPrefix(c.ToolName, "semantic.") {
@@ -343,31 +372,31 @@ func registerGovernedTool(server *mcp.Server, c manifest.Capability, snapshot *m
 		panic(err)
 	}
 	checksum, _ := snapshot.Checksum()
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input relatedSearchInput) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input relatedSearchInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
 		return invoke(ctx, c, checksum, args, service, 200, 1<<20)
 	})
 }
 
-func registerObjectSearchTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerObjectSearchTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
 	checksum, _ := snapshot.Checksum()
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, input objectSearchInput) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, input objectSearchInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
 		return invoke(ctx, c, checksum, args, service, 100, 262144)
 	})
 }
 
-func registerOperationalTool(server *mcp.Server, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerOperationalTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
 	checksum, _ := snapshot.Checksum()
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
 		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
 	})
@@ -396,6 +425,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	argumentLimit := 65536
 	if c.CapabilityID == "ouf.managed-source.onboarding.create" || c.CapabilityID == "ouf.managed-source.onboarding.review.prepare" {
 		argumentLimit = 2 << 20
+	}
+	if len(args) > argumentLimit && orchestration.IsValueMapProposal(c.CapabilityID, args) {
+		argumentLimit = maxValueMapArgumentsBytes
 	}
 	if (isSemanticProposalCapability(c.CapabilityID) || isSourceReviewCapability(c.CapabilityID) || c.CapabilityID == "ouf.managed-source.onboarding.create") && len(args) > argumentLimit {
 		return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil, nil
@@ -472,14 +504,38 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		if c.CapabilityID == "ouf.onboarding.revision.prepare" && result.Problem.Status == http.StatusUnprocessableEntity && result.Problem.Code == "ONB_REVISION_CSV_INCOMPATIBLE" {
 			return revisionCSVError(result.Body), nil, nil
 		}
-		body, _ := json.Marshal(result.Problem)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
+		problem := result.Problem
+		if isValueTypeTool(c.ToolName) && (problem.Status == http.StatusBadRequest || problem.Status == http.StatusUnprocessableEntity) {
+			// Owner validation details can contain source data. Preserve the
+			// stable problem fields and the existing error envelope.
+			problem = &orchestration.Problem{Status: problem.Status, Code: problem.Code, RetryAfter: problem.RetryAfter}
+			if problem.Code == "" {
+				problem.Code = "OWNER_ARGUMENTS_REJECTED"
+			}
+		}
+		return ownerProblemResult(problem, result.Body), nil, nil
 	}
 	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
 	if isSourceRevisionCapability(c.CapabilityID) {
 		return content, json.RawMessage(result.Body), nil
 	}
 	return content, nil, nil
+}
+
+func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallToolResult {
+	var flags struct {
+		Retryable *bool `json:"retryable"`
+	}
+	_ = json.Unmarshal(body, &flags)
+	projected := struct {
+		orchestration.Problem
+		Retryable *bool `json:"retryable,omitempty"`
+	}{*problem, flags.Retryable}
+	if projected.Code == "" {
+		projected.Code = "OWNER_REQUEST_FAILED"
+	}
+	raw, _ := json.Marshal(projected)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}, IsError: true}
 }
 
 func errorResult(code string, retryable bool) *mcp.CallToolResult {
@@ -515,12 +571,12 @@ func revisionCSVError(body []byte) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(filtered)}}, IsError: true}
 }
 
-func registerUnavailableTool(server *mcp.Server, c manifest.Capability) {
+func registerUnavailableTool(server *workflowServer, c manifest.Capability) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(fmt.Sprintf("validated schema for %s cannot be decoded: %v", c.ToolName, err))
 	}
-	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, any, error) {
 		body, _ := json.Marshal(unavailableResult{Code: "MCP_1A_BACKEND_NOT_BOUND", Retryable: false})
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}, IsError: true}, nil, nil
 	})
@@ -576,6 +632,8 @@ func modernOnly(next http.Handler) http.Handler {
 			return
 		}
 		identity.Identity.Claims = claims
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
+		ctx := context.WithValue(r.Context(), identityKey{}, identity)
+		ctx = context.WithValue(ctx, responseDeadlineKey{}, http.NewResponseController(w).SetWriteDeadline)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

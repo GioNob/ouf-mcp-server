@@ -125,6 +125,17 @@ type AdmissionPort interface {
 	Reconcile(context.Context, uuid.UUID, Cost, AttemptOutcome) error
 }
 
+// IsValueMapProposal identifies the proposal variant with its own transport profile.
+func IsValueMapProposal(capabilityID string, args json.RawMessage) bool {
+	if capabilityID != "ouf.semantic.propose" {
+		return false
+	}
+	var proposal struct {
+		ArtifactType string `json:"artifactType"`
+	}
+	return json.Unmarshal(args, &proposal) == nil && proposal.ArtifactType == "VALUE_MAP"
+}
+
 type GatewayRequest struct {
 	GatewayBindingRef, CapabilityID, Owner, OperationClass                          string
 	Arguments                                                                       json.RawMessage

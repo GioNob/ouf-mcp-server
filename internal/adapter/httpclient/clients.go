@@ -135,7 +135,23 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 			return orchestration.GatewayResponse{}, errors.New("managed upload requires a verified stream or exact handoff")
 		}
 	}
-	body, _ := json.Marshal(in)
+	var body []byte
+	if orchestration.IsValueMapProposal(in.CapabilityID, in.Arguments) {
+		// Encode the metadata separately so a second JSON encoding cannot
+		// change the validated UTF-8 arguments used for the request hash.
+		envelope, err := json.Marshal(struct {
+			orchestration.GatewayRequest
+			Arguments json.RawMessage `json:"Arguments,omitempty"`
+		}{GatewayRequest: in})
+		if err != nil {
+			return orchestration.GatewayResponse{}, err
+		}
+		body = append(envelope[:len(envelope)-1], `,"Arguments":`...)
+		body = append(body, in.Arguments...)
+		body = append(body, '}')
+	} else {
+		body, _ = json.Marshal(in)
+	}
 	endpoint := *c.Endpoint
 	switch in.CapabilityID {
 	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
@@ -166,6 +182,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/preview"
+	case "ouf.onboarding.ths-links.ingestion-run-recovery", "ouf.onboarding.ths-links.semantic-review":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.onboarding.revision.prepare":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/source.revision/prepare"
 	case "ouf.onboarding.revision.read":
