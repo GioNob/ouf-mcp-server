@@ -14,7 +14,7 @@ import (
 
 func (c *GatewayClient) MandateCall(ctx context.Context, action string, raw json.RawMessage, delegation string, limit int64, timeout time.Duration) (orchestration.MandateResponse, error) {
 	var out orchestration.MandateResponse
-	if (action != "issue" && action != "dispatch" && action != "revoke") || (action == "issue" && delegation == "") || (action == "dispatch" && delegation != "") ||
+	if (action != "issue" && action != "dispatch" && action != "revoke" && action != "status") || (action == "issue" && delegation == "") || ((action == "dispatch" || action == "status") && delegation != "") ||
 		c.Endpoint.Scheme != "https" || limit < 1 || limit > 1<<20 || timeout <= 0 || timeout > 30*time.Second {
 		return out, errors.New("invalid analysis mandate invocation")
 	}

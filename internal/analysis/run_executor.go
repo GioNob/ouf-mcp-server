@@ -99,35 +99,7 @@ func (c *RunCheckpoint) Advance(r RunRecord, m *manifest.Snapshot, body []byte, 
 		if err != nil || p != r.Profile {
 			return "", ErrRunDrift
 		}
-		c.Headers = append(c.Headers, names...)
-		if len(c.Headers) < p.ColumnCount {
-			c.Queue = append(c.Queue, previewItem(p, len(c.Headers), page.Limit))
-			break
-		}
-		cap, ok := Find(m, BatchTool)
-		if !ok || cap.PublicationState != "ACTIVE" {
-			return "", ErrUnavailable
-		}
-		plan, err := BuildPublished(r.Scope, p, m, c.Headers, nil, r.Policy, 0)
-		if err != nil {
-			return "", err
-		}
-		for i, name := range plan.Headers {
-			if name == "" {
-				c.Outcomes[i] = Outcome{State: "BLOCKED", Reason: "ANALYSIS_COLUMN_INVALID"}
-			}
-		}
-		for _, task := range plan.Tasks {
-			if task.State == "HELD" {
-				set(task.Columns, Outcome{State: "BLOCKED", Reason: task.Code})
-			} else {
-				key, err := MandateHash(task.Arguments)
-				if err != nil {
-					return "", err
-				}
-				c.Queue = append(c.Queue, RunItem{Intent: key, Task: task})
-			}
-		}
+		return "", c.addPreview(r, m, names, page.Limit)
 	case BatchTool:
 		rows, ok := AcceptedBatch(t, body)
 		var b Batch
@@ -173,6 +145,76 @@ func (c *RunCheckpoint) Advance(r RunRecord, m *manifest.Snapshot, body []byte, 
 	}
 
 	return "", nil
+}
+
+func (c *RunCheckpoint) addPreview(r RunRecord, m *manifest.Snapshot, names []string, limit int) error {
+	p := r.Profile
+	c.Headers = append(c.Headers, names...)
+	if len(c.Headers) < p.ColumnCount {
+		c.Queue = append(c.Queue, previewItem(p, len(c.Headers), limit))
+		return nil
+	}
+	cap, ok := Find(m, BatchTool)
+	if !ok || cap.PublicationState != "ACTIVE" {
+		return ErrUnavailable
+	}
+	plan, err := BuildPublished(r.Scope, p, m, c.Headers, nil, r.Policy, 0)
+	if err != nil {
+		return ErrRunDrift
+	}
+	for i, name := range plan.Headers {
+		if name == "" && c.Outcomes[i].State == "PENDING" {
+			c.Outcomes[i] = Outcome{State: "BLOCKED", Reason: "ANALYSIS_COLUMN_INVALID"}
+		}
+	}
+	for _, task := range plan.Tasks {
+		if task.State == "HELD" {
+			for _, n := range task.Columns {
+				c.Outcomes[n] = Outcome{State: "BLOCKED", Reason: task.Code}
+			}
+		} else {
+			key, err := MandateHash(task.Arguments)
+			if err != nil {
+				return err
+			}
+			c.Queue = append(c.Queue, RunItem{Intent: key, Task: task})
+		}
+	}
+	return nil
+}
+
+// Isolate the smallest known scope. Only a read batch can be subdivided.
+// Preserve the last owner request reference on each blocked ordinal.
+func (c *RunCheckpoint) FailHead(r RunRecord, m *manifest.Snapshot, code string, split bool) error {
+	if len(c.Queue) == 0 {
+		return ErrRunDrift
+	}
+	item := c.Queue[0]
+	t := item.Task
+	c.Queue = c.Queue[1:]
+	if t.Tool == BatchTool && split {
+		children := SplitBatch(t, code == "SEM_BATCH_RESULT_TOO_LARGE")
+		for _, child := range children {
+			key, err := MandateHash(child.Arguments)
+			if err != nil {
+				return err
+			}
+			c.Queue = append(c.Queue, RunItem{Task: child, Intent: key})
+		}
+		if len(children) > 0 {
+			return nil
+		}
+	}
+	for _, n := range t.Columns {
+		if n < 0 || n >= len(c.Outcomes) || c.Outcomes[n].State != "PENDING" {
+			return ErrRunDrift
+		}
+		c.Outcomes[n] = Outcome{State: "BLOCKED", Reason: code, RequestID: c.Outcomes[n].RequestID}
+	}
+	if t.Tool == "source.file.preview" {
+		return c.addPreview(r, m, make([]string, len(t.Columns)), r.Limits.PreviewPageSize)
+	}
+	return nil
 }
 
 func (c *RunCheckpoint) enqueueObservation(parent RunItem, tool, request string, completion *int) {

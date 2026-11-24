@@ -125,6 +125,25 @@ func DecodeMandate(raw []byte) (Mandate, error) {
 	return m, nil
 }
 
+func MandateStatus(m Mandate, raw []byte) (state, decision string) {
+	var status struct {
+		MandateID, Generation, State, DecisionRef string
+		ExpiresAt                                 time.Time
+	}
+	_, ok := closedFields(raw, "mandateId", "generation", "state", "expiresAt", "decisionRef")
+	if !ok || !ValidEvidenceJSON(raw) || json.Unmarshal(raw, &status) != nil ||
+		status.MandateID != m.ID || status.Generation != m.Generation || status.DecisionRef == "" ||
+		len(status.DecisionRef) > 256 || status.ExpiresAt.IsZero() || (status.State == "ACTIVE" && !status.ExpiresAt.Equal(m.Expires)) {
+		return "DRIFT", ""
+	}
+	switch status.State {
+	case "ACTIVE", "REVOKED", "EXPIRED":
+		return status.State, status.DecisionRef
+	default:
+		return "DRIFT", ""
+	}
+}
+
 type RunRecord struct {
 	RunSpec
 	Mandate                                 Mandate

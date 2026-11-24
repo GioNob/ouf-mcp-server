@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 )
@@ -14,6 +16,11 @@ type RunInstallation struct {
 	Enabled            bool
 	Manifest, Workload string
 	Limits             RunLimits
+	StatusInterval     time.Duration
+}
+
+type RunRetention struct {
+	Reservations, Attempts, Snapshots, Reads time.Duration
 }
 
 // Read once at process startup. The same immutable UTF-8 file is deployed
@@ -22,6 +29,11 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 	cfg := RunInstallation{Limits: RunLimits{ProofSeconds: 5, WaitSeconds: 3600, LifetimeSeconds: 86400, ActivePlans: 1, ProviderSlots: 1, PreviewPageSize: 64,
 		Shared:  RunSharedLimits{TenantBytes: 1 << 30, SourceBytes: 128 << 20, TenantQueue: 32, SourceQueue: 4, TenantSlots: 4, SourceSlots: 1, DependencySlots: 4, TenantPerMinute: 120, SourcePerMinute: 30, DependencyPerMinute: 120},
 		Maximum: RunCost{Calls: 4096, Attempts: 4096, Objects: 409600, Bytes: 64 << 20, Millis: 3600000}}}
+	var err error
+	cfg.StatusInterval, _, err = RunMaintenanceConfiguration()
+	if err != nil {
+		return cfg, err
+	}
 	switch os.Getenv("OUF_ANALYSIS_RUN_ENABLED") {
 	case "", "false":
 		return cfg, nil
@@ -62,6 +74,35 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 	}
 	cfg.Manifest, err = FileManifestChecksum(m, raw)
 	return cfg, err
+}
+
+func RunMaintenanceConfiguration() (time.Duration, RunRetention, error) {
+	var interval time.Duration
+	var retention RunRetention
+	settings := []struct {
+		name                       string
+		value                      *time.Duration
+		unit                       time.Duration
+		fallback, minimum, maximum int
+	}{
+		{"OUF_ANALYSIS_STATUS_SECONDS", &interval, time.Second, 30, 5, 300},
+		{"OUF_ANALYSIS_RESERVATION_DAYS", &retention.Reservations, 24 * time.Hour, 30, 1, 3650},
+		{"OUF_ANALYSIS_ATTEMPT_DAYS", &retention.Attempts, 24 * time.Hour, 90, 1, 3650},
+		{"OUF_ANALYSIS_SNAPSHOT_DAYS", &retention.Snapshots, 24 * time.Hour, 30, 1, 3650},
+		{"OUF_ANALYSIS_READ_DAYS", &retention.Reads, 24 * time.Hour, 90, 1, 3650},
+	}
+	for _, setting := range settings {
+		n := setting.fallback
+		if raw, ok := os.LookupEnv(setting.name); ok {
+			var err error
+			n, err = strconv.Atoi(raw)
+			if err != nil || n < setting.minimum || n > setting.maximum {
+				return 0, RunRetention{}, fmt.Errorf("invalid %s", setting.name)
+			}
+		}
+		*setting.value = time.Duration(n) * setting.unit
+	}
+	return interval, retention, nil
 }
 
 func FileManifestChecksum(m *manifest.Snapshot, raw []byte) (string, error) {

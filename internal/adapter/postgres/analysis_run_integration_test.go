@@ -282,6 +282,7 @@ func TestRunExhaustionAndConcurrentHumanSession(t *testing.T) { // MCP-50U-08
 	if !((a == nil && errors.Is(b, analysis.ErrFenced)) || (b == nil && errors.Is(a, analysis.ErrFenced))) {
 		t.Fatal(a, b)
 	}
+	verifyPausedRun(t, ctx, s, r)
 	_, _ = claimFixture(t, ctx, s, r)
 	var sessions, incidents, charged int
 	err = s.pool.QueryRow(ctx, `select (select count(*) from ouf_mcp.analysis_run_budget_session where analysis_id=$1),
@@ -407,6 +408,11 @@ func TestRunProviderPressureAndHoursLongRecovery(t *testing.T) { // MCP-50U-14
 		t.Fatal("early retry", err)
 	}
 	now = retry
+	verifyPausedRun(t, ctx, otherReplica, r)
+	r, err = otherReplica.ReadRun(ctx, r.Scope, r.Issuer, r.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	w.Worker = uuid.NewString()
 	claim, err := otherReplica.ReserveRunWork(ctx, r, w)
 	if err != nil || claim.ArgumentsHash != c.ArgumentsHash || claim.AttemptID == c.AttemptID {

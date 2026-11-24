@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/jackc/pgx/v5"
 )
@@ -19,6 +21,77 @@ func exhaustRun(ctx context.Context, tx pgx.Tx, r analysis.RunRecord) error {
 	_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_run_incident(analysis_id,incident_id,state)
 		values($1,$2,'OPEN') on conflict(analysis_id) do update set state='OPEN'`, r.ID(), analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}))
 	return err
+}
+
+// Keep the smallest independently identifiable work item, its evidence
+// and any ambiguous reservation under its original key after quarantine.
+func quarantineRunWork(ctx context.Context, tx pgx.Tx, r analysis.RunRecord, item analysis.RunItem, reason string, now time.Time) error {
+	var raw []byte
+	if err := tx.QueryRow(ctx, "select checkpoint from ouf_mcp.analysis_run where analysis_id=$1", r.ID()).Scan(&raw); err != nil {
+		return err
+	}
+	var cp analysis.RunCheckpoint
+	if json.Unmarshal(raw, &cp) != nil || len(cp.Queue) == 0 || cp.Queue[0].Intent != item.Intent {
+		return analysis.ErrRunDrift
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_group_quarantine(analysis_id,intent_key,incident_id,item,opened_at,reason)
+		values($1,$2,$3,$4,$5,$6) on conflict(analysis_id,intent_key) do nothing`, r.ID(), item.Intent, analysis.Digest([]string{analysis.RunBudgetProfile, r.ID(), item.Intent}), raw, now, reason)
+	if err != nil {
+		return err
+	}
+	before := append([]analysis.Outcome(nil), cp.Outcomes...)
+	m, err := manifest.Load()
+	if err != nil {
+		return err
+	}
+	if err := cp.FailHead(r, m, reason, false); err != nil {
+		return err
+	}
+	state := cp.Counts().State()
+	if len(cp.Queue) > 0 {
+		reason = "ANALYSIS_RUNNING"
+	}
+	return saveRunCheckpoint(ctx, tx, r, cp, before, state, reason, now, now)
+}
+
+// Keep the unresolved charge and owner slot. Isolating the intent never
+// asserts that the remote mutation completed or frees its provider lease.
+func (s *Store) isolateUncertainWork(ctx context.Context, c analysis.ReservationCheck, worker string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	r, err := scanRun(tx.QueryRow(ctx, "select "+runColumns+" from ouf_mcp.analysis_run where analysis_id=$1 for update", c.AnalysisID))
+	if err != nil {
+		return err
+	}
+	now, err := s.runClock(ctx, tx)
+	if err != nil {
+		return err
+	}
+	var raw []byte
+	err = tx.QueryRow(ctx, `select r.checkpoint->'Queue'->0 from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_attempt a using(analysis_id)
+		where r.analysis_id=$1 and r.state='RUNNING' and r.fence=a.fence and a.attempt_id=$2 and a.worker=$3 and a.finished_at is null
+		and a.fence::text=$4 and a.lease_end>$5`, r.ID(), c.AttemptID, worker, c.Fence, now).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return analysis.ErrFenced
+	}
+	if err != nil {
+		return err
+	}
+	var item analysis.RunItem
+	if json.Unmarshal(raw, &item) != nil || item.Intent != c.IntentKey {
+		return analysis.ErrFenced
+	}
+	if err = quarantineRunWork(ctx, tx, r, item, "ANALYSIS_EFFECT_UNCERTAIN", now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // The verifier runs without a transaction. Recheck scope, version, pressure,
@@ -90,7 +163,7 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run r set budget_end=s.ends_at,seq=r.seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3
+	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run r set budget_end=s.ends_at,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,seq=r.seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3
 		from ouf_mcp.analysis_run_budget_session s where r.analysis_id=$1 and s.analysis_id=r.analysis_id and s.expected_seq=$2 and r.seq=$2`, r.ID(), want.ExpectedSeq, now)
 	if err != nil {
 		return err

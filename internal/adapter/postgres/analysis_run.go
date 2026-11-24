@@ -160,6 +160,12 @@ func (s *Store) AttachMandate(ctx context.Context, spec analysis.RunSpec, raw []
 		if err != nil {
 			return r, err
 		}
+		if r.Reason == "ANALYSIS_BUDGET_EXHAUSTED" {
+			if err = exhaustRun(ctx, tx, r); err != nil {
+				return r, err
+			}
+			r.Seq++
+		}
 	} else if analysis.Digest(m) != analysis.Digest(r.Mandate) {
 		return analysis.RunRecord{}, analysis.ErrRunDrift
 	}
@@ -170,7 +176,7 @@ func (s *Store) AttachMandate(ctx context.Context, spec analysis.RunSpec, raw []
 // are immutable until their lease ends, including during cancellation.
 func (s *Store) StopRun(ctx context.Context, r analysis.RunRecord, reason string) error {
 	switch reason {
-	case "ANALYSIS_MANDATE_EXPIRED", "ANALYSIS_MANDATE_REVOKED", "ANALYSIS_CANCELLED", "ANALYSIS_SCOPE_DRIFT", "ANALYSIS_OWNER_FAILURE", "ANALYSIS_EFFECT_UNCERTAIN":
+	case "ANALYSIS_MANDATE_EXPIRED", "ANALYSIS_MANDATE_REVOKED", "ANALYSIS_CANCELLED", "ANALYSIS_SCOPE_DRIFT":
 	default:
 		return analysis.ErrInvalid
 	}
@@ -184,7 +190,9 @@ func (s *Store) StopRun(ctx context.Context, r analysis.RunRecord, reason string
 	return err
 }
 
-func (s *Store) runClock(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+func (s *Store) runClock(ctx context.Context, tx interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) (time.Time, error) {
 	if s.analysisClock != nil {
 		return s.analysisClock(), nil
 	}
