@@ -47,6 +47,9 @@ type Capability struct {
 	OutputSchema          json.RawMessage `json:"outputSchema,omitempty"`
 }
 
+// FilePayload returns the installation snapshot as checked into this build.
+func FilePayload() ([]byte, error) { return files.ReadFile("capabilities.json") }
+
 func Load() (*Snapshot, error) {
 	b, err := files.ReadFile("capabilities.json")
 	if err != nil {

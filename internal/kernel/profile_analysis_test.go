@@ -67,6 +67,7 @@ func (g *analysisSDKGateway) Execute(_ context.Context, r orchestration.GatewayR
 	return orchestration.GatewayResponse{Status: 200, Body: body}, nil
 }
 func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
+	t.Setenv("OUF_ANALYSIS_RUN_ENABLED", "false")
 	snapshot, e := manifest.Load()
 	if e != nil {
 		t.Fatal(e)
@@ -95,6 +96,13 @@ func TestProfileAnalysisSDKClosedInputAndAuthoritativeProfile(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer session.Close()
+	// MCP-50U-12: the inactive branch accepts a client-generated key and
+	// returns an observable stop before any profile read, admission or issue.
+	off, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: cap.ToolName,
+		Arguments: map[string]any{"mode": "ALL_COLUMNS", "commandKey": uuid.NewString(), "assetId": gateway.asset, "profileId": gateway.profile}})
+	if err != nil || !off.IsError || ownerObject(off)["code"] != "ANALYSIS_EXECUTOR_DISABLED" || gateway.calls != 0 || store.plans != 0 {
+		t.Fatal(off, err, gateway.calls, store.plans)
+	}
 	args := map[string]any{"assetId": gateway.asset, "profileId": gateway.profile, "expectedRevision": 0, "work": []any{map[string]any{"tool": "semantic.search", "arguments": map[string]any{"q": "tipologia", "type": "PROPERTY"}, "columns": []int{1023}}}}
 	result, e := session.CallTool(context.Background(), &mcp.CallToolParams{Name: cap.ToolName, Arguments: args})
 	if e != nil || result.IsError || store.plans != 1 || gateway.calls != 8 {

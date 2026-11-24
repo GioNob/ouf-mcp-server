@@ -158,6 +158,13 @@ if __name__ == "__main__":
             wait_ready(sys.argv[1] == "wait-owner")
         case ["seed", phase] if phase in ("predecessor", "candidate"):
             seed(phase)
+        case ["issue-checkpoint"]:
+            path = Path("/tmp/analysis-run-command.json")
+            if not path.exists():
+                path.write_text(json.dumps({"mode": "ALL_COLUMNS", "commandKey": str(uuid4()),
+                                            "assetId": str(uuid4()), "profileId": str(uuid4())}))
+            result = rpc("tools/call", name="source.analysis.plan", arguments=json.loads(path.read_text()))
+            assert result["isError"] and result["structuredContent"]["code"] == "ANALYSIS_AUTHORITY_UNAVAILABLE", result
         case ["execute-predecessor"]:
             saved = verify_analysis("predecessor", "candidate", own=True)
             view = saved["view"]

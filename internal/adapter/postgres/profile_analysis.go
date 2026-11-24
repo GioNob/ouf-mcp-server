@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -24,11 +25,8 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	if err != nil {
 		return p, 0, err
 	}
-	if stored != manifest {
-		old := manifestpkg.AnalysisPredecessor(manifest)
-		if old == "" || stored != old {
-			return p, 0, analysis.ErrScope
-		}
+	if !slices.Contains(manifestpkg.AnalysisPredecessors(manifest), stored) {
+		return p, 0, analysis.ErrScope
 	}
 	if json.Unmarshal(raw, &p) != nil {
 		return p, 0, analysis.ErrScope
@@ -71,6 +69,16 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		return analysis.View{}, e
 	}
 	defer tx.Rollback(ctx)
+	if e = lockAnalysisMode(ctx, tx, p.ID); e != nil {
+		return analysis.View{}, e
+	}
+	var autonomous bool
+	if e = tx.QueryRow(ctx, "select exists(select 1 from ouf_mcp.analysis_run where analysis_id=$1)", p.ID).Scan(&autonomous); e != nil {
+		return analysis.View{}, e
+	}
+	if autonomous {
+		return analysis.View{}, analysis.ErrConflict
+	}
 	raw, _ := json.Marshal(p.Profile)
 	_, e = tx.Exec(ctx, `insert into ouf_mcp.profile_analysis(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum) values($1,$2,$3,$4,$5,$6) on conflict do nothing`, p.ID, p.Scope.Service, p.Scope.Principal, p.Scope.Tenant, raw, p.Manifest)
 	if e != nil {

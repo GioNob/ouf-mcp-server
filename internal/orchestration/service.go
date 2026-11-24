@@ -221,6 +221,7 @@ type Result struct {
 }
 
 type Service struct {
+	AnalysisMandates        AnalysisMandatePort
 	AdmissionCallsPerMinute int
 	ReprocessingGuard       func() error
 	Reprocessing            *reprocessing.VerifiedPermit
