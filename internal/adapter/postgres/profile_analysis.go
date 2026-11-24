@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	manifestpkg "github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -23,14 +24,20 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	if err != nil {
 		return p, 0, err
 	}
-	if json.Unmarshal(raw, &p) != nil || stored != manifest {
+	if stored != manifest {
+		old := manifestpkg.AnalysisPredecessor(manifest)
+		if old == "" || stored != old {
+			return p, 0, analysis.ErrScope
+		}
+	}
+	if json.Unmarshal(raw, &p) != nil {
 		return p, 0, analysis.ErrScope
 	}
 	return p, rev, nil
 }
 func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, error) {
 	// Never load potentially large evidence bodies or intent arguments for totals.
-	rows, err := tx.Query(ctx, `select task-'result'-'arguments' from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal`, id)
+	rows, err := tx.Query(ctx, `select task-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey' from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +63,7 @@ func analysisView(id string, p analysis.Profile, rev int64, tasks []analysis.Tas
 	return analysis.View{ID: id, Revision: rev, Profile: p, Budget: budget, Tasks: tasks[start:end], Offset: offset, HasMore: end < len(tasks), CoveredColumns: covered, EvidenceColumns: complete}
 }
 func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.View, error) {
-	if !p.Scope.Valid() || !p.Profile.Valid() || len(p.Tasks) < 1 || len(p.Tasks) > analysis.MaxPlanBatch || p.ID != analysis.AnalysisID(p.Scope, p.Profile) {
+	if !p.Scope.Valid() || !p.Profile.Valid() || (p.Visibility == "" && (len(p.Tasks) < 1 || (len(p.Tasks) > analysis.MaxPlanBatch && p.Tasks[0].Compatibility == ""))) || len(p.Tasks) > analysis.MaxTasks || p.ID != analysis.AnalysisID(p.Scope, p.Profile) {
 		return analysis.View{}, analysis.ErrInvalid
 	}
 	tx, e := s.pool.Begin(ctx)
@@ -74,7 +81,26 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		return analysis.View{}, e
 	}
 	if existing != p.Profile {
-		return analysis.View{}, analysis.ErrScope
+		return analysis.View{}, holdAnalysis(ctx, tx, p.ID)
+	}
+	if e = checkAnalysisHold(ctx, tx, p.ID); e != nil {
+		return analysis.View{}, e
+	}
+	mode := analysis.View{ID: p.ID}
+	if e = publishedMetadata(ctx, tx, &mode); e != nil {
+		return analysis.View{}, e
+	}
+	if mode.Seed != "" && (mode.Seed != p.Seed || mode.Visibility != p.Visibility) {
+		return analysis.View{}, analysis.ErrConflict
+	}
+	if mode.Seed == "" && p.Seed != "" {
+		if rev != 0 {
+			return analysis.View{}, analysis.ErrConflict
+		}
+		_, e = tx.Exec(ctx, `insert into ouf_mcp.analysis_published_plan(analysis_id,seed_digest,visibility_digest) values($1,$2,$3)`, p.ID, p.Seed, p.Visibility)
+		if e != nil {
+			return analysis.View{}, e
+		}
 	}
 	tasks, e := analysisTasks(ctx, tx, p.ID)
 	if e != nil {
@@ -87,6 +113,7 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	changes := []analysis.Task{}
 	newCount := 0
 	for _, t := range p.Tasks {
+		t.Visibility = p.Visibility
 		if n, found := indices[t.ID]; found {
 			merged := analysis.Union(tasks[n].Columns, t.Columns)
 			if len(merged) != len(tasks[n].Columns) {
@@ -104,7 +131,16 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	if len(changes) > 0 && rev != p.ExpectedRevision {
 		return analysis.View{}, analysis.ErrConflict
 	}
+	if len(p.Headers) > 0 {
+		if e = createAnalysisSummary(ctx, tx, p); e != nil {
+			return analysis.View{}, e
+		}
+	}
+	var retainedRequests []string
 	for _, t := range changes {
+		if t.Tool == "semantic.discovery.request" && t.State == "SUCCEEDED" {
+			retainedRequests = append(retainedRequests, t.ID)
+		}
 		if _, exists := indices[t.ID]; exists {
 			columns, _ := json.Marshal(t.Columns)
 			_, e = tx.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(task,'{columns}',$3::jsonb) where analysis_id=$1 and task_id=$2`, p.ID, t.ID, columns)
@@ -115,6 +151,22 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		if e != nil {
 			return analysis.View{}, e
 		}
+		if t.State == "HELD" && t.Code == "DISCOVERY_TYPE_UNSUPPORTED" {
+			if e = projectOutcome(ctx, tx, p.ID, t.Columns, "", analysis.Outcome{State: "BLOCKED", Reason: t.Code}, ""); e != nil {
+				return analysis.View{}, e
+			}
+		}
+		if t.Tool == analysis.BatchTool && t.State == "HELD" {
+			if e = savePublished(ctx, tx, p.ID, t, analysis.Finish{}); e != nil {
+				return analysis.View{}, e
+			}
+		}
+		if e = assignSummaryTask(ctx, tx, p.ID, t); e != nil {
+			return analysis.View{}, e
+		}
+	}
+	if e = inheritRequests(ctx, tx, p.ID, retainedRequests); e != nil {
+		return analysis.View{}, e
 	}
 	if len(changes) > 0 {
 		rev++
@@ -128,6 +180,9 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		return analysis.View{}, e
 	}
 	v := analysisView(p.ID, p.Profile, rev, tasks, 0, 128)
+	if e = publishedMetadata(ctx, tx, &v); e != nil {
+		return analysis.View{}, e
+	}
 	return v, tx.Commit(ctx)
 }
 func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, manifest string, offset, limit int) (analysis.View, error) {
@@ -147,7 +202,11 @@ func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, mani
 	if e != nil {
 		return analysis.View{}, e
 	}
-	return analysisView(id, p, rev, tasks, offset, limit), tx.Commit(ctx)
+	v := analysisView(id, p, rev, tasks, offset, limit)
+	if e = publishedMetadata(ctx, tx, &v); e != nil {
+		return v, e
+	}
+	return v, tx.Commit(ctx)
 }
 func readAnalysisTask(ctx context.Context, tx pgx.Tx, id, taskID string) (analysis.Task, error) {
 	var t analysis.Task
@@ -200,6 +259,9 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	if _, _, e = analysisHeader(ctx, tx, scope, id, manifest); e != nil {
 		return t, e
 	}
+	if e = checkAnalysisHold(ctx, tx, id); e != nil {
+		return t, e
+	}
 	t, e = readAnalysisTask(ctx, tx, id, taskID)
 	if e != nil {
 		return t, e
@@ -208,8 +270,28 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	if e = tx.QueryRow(ctx, "select transaction_timestamp()").Scan(&now); e != nil {
 		return t, e
 	}
+	if t.Visibility != "" {
+		if err := publishedStopped(ctx, tx, id); err != nil {
+			return t, err
+		}
+	}
 	if t.State == "SUCCEEDED" || t.State == "HELD" {
 		return t, tx.Commit(ctx)
+	}
+	if t.State == "READY" {
+		var allInvalid bool
+		e = tx.QueryRow(ctx, `select coalesce(bool_and(header=''),false)
+			from ouf_mcp.analysis_column where analysis_id=$1 and ordinal=any($2::int[])`, id, t.Columns).Scan(&allInvalid)
+		if e != nil {
+			return t, e
+		}
+		if allInvalid {
+			t.State, t.Code = "HELD", "ANALYSIS_COLUMN_INVALID"
+			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+				return t, e
+			}
+			return t, tx.Commit(ctx)
+		}
 	}
 	if t.State == "RUNNING" {
 		if !now.Before(t.LeaseUntil) {
@@ -217,6 +299,9 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 			t.Code = "PREVIOUS_OUTCOME_REQUIRES_RECONCILIATION"
 			t.Fence = uuid.NewString()
 			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+				return t, e
+			}
+			if e = finishSummary(ctx, tx, id, t, now); e != nil {
 				return t, e
 			}
 		}
@@ -227,10 +312,13 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	if now.Before(t.NotBefore) {
 		return t, tx.Commit(ctx)
 	}
-	if t.Attempts >= analysis.MaxRetryAttempts || (!t.FirstAttemptAt.IsZero() && now.Sub(t.FirstAttemptAt) >= 24*time.Hour) {
+	if t.Attempts >= analysis.MaxRetryAttempts || (!t.FirstAttemptAt.IsZero() && now.Add(time.Duration(t.MaxTimeMS)*time.Millisecond).Sub(t.FirstAttemptAt) >= 24*time.Hour) {
 		t.State = "HELD"
 		t.Code = "RETRY_BUDGET_EXHAUSTED"
 		if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+			return t, e
+		}
+		if e = finishSummary(ctx, tx, id, t, now); e != nil {
 			return t, e
 		}
 		return t, tx.Commit(ctx)
@@ -296,6 +384,11 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 	if e != nil {
 		return t, e
 	}
+	if t.Visibility != "" {
+		if err := publishedStopped(ctx, tx, id); err != nil {
+			return t, err
+		}
+	}
 	if fence == "" || t.Fence != fence || t.State != "RUNNING" {
 		return t, analysis.ErrFenced
 	}
@@ -334,6 +427,18 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 		t.CompletedAt = now
 	}
 	if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+		return t, e
+	}
+	if t.Tool == analysis.BatchTool {
+		if e = savePublished(ctx, tx, id, t, f); e != nil {
+			return t, e
+		}
+		return t, tx.Commit(ctx)
+	}
+	if e = finishSummary(ctx, tx, id, t, now); e != nil {
+		if errors.Is(e, analysis.ErrProfile) {
+			return t, holdAnalysis(ctx, tx, id)
+		}
 		return t, e
 	}
 	return t, tx.Commit(ctx)

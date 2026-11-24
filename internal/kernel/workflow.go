@@ -14,6 +14,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -30,13 +31,16 @@ type registeredTool struct {
 }
 
 type workflowServer struct {
+	analysisService    *orchestration.Service
+	publishedLanguages []string
 	*mcp.Server
-	manifest   *manifest.Snapshot
-	nextSchema *jsonschema.Resolved
-	tools      map[string]registeredTool
-	waits      *waitService
-	thsLinks   map[string]linkLookup
-	key        []byte
+	manifest      *manifest.Snapshot
+	nextSchema    *jsonschema.Resolved
+	tools         map[string]registeredTool
+	waits         *waitService
+	summaryLimits analysis.Limits
+	thsLinks      map[string]linkLookup
+	key           []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -52,7 +56,19 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if err != nil {
 		return nil, err
 	}
-	return &workflowServer{Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	limits, err := configuredSummary(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	var langs []string
+	if cap, ok := analysis.Find(snapshot, analysis.BatchTool); ok && cap.PublicationState == "ACTIVE" {
+		policy, err := analysis.PublishedLimits(cap)
+		if err != nil {
+			return nil, err
+		}
+		langs = policy.Languages
+	}
+	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -147,14 +163,39 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 	s.Server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
 		var result *mcp.CallToolResult
+		var finish func(context.Context, int, int, bool) error
 		if len(req.Params.Arguments) == 0 {
 			req.Params.Arguments = json.RawMessage("{}")
 		}
 		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
+			if summaryInput(name, args) {
+				inputErr := analysis.ErrInvalid
+				id, _ := args["analysisId"].(string)
+				if token, ok := args["cursor"].(string); ok && args["view"] == "SUMMARY" && len(args) == 3 &&
+					analysis.ValidateID(id) == nil && (len(token) < 32 || len(token) > 1024) {
+					inputErr = analysis.ErrCursor
+				}
+				result = summaryFailure(inputErr, id)
+			}
+		} else if (summaryInput(name, args) || name == "source.analysis.plan") && !validJCSInput(req.Params.Arguments) {
+			result = summaryFailure(analysis.ErrInvalid, "")
 		} else {
 			var err error
-			result, err = run(ctx, req)
+			if name == "source.analysis.step" && s.analysisService != nil {
+				finish, err = s.admitPublishedStep(ctx, c, args, t.limit)
+				if err != nil {
+					result = windowAdmissionErrorResult(err)
+					if result == nil {
+						result = analysisReadError(err)
+					}
+				}
+			}
+			if result == nil {
+				result, err = run(ctx, req)
+			} else {
+				err = nil
+			}
 			if err != nil || result == nil {
 				result = errorResult("TOOL_EXECUTION_FAILED", false)
 			}
@@ -165,12 +206,21 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
 		}
-		if name == "ouf.wait" && result.StructuredContent != nil {
+		if (name == "ouf.wait" || summaryInput(name, args)) && result.StructuredContent != nil {
 			result = s.boundedResult(result, t)
 		} else {
 			result = s.decorate(ctx, t, args, result)
 		}
-		return s.validateNext(name, result), nil
+		result = s.validateNext(name, result)
+		if finish != nil {
+			wire, _ := json.Marshal(result)
+			end, stop := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer stop()
+			if err := finish(end, len(wire), 1, !result.IsError); err != nil {
+				return s.validateNext(name, s.decorate(ctx, t, args, analysisReadError(err))), nil
+			}
+		}
+		return result, nil
 	})
 }
 
@@ -226,7 +276,7 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 }
 
 func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
-	return nextstep.Engine{WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
+	return nextstep.Engine{PublishedLanguages: s.publishedLanguages, WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
 		t, ok := s.tools[r.Tool]
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
@@ -290,7 +340,11 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	if result.IsError && obs["code"] == "INVALID_TOOL_ARGUMENTS" {
 		structured["allowedForms"] = t.forms
 	}
-	structured["next"] = s.engine(ctx).Evaluate(c, p, args, obs, result.IsError)
+	next := s.engine(ctx).Evaluate(c, p, args, obs, result.IsError)
+	if !result.IsError {
+		next = s.publishedNext(ctx, c.ToolName, args, obs, next)
+	}
+	structured["next"] = next
 	if result.IsError && structured["code"] == nil {
 		structured["code"] = structured["next"].(nextstep.Object)["reasonCode"]
 	}

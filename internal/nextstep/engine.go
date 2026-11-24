@@ -27,6 +27,7 @@ const Contract = "ouf.next-step.v1"
 const DefaultWaitMaxSeconds = 3600
 
 type Engine struct {
+	PublishedLanguages  []string
 	WaitMaxSeconds      int
 	PollIntervalSeconds int
 	Errors              []manifest.Rule
@@ -220,7 +221,11 @@ func matches(when map[string]string, obs, input Object) bool {
 
 // Plan only from column metadata. The coordinator generates the durable job
 // keys. Wider profiles require the existing paged analysis workflow.
-func discoveryWork(obs Object) any {
+func (e Engine) discoveryWork(obs Object) any {
+	langs := e.PublishedLanguages
+	if len(langs) == 0 {
+		langs = []string{"it"}
+	}
 	columns, ok := obs["columns"].([]any)
 	if !ok || len(columns) == 0 || len(columns) > analysis.MaxPlanBatch {
 		return nil
@@ -237,11 +242,11 @@ func discoveryWork(obs Object) any {
 	for i, col := range columns {
 		column, _ := col.(Object)
 		name, ok := column["name"].(string)
-		if !ok || strings.TrimSpace(name) == "" || len(name) > 2000 {
-			return nil
+		if !ok || !analysis.UsableColumnName(name) {
+			continue
 		}
 		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{offset + i}, "arguments": Object{
-			"intent": name, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY",
+			"intent": name, "preferredLanguages": langs, "requestedArtifactType": "PROPERTY",
 		}})
 	}
 	return work
@@ -284,7 +289,7 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 		case "#zero":
 			value = 0
 		case "#discovery":
-			value = discoveryWork(obs)
+			value = e.discoveryWork(obs)
 		}
 		if value != nil {
 			args[k] = value
@@ -780,6 +785,11 @@ func retryDelay(obs Object, now time.Time) (int, bool) {
 	}
 	if raw := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); raw != nil {
 		at, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+		if err == nil && at.After(now.Add(time.Hour)) && obs["tool"] == analysis.BatchTool && obs["code"] == "TRANSIENT_OWNER_WAIT" {
+			// A public poll may inspect the durable wait hourly. The plan
+			// still prohibits owner dispatch before the full Retry-After.
+			return 3600, true
+		}
 		if err != nil || at.After(now.Add(time.Hour)) {
 			return 0, false
 		}

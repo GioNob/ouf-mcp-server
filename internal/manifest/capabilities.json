@@ -1,5 +1,5 @@
 {
-  "version": "1.15.6-next-step-v1",
+  "version": "1.17.0-published-batch-v1",
   "nextErrors": [
     {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "draftAssetRef": "@draftAssetRef", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
@@ -77,23 +77,24 @@
       "read": "semantic.discovery.status",
       "vocabulary": {"state": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "EXHAUSTED"], "recoveryState": ["ACTIVE", "RETRY_WAIT", "PAUSED_EXHAUSTED", "BLOCKED", "CANCELLED"]},
       "rules": [
-        {"when": {"recoveryState": "PAUSED_EXHAUSTED|BLOCKED|CANCELLED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId"}},
+        {"when": {"recoveryState": "PAUSED_EXHAUSTED|BLOCKED|CANCELLED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
         {"when": {"recoveryState": "PAUSED_EXHAUSTED|BLOCKED|CANCELLED"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "OPERATOR", "message": "Verifica lo stato corrente e il budget della discovery."},
-        {"when": {"state|status": "FAILED|CANCELLED|EXHAUSTED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId"}},
+        {"when": {"state|status": "FAILED|CANCELLED|EXHAUSTED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
         {"when": {"state|status": "FAILED|CANCELLED|EXHAUSTED"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "OPERATOR", "message": "Verifica lo stato corrente e il budget della discovery."},
-        {"when": {"state": "SUCCEEDED", "candidateCount": "0", "@analysisId": "?"}, "action": "CALL_TOOL", "reason": "DISCOVERY_NO_CANDIDATES", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId"}},
+        {"when": {"state": "SUCCEEDED", "candidateCount": "0", "completedCandidateCount": "0", "@analysisId": "?"}, "action": "CALL_TOOL", "reason": "DISCOVERY_NO_CANDIDATES", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
+        {"when": {"state": "SUCCEEDED", "candidateCount": "0", "@analysisId": "?"}, "action": "CALL_TOOL", "reason": "DISCOVERY_EVIDENCE_UNAVAILABLE", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
         {"when": {"state": "SUCCEEDED", "candidateCount": "0"}, "action": "BLOCKED", "reason": "DISCOVERY_NO_CANDIDATES", "message": "Nessun candidato. Scegli una ricerca o una nuova discovery usando l’intento della richiesta e i risultati letti.", "alternatives": [{"tool": "semantic.search", "args": {"q": "#searchQuery"}, "message": "Cerca un termine pubblicato pertinente alla colonna."},{"tool": "semantic.discovery.request", "args": {"intent": "intent|@intent", "requestedArtifactType": "requestedArtifactType|@requestedArtifactType", "preferredLanguages": "preferredLanguages|@preferredLanguages", "idempotencyKey": "#decisionKey"}, "message": "Prepara una nuova discovery con intento, tipo e lingue pertinenti."}]},
         {"when": {"allowedActions": "POLL_DISCOVERY"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"allowedActions": "-", "state|status": "PENDING|RUNNING|RETRY_WAIT"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"allowedActions": "LIST_CANDIDATES", "state": "SUCCEEDED"}, "action": "CALL_TOOL", "reason": "DISCOVERY_COMPLETE", "tool": "semantic.discovery.candidates", "args": {"requestId": "requestId|@requestId", "includeState": "#true", "analysisId": "@analysisId"}},
-        {"when": {"state|status": "SUCCEEDED", "allowedActions": "-"}, "action": "CALL_TOOL", "reason": "DISCOVERY_COMPLETE", "tool": "semantic.discovery.candidates", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}}
+        {"when": {"state|status": "SUCCEEDED", "allowedActions": "-"}, "action": "CALL_TOOL", "reason": "DISCOVERY_COMPLETE", "tool": "semantic.discovery.candidates", "args": {"requestId": "requestId|@requestId", "includeState": "#true", "analysisId": "@analysisId"}}
       ]
     },
     "candidates": {
       "read": "semantic.discovery.status",
       "vocabulary": {"state": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]},
       "rules": [
-        {"when": {"candidates|legacyList": "?"}, "action": "CALL_TOOL", "reason": "CANDIDATE_SELECTION_REQUIRED", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId"}}
+        {"when": {"candidates|legacyList": "?"}, "action": "CALL_TOOL", "reason": "CANDIDATE_SELECTION_REQUIRED", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId", "view": "=STATUS"}}
       ]
     },
     "proposal": {
@@ -303,6 +304,136 @@
     }
   },
   "capabilities": [
+    {
+      "capabilityId": "ouf.semantic.search.batch",
+      "gatewayBindingRef": "capability://ouf.semantic.search.batch",
+      "owner": "semantic",
+      "operationClass": "READ",
+      "requiredAuthorizationCapability": "ouf.semantic.search",
+      "allowedActors": [
+        "HUMAN"
+      ],
+      "toolEligible": false,
+      "baseCostEnvelope": {
+        "hardMaxResultBytes": 262144,
+        "hardMaxToolCalls": 1,
+        "hardMaxDistinctObjects": 100,
+        "hardMaxElapsedMs": 3000
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract",
+          "limitPerIntent",
+          "intents"
+        ],
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "ouf.semantic.published-batch.v1"
+          },
+          "limitPerIntent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "intents": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "intentId",
+                "intent",
+                "preferredLanguages",
+                "requestedArtifactType",
+                "context"
+              ],
+              "properties": {
+                "intentId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                },
+                "intent": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "preferredLanguages": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 5,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$"
+                  }
+                },
+                "requestedArtifactType": {
+                  "type": "string",
+                  "enum": [
+                    "PROPERTY",
+                    "CLASS",
+                    "DATATYPE"
+                  ]
+                },
+                "context": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "namespace": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "domain": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "range": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "toolName": "semantic.search.batch",
+      "purpose": "Consult published semantic evidence for a finite analysis step.",
+      "useWhen": [
+        "A profile analysis step resolves distinct intents."
+      ],
+      "doNotUseWhen": [
+        "Direct client calls."
+      ],
+      "preferredAlternatives": [
+        "source.analysis.step"
+      ],
+      "operationalLimits": {
+        "batchMaxIntents": 64,
+        "batchMaxRequestBytes": 65536,
+        "batchMaxResponseBytes": 262144,
+        "limitPerIntent": 3,
+        "preferredLanguages": [
+          "it"
+        ]
+      },
+      "resultSemantics": "Published evidence and revision pins per intent.",
+      "securityNotes": [
+        "Current HUMAN delegation and published search permission."
+      ],
+      "mcpClass": "MCP_INTERNAL",
+      "publicationState": "ACTIVE",
+      "conditionalOutcomeCost": {}
+    },
     {
       "toolName": "urban.object.related_search",
       "nextPolicy": "urban.object.related_search",
@@ -6882,6 +7013,9 @@
         "semantic.search"
       ],
       "operationalLimits": {
+        "previewPageSize": 128,
+        "summaryPageBytes": 65536,
+        "summaryCursorSeconds": 900,
         "maxColumns": 1024,
         "maxTasks": 16384,
         "maxPlanBatch": 128,
@@ -6915,13 +7049,429 @@
         "equivalentRetryCalls": 0
       },
       "toolEligible": true,
+      "outputSchema": {
+        "type": "object",
+        "$defs": {
+          "seq": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,18})$"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1024
+              },
+              "matchedPublished": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "candidatesReady": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "noCandidates": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "blocked": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pending": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "total",
+              "matchedPublished",
+              "candidatesReady",
+              "noCandidates",
+              "blocked",
+              "pending"
+            ]
+          },
+          "item": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  },
+                  "changedSeq": {
+                    "$ref": "#/$defs/seq"
+                  },
+                  "state": {
+                    "const": "PENDING"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "ordinal",
+                  "changedSeq",
+                  "state"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  },
+                  "changedSeq": {
+                    "$ref": "#/$defs/seq"
+                  },
+                  "state": {
+                    "const": "BLOCKED"
+                  },
+                  "reasonCode": {
+                    "type": "string",
+                    "pattern": "^[A-Z][A-Z0-9_]{2,79}$"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "ordinal",
+                  "changedSeq",
+                  "state",
+                  "reasonCode"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  },
+                  "changedSeq": {
+                    "$ref": "#/$defs/seq"
+                  },
+                  "state": {
+                    "const": "CANDIDATES_READY"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "candidateCount": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "observedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "ordinal",
+                  "changedSeq",
+                  "state",
+                  "requestId",
+                  "candidateCount",
+                  "observedAt"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  },
+                  "changedSeq": {
+                    "$ref": "#/$defs/seq"
+                  },
+                  "state": {
+                    "const": "NO_CANDIDATES"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "candidateCount": {
+                    "const": 0
+                  },
+                  "observedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "ordinal",
+                  "changedSeq",
+                  "state",
+                  "requestId",
+                  "candidateCount",
+                  "observedAt"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1023
+                  },
+                  "changedSeq": {
+                    "$ref": "#/$defs/seq"
+                  },
+                  "state": {
+                    "const": "MATCHED_PUBLISHED"
+                  },
+                  "match": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "semanticId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
+                      },
+                      "semanticVersion": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "revisionId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "publicationSetId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "score": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "EXACT_LABEL",
+                            "PREFERRED_LANGUAGE",
+                            "EXACT_LOCAL_NAME",
+                            "LABEL_PREFIX",
+                            "CONTEXT_MATCH"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "semanticId",
+                      "semanticVersion",
+                      "revisionId",
+                      "publicationSetId",
+                      "score",
+                      "reasons"
+                    ]
+                  }
+                },
+                "required": [
+                  "ordinal",
+                  "changedSeq",
+                  "state",
+                  "match"
+                ]
+              }
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "analysisId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "profile": {
+                "type": "object"
+              },
+              "budget": {
+                "type": "object"
+              },
+              "tasks": {
+                "type": "array"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "hasMore": {
+                "type": "boolean"
+              },
+              "columnsWithPlannedWork": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "columnsWithCompletedPlannedWork": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "next": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "analysisId",
+              "revision",
+              "profile",
+              "budget",
+              "tasks",
+              "offset",
+              "hasMore",
+              "columnsWithPlannedWork",
+              "columnsWithCompletedPlannedWork",
+              "next"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "contract": {
+                "const": "ouf.analysis.summary.v2"
+              },
+              "analysisId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "state": {
+                "enum": [
+                  "RUNNING",
+                  "PARTIAL",
+                  "BLOCKED",
+                  "COMPLETE"
+                ]
+              },
+              "changeSeq": {
+                "$ref": "#/$defs/seq"
+              },
+              "counts": {
+                "$ref": "#/$defs/counts"
+              },
+              "next": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "contract",
+              "analysisId",
+              "state",
+              "changeSeq",
+              "counts",
+              "next"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "contract": {
+                "const": "ouf.analysis.summary.v2"
+              },
+              "analysisId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "state": {
+                "enum": [
+                  "RUNNING",
+                  "PARTIAL",
+                  "BLOCKED",
+                  "COMPLETE"
+                ]
+              },
+              "changeSeq": {
+                "$ref": "#/$defs/seq"
+              },
+              "counts": {
+                "$ref": "#/$defs/counts"
+              },
+              "next": {
+                "type": "object"
+              },
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "items": {
+                  "$ref": "#/$defs/item"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 1024
+              }
+            },
+            "required": [
+              "contract",
+              "analysisId",
+              "state",
+              "changeSeq",
+              "counts",
+              "next",
+              "items"
+            ]
+          }
+        ]
+      },
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "analysisId"
         ],
+        "oneOf": [
+          {"not":{"anyOf":[{"required":["view"]},{"required":["cursor"]}]}},
+          {"properties":{"view":{"const":"STATUS"}},"required":["view"],"maxProperties":2},
+          {"properties":{"view":{"const":"SUMMARY"}},"required":["view"],"not":{"anyOf":[{"required":["offset"]},{"required":["cursor"]}]}},
+          {"properties":{"view":{"const":"SUMMARY"}},"required":["view","cursor"],"maxProperties":3}
+        ],
         "properties": {
+          "view": {"enum":["STATUS","SUMMARY"]},
+          "cursor": {"type":"string","minLength":32,"maxLength":1024},
           "analysisId": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"

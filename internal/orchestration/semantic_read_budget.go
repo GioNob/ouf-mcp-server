@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -10,7 +11,7 @@ import (
 const SemanticReadBudgetProfile = "ouf.semantic-read-budget.v1"
 
 func IsSemanticRead(capability, operation string) bool {
-	return operation == "READ" && (capability == "ouf.semantic.search" || capability == "ouf.semantic.consultation.read")
+	return operation == "READ" && (capability == "ouf.semantic.search" || capability == "ouf.semantic.search.batch" || capability == "ouf.semantic.consultation.read")
 }
 
 func semanticReadWindowBudget(in AdmissionRequest) (string, Cost, error) {
@@ -29,4 +30,26 @@ type SemanticReadBudgetExhaustedError = WindowBudgetExhaustedError
 
 func NewSemanticReadBudgetExhaustedError(cause error, dimension string, now, end time.Time) error {
 	return NewWindowBudgetError(cause, "SEMANTIC_READ_WINDOW_BUDGET_EXHAUSTED", dimension, now, end)
+}
+
+// Count a published revision once even when it is evidence for two intents.
+// The coordinator validates the complete evidence envelope before using it.
+func publishedRevisionCount(body []byte) int64 {
+	var batch struct {
+		Results []struct {
+			Hits []struct{ RevisionID string }
+		}
+	}
+	if json.Unmarshal(body, &batch) != nil {
+		return 0
+	}
+	revisions := make(map[string]struct{})
+	for _, result := range batch.Results {
+		for _, hit := range result.Hits {
+			if hit.RevisionID != "" {
+				revisions[hit.RevisionID] = struct{}{}
+			}
+		}
+	}
+	return int64(len(revisions))
 }

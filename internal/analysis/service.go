@@ -15,29 +15,35 @@ import (
 )
 
 type Coordinator struct {
-	Store    Store
-	Service  *orchestration.Service
-	Manifest *manifest.Snapshot
+	Store           Store
+	Service         *orchestration.Service
+	Manifest        *manifest.Snapshot
+	Onboarding      bool
+	PreviewPageSize int
 }
 
 func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, cap manifest.Capability) error {
+	_, err := c.authorization(ctx, i, cap)
+	return err
+}
+func (c Coordinator) authorization(ctx context.Context, i orchestration.Identity, cap manifest.Capability) (string, error) {
 	if i.Delegation == "" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
 	}
 	if i.ActorType != "HUMAN" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
 	}
 	if !IdentityScope(i).Valid() {
-		return orchestration.ErrUnauthorized
+		return "", orchestration.ErrUnauthorized
 	}
 	d, e := c.Service.Auth.Authorize(ctx, orchestration.AuthorizationRequest{Identity: i, Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: i.TenantID}, CapabilityID: cap.RequiredAuthorization, Owner: cap.Owner, OperationClass: cap.OperationClass})
 	if e != nil {
-		return e
+		return "", e
 	}
 	if !d.Allowed || d.DecisionRef == "" {
-		return &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
+		return "", &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
 	}
-	return nil
+	return d.DecisionRef, nil
 }
 func (c Coordinator) check(ctx context.Context, i orchestration.Identity) (string, error) {
 	preview, ok := Find(c.Manifest, "source.file.preview")
@@ -65,7 +71,20 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	logicalID := AnalysisID(scope, Profile{AssetID: asset, ProfileID: profile})
 	retained, readErr := c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 1)
 	if readErr == nil {
-		plan, buildErr := Build(scope, retained.Profile, c.Manifest, expected, work)
+		if retained.Seed != "" {
+			if err := c.CheckPublishedScope(ctx, i, retained.Visibility); err != nil {
+				return View{}, err
+			}
+			if expected != 0 || retained.Seed != Digest(work) {
+				return View{}, ErrConflict
+			}
+			return c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 128)
+		}
+		build := Build
+		if cap, ok := Find(c.Manifest, BatchTool); onlyDiscovery(work) && (!ok || cap.PublicationState == "INACTIVE") {
+			build = buildWithoutBatch
+		}
+		plan, buildErr := build(scope, retained.Profile, c.Manifest, expected, work)
 		if buildErr != nil {
 			return View{}, buildErr
 		}
@@ -75,30 +94,82 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		return View{}, readErr
 	}
 	preview, _ := Find(c.Manifest, "source.file.preview")
-	args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": 0, "limit": 1})
-	r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+	limits, e := SummaryLimits(c.Manifest)
 	if e != nil {
 		return View{}, e
 	}
-	if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
+	if c.PreviewPageSize != 0 {
+		if c.PreviewPageSize < 1 || c.PreviewPageSize > 128 {
+			return View{}, ErrInvalid
+		}
+		limits.PreviewPageSize = c.PreviewPageSize
 	}
-	if r.Replay || r.Problem != nil {
-		return View{}, ErrScope
+	var profilePin Profile
+	var headers []string
+	checkpoints, durable := c.Store.(PreviewStore)
+	if durable {
+		profilePin, headers, e = checkpoints.PreviewProgress(ctx, scope, logicalID, checksum)
+		if e != nil {
+			return View{}, e
+		}
 	}
-	var p Profile
-	var envelope struct {
-		View    string            `json:"view"`
-		Offset  int               `json:"offset"`
-		Columns []json.RawMessage `json:"columns"`
+	for len(headers) == 0 || len(headers) < profilePin.ColumnCount {
+		offset := len(headers)
+		args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": offset, "limit": limits.PreviewPageSize})
+		r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+		if e != nil {
+			return View{}, e
+		}
+		if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
+			return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
+		}
+		if r.Problem != nil && (r.Problem.Status == 503 || r.Problem.Status == 429) {
+			return View{}, ErrUnavailable
+		}
+		if r.Replay || r.Problem != nil {
+			return View{}, ErrProfile
+		}
+		page, names, err := previewPage(r.Body, asset, profile, profilePin, offset, limits.PreviewPageSize)
+		if err != nil {
+			return View{}, err
+		}
+		profilePin = page
+		if durable {
+			if e = checkpoints.SavePreviewPage(ctx, scope, logicalID, checksum, page, offset, names); e != nil {
+				return View{}, e
+			}
+		}
+		headers = append(headers, names...)
 	}
-	if json.Unmarshal(r.Body, &p) != nil || json.Unmarshal(r.Body, &envelope) != nil || p.AssetID != asset || p.ProfileID != profile || !p.Valid() || envelope.View != "COLUMNS" || envelope.Offset != 0 || len(envelope.Columns) != 1 {
-		return View{}, ErrScope
+	batch, available := Find(c.Manifest, BatchTool)
+	if onlyDiscovery(work) && available && batch.PublicationState == "ACTIVE" {
+		visibility, decision, err := c.publishedScope(ctx, i, batch)
+		if err != nil {
+			return View{}, err
+		}
+		limits, err := PublishedLimits(batch)
+		if err != nil {
+			return View{}, err
+		}
+		p, err := BuildPublished(scope, profilePin, c.Manifest, headers, work, visibility, envelopeSize(i, batch, decision, limits.ResponseBytes))
+		if err != nil {
+			return View{}, err
+		}
+		p.Onboarding = c.Onboarding
+		return c.Store.PlanAnalysis(ctx, p)
 	}
-	plan, e := Build(IdentityScope(i), p, c.Manifest, expected, work)
+	if onlyDiscovery(work) && available && batch.PublicationState == "REVOKED" {
+		return View{}, ErrUnavailable
+	}
+	build := Build
+	if onlyDiscovery(work) {
+		build = buildWithoutBatch
+	}
+	plan, e := build(IdentityScope(i), profilePin, c.Manifest, expected, work)
 	if e != nil {
 		return View{}, e
 	}
+	plan.Headers, plan.Onboarding = headers, c.Onboarding
 	return c.Store.PlanAnalysis(ctx, plan)
 }
 func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id string, offset, limit int) (View, error) {
@@ -106,7 +177,11 @@ func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id stri
 	if e != nil {
 		return View{}, e
 	}
-	return c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
+	v, err := c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
+	if err == nil {
+		err = c.CheckPublishedScope(ctx, i, v.Visibility)
+	}
+	return v, err
 }
 func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, taskID string) (Task, error) {
 	checksum, e := c.check(ctx, i)
@@ -122,13 +197,18 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return Task{}, e
 	}
 	cap, ok := Find(c.Manifest, metadata.Tool)
-	if !ok || !allowed(metadata.Tool) || cap.PublicationState != "ACTIVE" {
+	if !ok || (!allowed(metadata.Tool) && metadata.Tool != BatchTool) || cap.PublicationState != "ACTIVE" {
 		return Task{}, ErrUnavailable
 	}
 	// A previously saved result is historical evidence. Even its reread requires
 	// current authorization for the underlying semantic capability.
-	if e = c.authorize(ctx, i, cap); e != nil {
+	if e = c.CheckStepScope(ctx, i, id, checksum, metadata.Visibility); e != nil {
 		return Task{}, e
+	}
+	if metadata.Tool != BatchTool {
+		if e = c.authorize(ctx, i, cap); e != nil {
+			return Task{}, e
+		}
 	}
 	task, e := c.Store.ClaimAnalysisTask(ctx, scope, id, taskID, checksum)
 	if e != nil {
@@ -138,7 +218,34 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return task, nil
 	}
 	start := time.Now()
-	r, callErr := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef, ManifestChecksum: checksum, Arguments: task.Arguments, IdempotencyKey: "analysis:" + Digest([]any{id, task.ID, task.Attempts}), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes}})
+	dispatchKey := "analysis:" + Digest([]any{id, task.ID, task.Attempts})
+	if task.OwnerKey != "" {
+		dispatchKey = task.OwnerKey
+	}
+	var checkDecision func(orchestration.AuthorizationDecision) error
+	var maxRequest int
+	if task.Tool == BatchTool {
+		l, err := PublishedLimits(cap)
+		if err != nil {
+			return Task{}, err
+		}
+		maxRequest = l.RequestBytes
+		checkDecision = func(d orchestration.AuthorizationDecision) error {
+			if visibilityDigest(i, d) != task.Visibility {
+				return ErrScope
+			}
+			return nil
+		}
+	}
+	r, callErr := c.Service.Call(ctx, orchestration.Invocation{
+		Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass,
+		AuthorizationCapabilityID: cap.RequiredAuthorization, GatewayBindingRef: cap.GatewayBindingRef,
+		MaxRequestBytes: maxRequest, CheckDecision: checkDecision, ManifestChecksum: checksum,
+		Arguments: task.Arguments, IdempotencyKey: dispatchKey, CorrelationID: uuid.NewString(),
+		Window: orchestration.AdmissionWindow, Timeout: time.Duration(task.MaxTimeMS) * time.Millisecond,
+		RetryThreshold: orchestration.AdmissionRetryThreshold,
+		Maximum:        orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes},
+	})
 	f := Finish{State: "HELD", Code: "OUTCOME_REQUIRES_RECONCILIATION", ElapsedMS: time.Since(start).Milliseconds()}
 	if r.AttemptID != uuid.Nil {
 		f.AttemptID = r.AttemptID.String()
@@ -183,6 +290,9 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		f.Calls = 1
 		f.Body = r.Body
 	}
+	if task.Tool == BatchTool {
+		f = c.batchFinish(task, id, r, callErr, f)
+	}
 	// Reconciliation has its own bounded context. A disconnected MCP client must
 	// not erase an already observed outcome; a failed write leaves a fenced hold.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -192,7 +302,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		return finished, callErr
 	}
 	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.CapabilityID}
+		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.RequiredAuthorization}
 	}
 	return finished, err
 }
@@ -202,7 +312,8 @@ type OwnerDenial struct{ ReasonCode, CapabilityID string }
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 
 func retryAfter(value string, now time.Time) time.Time {
-	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 && n <= 86400 {
+	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 {
+		n = min(n, 86401)
 		return now.Add(time.Duration(n) * time.Second)
 	}
 	if at, e := http.ParseTime(value); e == nil {

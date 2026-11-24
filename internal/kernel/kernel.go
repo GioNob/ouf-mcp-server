@@ -123,6 +123,7 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 		return nil, err
 	}
 	if service != nil {
+		server.analysisService = service
 		service.AdmissionCallsPerMinute = server.waits.callsPerMinute
 		checksum, err := snapshot.Checksum()
 		if err != nil {
@@ -370,6 +371,13 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		}
 		checksum, _ := snapshot.Checksum()
 		addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+			analysisID, _ := input["analysisId"].(string)
+			if analysisID != "" && (c.ToolName == "semantic.discovery.status" || c.ToolName == "semantic.discovery.candidates") {
+				request, _ := input["requestId"].(string)
+				if _, _, err := server.publishedHint(ctx, analysisID, request, false); err != nil {
+					return analysisReadError(err), nil, nil
+				}
+			}
 			if inputSchema.Properties["analysisId"] != nil {
 				delete(input, "analysisId")
 			}
@@ -391,7 +399,14 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 				maxObjects, maxBytes = 1, 65536
 			}
-			return invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
+			result, structured, err := invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
+			if err == nil && analysisID != "" && (c.ToolName == "semantic.discovery.status" || c.ToolName == "semantic.discovery.candidates") {
+				request, _ := input["requestId"].(string)
+				if e := recordAnalysisRead(ctx, service, snapshot, analysisID, c.ToolName, request, result); e != nil {
+					return analysisReadError(e), nil, nil
+				}
+			}
+			return result, structured, err
 		})
 		return
 	}

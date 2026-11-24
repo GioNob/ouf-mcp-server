@@ -12,7 +12,7 @@ func semanticReadRequest() AdmissionRequest {
 }
 
 func TestSemanticReadBudgetProfile(t *testing.T) {
-	for _, capability := range []string{"ouf.semantic.search", "ouf.semantic.consultation.read"} {
+	for _, capability := range []string{"ouf.semantic.search", "ouf.semantic.consultation.read", "ouf.semantic.search.batch"} {
 		request := semanticReadRequest()
 		request.CapabilityID = capability
 		key, budget, err := AdmissionWindowBudget(request)
@@ -65,7 +65,7 @@ func (s *semanticReadAdmissionCapture) Reserve(ctx context.Context, in Admission
 }
 
 func TestSemanticReadBudgetServiceSelectionAndAuthorization(t *testing.T) {
-	for _, capability := range []string{"ouf.semantic.search", "ouf.semantic.consultation.read"} {
+	for _, capability := range []string{"ouf.semantic.search", "ouf.semantic.consultation.read", "ouf.semantic.search.batch"} {
 		for _, allowed := range []bool{true, false} {
 			in := invocation()
 			in.CapabilityID = capability

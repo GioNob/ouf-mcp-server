@@ -64,7 +64,12 @@ type Work struct {
 	Observation int `json:"observation,omitempty"`
 }
 type Task struct {
-	ID string `json:"taskId"`
+	Compatibility string `json:"compatibilityReason,omitempty"`
+	// Internal plan metadata is omitted from legacy task projections.
+	Groups     map[string][]int `json:"intentOrdinals,omitempty"`
+	OwnerKey   string           `json:"ownerKey,omitempty"`
+	Visibility string           `json:"visibilityDigest,omitempty"`
+	ID         string           `json:"taskId"`
 	Work
 	State          string          `json:"state"`
 	Code           string          `json:"code,omitempty"`
@@ -97,18 +102,25 @@ type Budget struct {
 	Held                 int   `json:"heldTasks"`
 }
 type View struct {
-	ID       string  `json:"analysisId"`
-	Revision int64   `json:"revision"`
-	Profile  Profile `json:"profile"`
-	Budget   Budget  `json:"budget"`
-	Tasks    []Task  `json:"tasks"`
-	Offset   int     `json:"offset"`
-	HasMore  bool    `json:"hasMore"`
+	Visibility    string  `json:"-"`
+	Seed          string  `json:"-"`
+	Compatibility string  `json:"compatibilityReason,omitempty"`
+	ID            string  `json:"analysisId"`
+	Revision      int64   `json:"revision"`
+	Profile       Profile `json:"profile"`
+	Budget        Budget  `json:"budget"`
+	Tasks         []Task  `json:"tasks"`
+	Offset        int     `json:"offset"`
+	HasMore       bool    `json:"hasMore"`
 	// Per-column evidence collection, never a semantic correctness decision.
 	CoveredColumns  int `json:"columnsWithPlannedWork"`
 	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
 type Plan struct {
+	Visibility, Seed string
+	// Headers are owner-verified in ordinal order, only during initial planning.
+	Headers          []string
+	Onboarding       bool
 	ID               string
 	Scope            Scope
 	Profile          Profile
@@ -117,6 +129,8 @@ type Plan struct {
 	Tasks            []Task
 }
 type Finish struct {
+	Children               []Task
+	StopScope              bool
 	State, Code, AttemptID string
 	Body                   json.RawMessage
 	Calls, ElapsedMS       int64
@@ -124,6 +138,10 @@ type Finish struct {
 	WindowWait             bool
 	Dimension              string
 }
+type ScopeStopStore interface {
+	StopPublished(context.Context, Scope, string, string, string) error
+}
+
 type Store interface {
 	PlanAnalysis(context.Context, Plan) (View, error)
 	ReadAnalysis(context.Context, Scope, string, string, int, int) (View, error)
@@ -293,6 +311,11 @@ func SafeError(err error) string {
 	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()
+		}
+	}
+	for _, known := range []error{ErrProfile, ErrCursor, ErrExpired} {
+		if errors.Is(err, known) {
+			return known.Error()
 		}
 	}
 	return "ANALYSIS_OPERATION_HELD"

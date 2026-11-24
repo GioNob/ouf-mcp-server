@@ -14,6 +14,7 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
+		"source.analysis.read":              {"(analysisId)", "(analysisId, view=STATUS)", "(analysisId, view=SUMMARY)", "(analysisId, cursor, view=SUMMARY)"},
 		"ouf.operations.incidents":          {"()", "(snapshot=true)", "(cursor)", "(coverage=true, snapshot=true)", "(coverage=true, cursor)", "(resumeFrom)"},
 		"authorization.permissions.read":    {"(view=ROLES)", "(view=CAPABILITIES)", "(subjectId)", "(externalRoleRef)"},
 		"authorization.permissions.propose": {"(grantId, operation, reason)", "(operation=REPLACE_ROLES, reason, roleCatalogue)"},
