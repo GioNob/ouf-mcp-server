@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,18 @@ type Input struct {
 	FileName    string `json:"file_name,omitempty"`
 }
 
+const XLSXMediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+func (input Input) MediaType() string {
+	if input.MimeType != "" {
+		return input.MimeType
+	}
+	if strings.HasSuffix(strings.ToLower(input.FileName), ".xlsx") {
+		return XLSXMediaType
+	}
+	return "text/csv"
+}
+
 type Fetcher struct {
 	client *http.Client
 }
@@ -56,7 +69,7 @@ type Staged struct {
 // never fetches the URL or treats its origin as approved for future requests.
 func DescriptorOrigin(input Input) (string, error) {
 	u, err := url.Parse(input.DownloadURL)
-	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" || u.Opaque != "" || (input.MimeType != "" && input.MimeType != "text/csv") {
+	if err != nil || !fileID.MatchString(input.FileID) || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" || u.Opaque != "" || (input.MediaType() != "text/csv" && input.MediaType() != XLSXMediaType) {
 		return "", Failure("ATTACHMENT_DESCRIPTOR_INVALID")
 	}
 	return u.Scheme + "://" + u.Host, nil
@@ -171,7 +184,7 @@ func (f *Fetcher) Fetch(ctx context.Context, input Input) (_ *Staged, err error)
 	if resp.ContentLength > MaxCSVBytes {
 		return nil, Failure("ATTACHMENT_TOO_LARGE")
 	}
-	spool, err := os.CreateTemp("", "ouf-host-attachment-*.csv")
+	spool, err := os.CreateTemp("", "ouf-host-attachment-*")
 	if err != nil {
 		return nil, Failure("ATTACHMENT_STAGING_UNAVAILABLE")
 	}

@@ -118,3 +118,19 @@ func TestHostOriginProbeValidatesDescriptorWithoutFetching(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachmentMediaType(t *testing.T) {
+	for _, tc := range []struct{ mime, name, want string }{
+		{"", "workbook.XlSx", XLSXMediaType},
+		{"", "table.CsV", "text/csv"},
+		{"", "", "text/csv"},
+		{"", "attachment.bin", "text/csv"},
+		{"text/csv", "ignored.xlsx", "text/csv"},
+		{XLSXMediaType, "", XLSXMediaType},
+	} {
+		in := Input{DownloadURL: "https://files.example.invalid/object", FileID: "file_test", MimeType: tc.mime, FileName: tc.name}
+		if _, err := DescriptorOrigin(in); err != nil || in.MediaType() != tc.want {
+			t.Errorf("%q/%q: %s %v", tc.mime, tc.name, in.MediaType(), err)
+		}
+	}
+}

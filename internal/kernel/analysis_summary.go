@@ -106,12 +106,19 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		}
 	}()
 	page := view == "SUMMARY"
-	result, err := store.ReadSummary(ctx, scope, id, checksum, pos, page)
+	result, storedManifest, err := analysis.ReadCompatible(checksum, func(sum string) (analysis.Summary, error) {
+		return store.ReadSummary(ctx, scope, id, sum, pos, page)
+	})
 	if err != nil {
 		return summaryFailure(err, id)
 	}
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
 		return summaryFailure(err, id)
+	}
+	if result.Hint.AssetID != "" && result.Hint.ProfileID != "" && (result.Hint.Tool == "source.analysis.plan" || result.Onboarding && result.State() == "COMPLETE") {
+		if err := bindSummaryUnit(ctx, c, scope, id, storedManifest, &result.Hint); err != nil {
+			return summaryFailure(err, id)
+		}
 	}
 	if page && pos.Last < 0 {
 		pos.Snapshot = uuid.New()
@@ -193,6 +200,10 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 	// Deliver a compact authorized owner read for that column instead.
 	if result.Hint.Tool == "source.analysis.plan" && result.State() == "RUNNING" {
 		args := nextstep.Object{"assetId": result.Hint.AssetID, "profileId": result.Hint.ProfileID, "view": "COLUMNS", "offset": result.Hint.Ordinal, "limit": 1}
+		if ref := result.Hint.UnitProfileRef; ref != nil {
+			args["view"], args["unitRef"] = "UNIT", ref.UnitRef
+			delete(args, "assetId")
+		}
 		if s.valid("source.file.preview", args) {
 			body := out.StructuredContent.(nextstep.Object)
 			body["next"] = nextstep.Object{"contract": nextstep.Contract, "action": "CALL_TOOL", "tool": "source.file.preview", "arguments": args,
@@ -232,7 +243,22 @@ func recordAnalysisRead(ctx context.Context, service *orchestration.Service, sna
 	if err != nil {
 		return err
 	}
-	return store.ObserveDiscovery(ctx, analysis.IdentityScope(identity.Identity), id, checksum, tool, request, []byte(body.Text))
+	scope := analysis.IdentityScope(identity.Identity)
+	err = store.ObserveDiscovery(ctx, scope, id, checksum, tool, request, []byte(body.Text))
+	old := manifest.AnalysisPredecessor(checksum)
+	if !errors.Is(err, analysis.ErrScope) || manifest.AnalysisPredecessor(old) == "" {
+		return err
+	}
+	// A scope miss commits no observation. Check the earlier plan binding
+	// before recording this same immutable receipt against that generation.
+	plans, ok := service.Admission.(analysis.Store)
+	if !ok {
+		return err
+	}
+	if _, readErr := plans.ReadAnalysis(ctx, scope, id, old, 0, 1); readErr != nil {
+		return readErr
+	}
+	return store.ObserveDiscovery(ctx, scope, id, old, tool, request, []byte(body.Text))
 }
 
 func summaryInput(tool string, args map[string]any) bool {

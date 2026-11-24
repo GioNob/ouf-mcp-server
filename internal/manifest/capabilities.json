@@ -1,7 +1,21 @@
 {
-  "version": "1.17.0-published-batch-v1",
+  "version": "1.18.0-extraction-unit-v1",
   "nextErrors": [
-    {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "draftAssetRef": "@draftAssetRef", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
+    {"when":{"code":"ONB_UNIT_SCHEMA_CHANGED"},"action":"CALL_TOOL","reason":"ONB_UNIT_SCHEMA_CHANGED","tool":"source.file.preview","args":{"view":"=UNIT","profileId":"@unitProfileRef.profileId|@profileId","unitRef":"@unitProfileRef.unitRef|@unitRef"}},
+    {"when":{"code":"ONB_UNIT_PROFILE_CHANGED"},"action":"CALL_TOOL","reason":"ONB_UNIT_PROFILE_CHANGED","tool":"source.file.preview","args":{"view":"=UNIT","profileId":"@unitProfileRef.profileId|@profileId","unitRef":"@unitProfileRef.unitRef|@unitRef"}},
+    {"when":{"code":"ONB_PROFILE_UNIT_NOT_FOUND"},"action":"CALL_TOOL","reason":"ONB_PROFILE_UNIT_NOT_FOUND","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"@unitProfileRef.profileId|@profileId"}},
+    {"when":{"code":"ONB_UNIT_REJECTED"},"action":"CALL_TOOL","reason":"ONB_UNIT_REJECTED","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"@unitProfileRef.profileId|@profileId"}},
+    {"when":{"code":"ONB_UNIT_SELECTION_CHANGED"},"action":"CALL_TOOL","reason":"ONB_UNIT_SELECTION_CHANGED","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"@unitProfileRef.profileId|@profileId"}},
+    {"when":{"code":"ONB_UNIT_ALREADY_BOUND"},"action":"BLOCKED","reason":"ONB_UNIT_ALREADY_BOUND","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"@unitProfileRef.profileId|@profileId"},"actor":"AGENT","message":"Controlla le unità del profilo e scegli una sorgente disponibile."},
+    {"when":{"code":"ONB_UNIT_ASSET_ALREADY_BOUND"},"action":"BLOCKED","reason":"ONB_UNIT_ASSET_ALREADY_BOUND","tool":"source.file.preview","args":{"view":"=ASSETS"},"actor":"AGENT","message":"Il file è già collegato a una sorgente. Scegli un altro asset dall’inventario."},
+    {"when":{"code":"ONB_UNIT_PROFILE_OUTDATED"},"action":"BLOCKED","reason":"ONB_UNIT_PROFILE_OUTDATED","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"@unitProfileRef.profileId|@profileId"},"actor":"AGENT","message":"Leggi l’origine del profilo e riprofila il file con il lettore corrente."},
+    {"when":{"code":"ONB_UNIT_FORMAT_UNSUPPORTED"},"action":"BLOCKED","reason":"ONB_UNIT_FORMAT_UNSUPPORTED","tool":"source.file.upload","actor":"AGENT","message":"Seleziona una tabella CSV o un foglio XLSX da profilare."},
+    {"when":{"code":"ONB_FILE_MEDIA_TYPE_MISMATCH"},"action":"BLOCKED","reason":"ONB_FILE_MEDIA_TYPE_MISMATCH","tool":"source.file.upload","actor":"AGENT","message":"Il contenuto del file non corrisponde al formato dichiarato. Seleziona il file corretto."},
+    {"when":{"code":"ONB_FILE_MEDIA_TYPE_UNSUPPORTED"},"action":"BLOCKED","reason":"ONB_FILE_MEDIA_TYPE_UNSUPPORTED","tool":"source.file.upload","actor":"AGENT","message":"Seleziona un file in un formato accettato dall’installazione."},
+    {"when":{"code":"ONB_FILE_LIMIT_EXCEEDED"},"action":"BLOCKED","reason":"ONB_FILE_LIMIT_EXCEEDED","tool":"source.file.upload","actor":"AGENT","message":"Riduci il file entro i limiti di caricamento e selezionalo di nuovo."},
+    {"when":{"code":"ONB_READ_OPTIONS_UNSUPPORTED"},"action":"BLOCKED","reason":"ONB_READ_OPTIONS_UNSUPPORTED","tool":"source.file.upload","actor":"AGENT","message":"Verifica il file e scegli un nuovo caricamento."},
+    {"when":{"code":"ONB_FILE_PROFILE_NOT_FOUND"},"action":"BLOCKED","reason":"ONB_FILE_PROFILE_NOT_FOUND","tool":"source.file.upload","actor":"AGENT","message":"Verifica il file e scegli un nuovo caricamento."},
+    {"when":{"code":"ONB_EXECUTION_PROPOSAL_REQUIRED","tool":"source.onboarding.review.prepare"},"action":"BLOCKED","reason":"ONB_EXECUTION_PROPOSAL_REQUIRED","tool":"source.onboarding.review.prepare","args":{"analysisId":"@analysisId","draftAssetRef":"@draftAssetRef","sourceId":"sourceId|@sourceId","onboardingVersionId":"onboardingVersionId|@onboardingVersionId","expectedVersion":"@expectedVersion","commandKey":"#decisionKey","unitProfileRef":"@unitProfileRef|selection.unitProfileRef"},"message":"Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.","actor":"AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_VERSION_MISMATCH", "tool": "source.onboarding.review.prepare"}, "action": "CALL_TOOL", "reason": "ONB_SEMANTIC_REF_VERSION_MISMATCH", "tool": "source.onboarding.read", "args": {"analysisId": "@analysisId", "sourceId": "@sourceId", "onboardingVersionId": "@onboardingVersionId"}},
     {"when": {"code": "ONB_READER_UNSUPPORTED", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_READER_UNSUPPORTED", "tool": "source.onboarding.read", "args": {"analysisId": "@analysisId", "sourceId": "@sourceId", "view": "=LATEST"}, "message": "Verifica lo stato della fonte e scegli un reader supportato per la colonna indicata da fieldName.", "actor": "AGENT"},
@@ -31,6 +45,9 @@
       "read": "source.file.preview",
       "vocabulary": {"workflowState": ["QUEUED", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED", "PROFILE_AVAILABLE", "ERROR"], "workflowState|status": ["QUEUED", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED", "PROFILE_AVAILABLE", "ERROR", "READY", "PENDING"]},
       "rules": [
+        {"when":{"unitSummary.readyUnits":"1","unitSummary.singleReadyUnitRef":"?","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"CALL_TOOL","reason":"SOURCE_UNIT_READY","tool":"source.file.preview","args":{"view":"=UNIT","profileId":"profileId|resultRef|@profileId","unitRef":"unitSummary.singleReadyUnitRef"}},
+        {"when":{"unitSummary.readyUnits":"0","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"BLOCKED","reason":"SOURCE_UNITS_NONE_READY","tool":"source.file.upload","actor":"AGENT","message":"Nessuna unità pronta. Scegli un nuovo file da caricare."},
+        {"when":{"unitSummary.readyUnits":"?","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"CALL_TOOL","reason":"SOURCE_UNIT_INVENTORY","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"profileId|resultRef|@profileId"}},
         {"when": {"#incompleteColumn": "true"}, "action": "CALL_TOOL", "reason": "DISTINCT_VALUES_PAGE", "tool": "source.file.preview", "args": {"view": "=COLUMNS", "assetId": "assetId|@assetId", "profileId": "profileId|resultRef|@profileId", "distinctValuesCursor": "#distinctCursor"}},
         {"when": {"workflowState|status": "QUEUED|PENDING|READY|RUNNING|RETRY_WAIT|SUCCEEDED"}, "action": "POLL", "reason": "PROFILE_JOB", "tool": "source.file.preview", "args": {"assetId": "assetId|@assetId", "jobId": "jobId|@jobId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"profileId": "?", "workflowState|status": "PROFILE_AVAILABLE|SUCCEEDED|-"}, "action": "CALL_TOOL", "reason": "PROFILE_AVAILABLE", "tool": "source.file.preview", "args": {"profileId": "profileId", "assetId": "assetId|@assetId"}},
@@ -41,6 +58,11 @@
       "read": "source.file.preview",
       "vocabulary": {"workflowState": ["ASSETS", "PROFILE_AVAILABLE", "PROFILE_COLUMNS", "QUEUED", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED", "ERROR"], "workflowState|status": ["ASSETS", "PROFILE_AVAILABLE", "PROFILE_COLUMNS", "QUEUED", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED", "ERROR", "READY", "PENDING", "EXHAUSTED", "QUARANTINED"]},
       "rules": [
+        {"when":{"@view":"UNITS"},"action":"BLOCKED","reason":"SOURCE_UNIT_SELECTION_REQUIRED","actor":"AGENT","tool":"source.file.preview","message":"Chiedi all’utente quale foglio o layer caricare: ognuno diventa una sorgente distinta."},
+        {"when":{"@view":"UNIT","status":"READY"},"action":"CALL_TOOL","reason":"PLAN_UNIT_DISCOVERY","tool":"source.analysis.plan","args":{"commandKey":"#uuid","work":"#discovery","expectedRevision":"#zero","unitProfileRef":"#unitProfileRef"}},
+        {"when":{"unitSummary.readyUnits":"1","unitSummary.singleReadyUnitRef":"?","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"CALL_TOOL","reason":"SOURCE_UNIT_READY","tool":"source.file.preview","args":{"view":"=UNIT","profileId":"profileId|resultRef|@profileId","unitRef":"unitSummary.singleReadyUnitRef"}},
+        {"when":{"unitSummary.readyUnits":"0","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"BLOCKED","reason":"SOURCE_UNITS_NONE_READY","tool":"source.file.upload","actor":"AGENT","message":"Nessuna unità pronta. Scegli un nuovo file da caricare."},
+        {"when":{"unitSummary.readyUnits":"?","workflowState|status":"PROFILE_AVAILABLE|SUCCEEDED|READY|-","@view":"-"},"action":"CALL_TOOL","reason":"SOURCE_UNIT_INVENTORY","tool":"source.file.preview","args":{"view":"=UNITS","profileId":"profileId|resultRef|@profileId"}},
         {"when": {"#incompleteColumn": "true"}, "action": "CALL_TOOL", "reason": "DISTINCT_VALUES_PAGE", "tool": "source.file.preview", "args": {"view": "=COLUMNS", "assetId": "assetId|@assetId", "profileId": "profileId|resultRef|@profileId", "distinctValuesCursor": "#distinctCursor"}},
         {"when": {"@distinctValuesCursor": "?", "layer": "-", "#afterCursorColumn": "?"}, "action": "CALL_TOOL", "reason": "COLUMN_PAGE", "tool": "source.file.preview", "args": {"view": "=COLUMNS", "offset": "#afterCursorColumn", "profileId": "profileId|@profileId", "assetId": "assetId|@assetId"}},
         {"when": {"@view": "ASSETS", "items": "?"}, "action": "BLOCKED", "reason": "ASSET_SELECTION_REQUIRED", "tool": "source.file.preview", "message": "Seleziona il file e il suo profilo dalla pagina ricevuta."},
@@ -148,17 +170,21 @@
       "rules": [
         {"when": {"unchanged": "true", "@ifObservationVersion": "?"}, "action": "CALL_TOOL", "reason": "CURRENT_REVIEW_REQUIRED", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}},
         {"when": {"reasonCode": "CURRENT_REVIEW_REQUIRED", "allowedActions": "READ_AGAIN"}, "action": "CALL_TOOL", "reason": "CURRENT_REVIEW_REQUIRED", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}},
-        {"when": {"@candidateAction": "-", "allowedActions": "WITHDRAW_CANDIDATE", "reasonCode": "ONB_PUBLICATION_ENVELOPE_TOO_LARGE", "workflowState|state": "IN_REVIEW|APPROVED"}, "action": "CALL_TOOL", "reason": "ONB_PUBLICATION_ENVELOPE_TOO_LARGE", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId", "onboardingVersionId": "onboardingVersionId", "expectedVersion": "lockVersion", "candidateAction": "=WITHDRAW", "commandKey": "#uuid"}, "message": "Ritira la proposta troppo grande per preparare una versione più piccola."},
+        {"when": {"@candidateAction": "-", "allowedActions": "WITHDRAW_CANDIDATE", "reasonCode": "ONB_PUBLICATION_ENVELOPE_TOO_LARGE", "workflowState|state": "IN_REVIEW|APPROVED"}, "action": "CALL_TOOL", "reason": "ONB_PUBLICATION_ENVELOPE_TOO_LARGE", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId", "onboardingVersionId": "onboardingVersionId", "expectedVersion": "lockVersion", "candidateAction": "=WITHDRAW", "commandKey": "#uuid",
+            "unitProfileRef": "@unitProfileRef|selection.unitProfileRef"}, "message": "Ritira la proposta troppo grande per preparare una versione più piccola."},
         {"when": {"allowedActions": "READ_AGAIN", "workflowState|state": "APPROVED"}, "action": "POLL", "reason": "VERIFYING_DEPENDENCY", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "terminal": ["ACTIVE", "REVOKED", "SUPERSEDED"]},
         {"when": {"allowedActions": "HUMAN_ACTIVATE", "workflowState|state": "APPROVED"}, "action": "WAIT_FOR_HUMAN", "reason": "HUMAN_ACTIVATION_REQUIRED", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "RECHECK", "actor": "HUMAN_THS", "message": "Apri la pagina di revisione della fonte e conferma l’attivazione."},
         {"when": {"allowedActions": "-", "activationProgress.readiness_phase": "NOT_STARTED", "activationProgress.requiresAuthenticatedHumanResume": "true", "workflowState|state": "APPROVED"}, "action": "WAIT_FOR_HUMAN", "reason": "HUMAN_ACTIVATION_REQUIRED", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "RECHECK", "actor": "HUMAN_THS", "message": "Apri la pagina di revisione della fonte e conferma l’attivazione."},
         {"when": {"allowedActions": "HUMAN_GRANT_BUDGET"}, "action": "BLOCKED", "reason": "READINESS_BUDGET_EXHAUSTED", "tool": "source.onboarding.read", "message": "Serve una decisione umana su un nuovo budget."},
-        {"when": {"workflowState|state": "IN_REVIEW", "allowedActions": "RENEW_REVIEW"}, "action": "CALL_TOOL", "reason": "CHALLENGE_EXPIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid"}},
+        {"when": {"workflowState|state": "IN_REVIEW", "allowedActions": "RENEW_REVIEW"}, "action": "CALL_TOOL", "reason": "CHALLENGE_EXPIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid",
+            "unitProfileRef": "@unitProfileRef|selection.unitProfileRef"}},
         {"when": {"workflowState": "COMMAND_ABSENT"}, "action": "BLOCKED", "reason": "REVISION_COMMAND_ABSENT", "tool": "source.onboarding.revision.read", "message": "Verifica la ricevuta del comando di revisione."},
         {"when": {"allowedActions": "NONE", "workflowState|state": "IN_REVIEW"}, "action": "BLOCKED", "reason": "REVIEW_UNAVAILABLE", "tool": "source.onboarding.read", "message": "Verifica la disponibilità della revisione."},
         {"when": {"allowedActions": "NONE", "workflowState|state": "CHANGES_REQUESTED"}, "action": "BLOCKED", "reason": "REVISION_UNAVAILABLE", "tool": "source.onboarding.read", "message": "Verifica la versione sulla quale è ammessa una modifica."},
-        {"when": {"workflowState|state": "DRAFT", "allowedActions": "PREPARE_REVIEW", "reasonCode": "EXECUTION_PROPOSAL_REQUIRED"}, "action": "BLOCKED", "reason": "EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"draftAssetRef": "#deferredAssetRef", "analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
-        {"when": {"workflowState|state": "DRAFT", "allowedActions": "PREPARE_REVIEW|-", "executionProposalRequired": "false"}, "action": "CALL_TOOL", "reason": "PREPARE_SOURCE_REVIEW", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid"}},
+        {"when": {"workflowState|state": "DRAFT", "allowedActions": "PREPARE_REVIEW", "reasonCode": "EXECUTION_PROPOSAL_REQUIRED"}, "action": "BLOCKED", "reason": "EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"draftAssetRef": "#deferredAssetRef", "analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#decisionKey",
+            "unitProfileRef": "@unitProfileRef|selection.unitProfileRef"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
+        {"when": {"workflowState|state": "DRAFT", "allowedActions": "PREPARE_REVIEW|-", "executionProposalRequired": "false"}, "action": "CALL_TOOL", "reason": "PREPARE_SOURCE_REVIEW", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid",
+            "unitProfileRef": "@unitProfileRef|selection.unitProfileRef"}},
         {"when": {"workflowState|state": "CHANGES_REQUESTED", "allowedActions": "CREATE_REVISION|REDRAFT_SAME_FILE|-"}, "action": "CALL_TOOL", "reason": "REVISION_REQUIRED", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId"}},
         {"when": {"workflowState|state": "REJECTED", "allowedActions": "REDRAFT_SAME_FILE|CREATE_REVISION"}, "action": "CALL_TOOL", "reason": "REVISION_REQUIRED", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId"}},
         {"when": {"workflowState|state": "REJECTED", "candidateDisposition": "WITHDRAWN"}, "action": "BLOCKED", "reason": "CANDIDATE_WITHDRAWN", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId", "view": "=LATEST"}, "message": "La proposta è stata ritirata. Verifica sulla versione corrente se puoi preparare una nuova revisione."},
@@ -168,7 +194,8 @@
         {"when": {"allowedActions": "HUMAN_RECHECK", "workflowState|state": "APPROVED"}, "action": "WAIT_FOR_HUMAN", "reason": "DEPENDENCY_RECHECK", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "RECHECK"},
         {"when": {"allowedActions": "WAIT_HUMAN_REVIEW", "workflowState|state": "IN_REVIEW"}, "action": "WAIT_FOR_HUMAN", "reason": "SOURCE_REVIEW", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "APPROVE_OR_REJECT"},
         {"when": {"allowedActions": "-", "challengeStatus": "CREATED|PENDING", "challengeExpired": "false|-", "workflowState|state": "IN_REVIEW"}, "action": "WAIT_FOR_HUMAN", "reason": "SOURCE_REVIEW", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "APPROVE_OR_REJECT"},
-        {"when": {"challengeStatus": "EXPIRED", "workflowState|state": "IN_REVIEW", "allowedActions": "-"}, "action": "CALL_TOOL", "reason": "CHALLENGE_EXPIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid"}},
+        {"when": {"challengeStatus": "EXPIRED", "workflowState|state": "IN_REVIEW", "allowedActions": "-"}, "action": "CALL_TOOL", "reason": "CHALLENGE_EXPIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "lockVersion", "commandKey": "#uuid",
+            "unitProfileRef": "@unitProfileRef|selection.unitProfileRef"}},
         {"when": {"allowedActions": "-", "activationProgress.humanRecheckAllowed": "true", "workflowState|state": "APPROVED"}, "action": "WAIT_FOR_HUMAN", "reason": "DEPENDENCY_RECHECK", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "decision": "RECHECK"},
         {"when": {"activationProgress.readiness_phase": "CHECKING_COMPATIBILITY|CHECKING_IDENTITY|ACTIVATING", "allowedActions": "-", "workflowState|state": "APPROVED"}, "action": "POLL", "reason": "VERIFYING_DEPENDENCY", "tool": "source.onboarding.read", "args": {"sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "analysisId": "@analysisId"}, "terminal": ["ACTIVE", "REVOKED", "SUPERSEDED"]},
         {"when": {"workflowState|state": "APPROVED"}, "action": "BLOCKED", "reason": "ACTIVATION_REVIEW_REQUIRED", "tool": "source.onboarding.read", "message": "Verifica il requisito di attivazione e il budget della fonte."},
@@ -3868,9 +3895,10 @@
       "handoffInputSchema": {"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}},
       "nextPolicy": "upload",
       "capabilityId": "ouf.managed-source.file.upload",
-      "purpose": "Stage an authenticated user's CSV through the governed Gateway",
+      "purpose": "Stage an authenticated user's CSV or XLSX through the governed Gateway",
       "useWhen": [
-        "the authenticated human wants to choose a local CSV through the first-party picker, or a supported host supplies a governed file parameter"
+        "the authenticated human wants to choose a local CSV or XLSX through the first-party picker, or a supported host supplies a governed file parameter",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "the requested upload mode is not configured"
@@ -3928,17 +3956,15 @@
                 "type": "string",
                 "format": "uri"
               },
-              "mime_type": {
-                "type": "string",
-                "const": "text/csv"
-              },
+              "mime_type": {"$ref":"#/$defs/uploadMediaType"},
               "file_name": {
                 "type": "string",
                 "maxLength": 255
               }
             }
           }
-        }
+        },
+        "$defs": {"uploadMediaType":{"type":"string","enum":["text/csv","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]}}
       }
     },
     {
@@ -3947,8 +3973,9 @@
       "capabilityId": "ouf.managed-source.file.profile",
       "purpose": "Queue profiling of a managed file owned by the authenticated human",
       "useWhen": [
-        "the user uploaded a CSV through the governed HUMAN attachment flow and knows its asset ID",
-        "Build VALUE_MAP entries from the column's distinctValues list in the completed profile. Use source.file.preview to read the result when this tool returns a job receipt. If distinctValues is absent or the profile only reports a count, tell the user that the column is unsuitable for an agent-built VALUE_MAP"
+        "the user uploaded a CSV or XLSX file through the governed HUMAN attachment flow and knows its asset ID",
+        "Build VALUE_MAP entries from the column's distinctValues list in the completed profile. Use source.file.preview to read the result when this tool returns a job receipt. If distinctValues is absent or the profile only reports a count, tell the user that the column is unsuitable for an agent-built VALUE_MAP",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "the user has no asset ID or wants to read a different user’s file"
@@ -3994,8 +4021,10 @@
           "assetId": {
             "type": "string",
             "format": "uuid"
-          }
-        }
+          },
+          "readOptions": {"$ref":"#/$defs/xlsxReadOptions"}
+        },
+        "$defs": {"xlsxReadOptions":{"type":"object","additionalProperties":false,"required":["xlsx"],"properties":{"xlsx":{"type":"object","additionalProperties":false,"required":["headerRows"],"properties":{"headerRows":{"type":"object","minProperties":1,"maxProperties":64,"propertyNames":{"pattern":"^sheet:(0|[1-9][0-9]{0,3})$"},"additionalProperties":{"type":"integer","minimum":1,"maximum":1048576}}}}}}}
       }
     },
     {
@@ -4005,7 +4034,8 @@
       "purpose": "Read an owned profile/job or bounded immutable schema pages (up to 1024 columns)",
       "useWhen": [
         "the user needs an owned asset profile/job or must recover uploaded CSV work in a new conversation",
-        "Read a completed source.file.profile job for its distinctValues where the owner makes them available. Follow a column with distinctValuesComplete=false using view=COLUMNS, assetId, profileId and its distinctValuesCursor. Use the completed list when proposing a VALUE_MAP and record the column in rationale.sourceColumn"
+        "Read a completed source.file.profile job for its distinctValues where the owner makes them available. Follow a column with distinctValuesComplete=false using view=COLUMNS, assetId, profileId and its distinctValuesCursor. Use the completed list when proposing a VALUE_MAP and record the column in rationale.sourceColumn",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "access to another tenant or subject, raw file bytes or storage locations is requested"
@@ -4060,7 +4090,9 @@
             "type": "string",
             "enum": [
               "ASSETS",
-              "COLUMNS"
+              "COLUMNS",
+              "UNITS",
+              "UNIT"
             ]
           },
           "limit": {
@@ -4081,7 +4113,8 @@
           "distinctValuesCursor": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "unitRef": {"$ref":"#/$defs/unitRef"}
         },
         "oneOf": [
           {
@@ -4199,8 +4232,12 @@
                 "minLength": 1
               }
             }
-          }
-        ]
+          },
+          {"type":"object","additionalProperties":false,"required":["view","profileId"],"properties":{"view":{"const":"UNITS"},"profileId":{"$ref":"#/$defs/uuid"},"assetId":{"$ref":"#/$defs/uuid"},"offset":{"type":"integer","minimum":0,"maximum":63},"limit":{"type":"integer","minimum":1,"maximum":64}}},
+          {"type":"object","additionalProperties":false,"required":["view","profileId","unitRef"],"properties":{"view":{"const":"UNIT"},"profileId":{"$ref":"#/$defs/uuid"},"unitRef":{"$ref":"#/$defs/unitRef"},"assetId":{"$ref":"#/$defs/uuid"},"offset":{"type":"integer","minimum":0,"maximum":1023},"limit":{"type":"integer","minimum":1,"maximum":128}}},
+          {"type":"object","additionalProperties":false,"required":["view","profileId","unitRef","distinctValuesCursor"],"properties":{"view":{"const":"UNIT"},"profileId":{"$ref":"#/$defs/uuid"},"unitRef":{"$ref":"#/$defs/unitRef"},"assetId":{"$ref":"#/$defs/uuid"},"distinctValuesCursor":{"type":"string","minLength":1}}}
+        ],
+        "$defs": {"unitRef":{"type":"string","maxLength":16,"pattern":"^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"},"uuid":{"type":"string","format":"uuid","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}}
       }
     },
     {
@@ -4211,7 +4248,8 @@
       "useWhen": [
         "the user has reviewed the owned asset profile and selected pinned semantic references and field access decisions",
         "Choose a reader for each base type from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, use semantic.propose to combine base types or pinned published types into a DATATYPE. Use it only after human approval in the THS and publication",
-        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef"
+        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "the user has no governed asset and profile IDs, or requests approval or activation"
@@ -4251,8 +4289,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "assetId",
-          "profileId",
           "sourceId",
           "name",
           "owner",
@@ -4806,6 +4842,27 @@
             "minItems": 0,
             "maxItems": 1024,
             "description": "Use INCLUDE fields from this file. Build MANY with ordered items or LIST_SPLIT_V1. Onboarding checks component cardinality, output types and the limit of 256 leaves. New preparations require ACTIVE DATATYPE pins at every level. Published bundles may resolve ACTIVE, DEPRECATED or RETIRED pins. Concept membership requires a pinned CONCEPT of the vocabulary or a pinned value map targeting it."
+          },
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "unitRef": {
+            "type": "string",
+            "maxLength": 16,
+            "pattern": "^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["profileId", "profileVersion", "unitRef", "schemaHash"],
+            "properties": {
+              "profileId": {"$ref": "#/$defs/uuid"},
+              "profileVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+              "unitRef": {"$ref": "#/$defs/unitRef"},
+              "schemaHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+            }
           }
         },
         "properties": {
@@ -4921,8 +4978,10 @@
               }
             },
             "minItems": 1
-          }
-        }
+          },
+          "unitProfileRef": {"$ref":"#/$defs/unitProfileRef"}
+        },
+        "anyOf": [{"required":["assetId","profileId"]},{"required":["unitProfileRef"]}]
       }
     },
     {
@@ -5094,7 +5153,8 @@
       "purpose": "Prepare a validated source version for trusted human review with durable command reconciliation",
       "useWhen": [
         "the user has prepared this owned onboarding version and needs its current review state",
-        "the owner directs the agent to withdraw an unpublished candidate or the user requests a fresh draft from an eligible rejected initial candidate"
+        "the owner directs the agent to withdraw an unpublished candidate or the user requests a fresh draft from an eligible rejected initial candidate",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "approval, activation, configuration editing or access to another owner is requested"
@@ -5164,7 +5224,8 @@
             "enum": ["WITHDRAW", "RESTART_DRAFT"],
             "description": "Use the current lock version and a fresh commandKey. WITHDRAW retires an unpublished DRAFT, IN_REVIEW or APPROVED candidate. RESTART_DRAFT creates a draft from the latest eligible REJECTED initial candidate before first publication. Onboarding checks ownership, state and lineage."
           },
-          "executionProposal": {
+          "executionProposal": {"oneOf": [
+            {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:ouf:managed-file-execution-proposal:typed-csv:v2",
             "description": "Preparation only. CSV cells remain lexical in RAW; explicitly configured string, decimal and date mappings determine materialization types. Owner checks property/access/source/tenant and exact semantic references. No approval, publication, compatibility attestation or runtime authority is issued.",
@@ -5506,8 +5567,358 @@
                 }
               }
             }
-          }
-        }
+          },
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "$id": "urn:ouf:managed-unit-execution-proposal:v1",
+              "description": "Execution proposal for a managed extraction unit, compiled by Onboarding.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "semanticBindings",
+                "semanticPublicationSetRef",
+                "udp",
+                "limits",
+                "contract"
+              ],
+              "properties": {
+                "semanticBindings": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "semanticId",
+                      "semanticVersion",
+                      "revisionId",
+                      "publicationSetId"
+                    ],
+                    "properties": {
+                      "semanticId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "pattern": "^[^@\\s]+$"
+                      },
+                      "semanticVersion": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "pattern": "^[^@\\s]+$"
+                      },
+                      "revisionId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "publicationSetId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      }
+                    }
+                  }
+                },
+                "semanticPublicationSetRef": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "udp": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "resolution",
+                    "materialization"
+                  ],
+                  "properties": {
+                    "resolution": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "strategyId",
+                        "strategyVersion",
+                        "policyRef",
+                        "governedIdentity"
+                      ],
+                      "properties": {
+                        "strategyId": {
+                          "const": "GOVERNED_IDENTITY"
+                        },
+                        "strategyVersion": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        },
+                        "policyRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        },
+                        "governedIdentity": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "ref",
+                            "version",
+                            "tenantId",
+                            "canonicalClass",
+                            "sourceId",
+                            "maxCandidates",
+                            "allowAutoNew",
+                            "signals",
+                            "sufficientRules"
+                          ],
+                          "properties": {
+                            "ref": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
+                            "version": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
+                            "tenantId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
+                            "canonicalClass": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
+                            "sourceId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
+                            "maxCandidates": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 1000
+                            },
+                            "allowAutoNew": {
+                              "type": "boolean"
+                            },
+                            "signals": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 1024,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "id",
+                                  "semanticRef",
+                                  "comparator",
+                                  "excludesOnDisagreement",
+                                  "uniqueWithinScope",
+                                  "assertionRef"
+                                ],
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2048
+                                  },
+                                  "semanticRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2048
+                                  },
+                                  "comparator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "CONCEPT",
+                                      "TEXT_V1",
+                                      "DECIMAL_V1",
+                                      "JSON_V1"
+                                    ]
+                                  },
+                                  "excludesOnDisagreement": {
+                                    "const": false
+                                  },
+                                  "uniqueWithinScope": {
+                                    "const": false
+                                  },
+                                  "assertionRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2048
+                                  }
+                                }
+                              }
+                            },
+                            "sufficientRules": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 32,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "id",
+                                  "signalIds",
+                                  "assertionRef"
+                                ],
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2048
+                                  },
+                                  "signalIds": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 32,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2048
+                                    },
+                                    "uniqueItems": true
+                                  },
+                                  "assertionRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2048
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "materialization": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "policyRef",
+                        "properties",
+                        "bitemporalProperties",
+                        "checkpointInterval"
+                      ],
+                      "properties": {
+                        "policyRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        },
+                        "properties": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 1024,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "sourceField",
+                              "propertyIri",
+                              "datatype",
+                              "accessLabel",
+                              "authorityOrder"
+                            ],
+                            "properties": {
+                              "sourceField": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2048
+                              },
+                              "propertyIri": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2048
+                              },
+                              "datatype": {
+                                "enum": [
+                                  "http://www.w3.org/2001/XMLSchema#string",
+                                  "http://www.w3.org/2001/XMLSchema#decimal",
+                                  "http://www.w3.org/2001/XMLSchema#date"
+                                ]
+                              },
+                              "accessLabel": {
+                                "type": "string",
+                                "enum": [
+                                  "OPEN",
+                                  "ANONYMOUS",
+                                  "PERSONAL",
+                                  "SENSITIVE",
+                                  "RESTRICTED"
+                                ]
+                              },
+                              "authorityOrder": {
+                                "type": "array",
+                                "minItems": 0,
+                                "maxItems": 32,
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048
+                                },
+                                "uniqueItems": true
+                              }
+                            }
+                          }
+                        },
+                        "bitemporalProperties": {
+                          "type": "array",
+                          "minItems": 0,
+                          "maxItems": 0,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2048
+                          }
+                        },
+                        "checkpointInterval": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000000
+                        }
+                      }
+                    }
+                  }
+                },
+                "limits": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "maxRows",
+                    "maxColumns",
+                    "maxCellChars"
+                  ],
+                  "properties": {
+                    "maxRows": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    "maxColumns": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10000
+                    },
+                    "maxCellChars": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    }
+                  }
+                },
+                "contract": {
+                  "const": "ouf.managed-unit-execution-proposal.v1"
+                }
+              }
+            }
+          ]},
+          "unitProfileRef": {"$ref":"#/$defs/unitProfileRef"}
+        },
+        "$defs": {"uuid":{"type":"string","format":"uuid","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},"unitRef":{"type":"string","maxLength":16,"pattern":"^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"},"unitProfileRef":{"type":"object","additionalProperties":false,"required":["profileId","profileVersion","unitRef","schemaHash"],"properties":{"profileId":{"$ref":"#/$defs/uuid"},"profileVersion":{"type":"integer","minimum":1,"maximum":2147483647},"unitRef":{"$ref":"#/$defs/unitRef"},"schemaHash":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}}}
       }
     },
     {
@@ -5638,7 +6049,8 @@
         "the user wants to replace the CSV of the same active source using assetRef. Supply the already uploaded managed asset and its immutable profile. Read the active parent first for its configurationHash and lockVersion",
         "Each new CSV column requires an explicit user decision in newColumns. Use EXCLUDE to leave it out of the projection or MAP with its mapping. If the owner reports NEW_COLUMN_DECISION_REQUIRED, present every named column to the user and ask how to handle each one",
         "Choose readers from the controlled vocabulary. Combine latitude and longitude with POINT_FROM_LAT_LON_V1. If no published structured type fits, propose a DATATYPE combining base types or pinned published types. Use it only after human approval in the THS and publication",
-        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef"
+        "For a column of codes mapped to a controlled vocabulary, set transform: VALUE_MAP_V1 and put the published semanticId@publicationSetId in transformParams.valueMapRef",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "the file belongs to a new source. Use source.onboarding.create",
@@ -5686,7 +6098,7 @@
           "commandKey",
           "publicationEffect"
         ],
-        "if": { "required": ["assetRef"] },
+        "if": {"anyOf":[{"required":["assetRef"]},{"required":["unitProfileRef"]}]},
         "$defs": {
           "reader": {
             "enum": [
@@ -6232,9 +6644,30 @@
             "minItems": 0,
             "maxItems": 1024,
             "description": "Use INCLUDE fields from this file. Build MANY with ordered items or LIST_SPLIT_V1. Onboarding checks component cardinality, output types and the limit of 256 leaves. New preparations require ACTIVE DATATYPE pins at every level. Published bundles may resolve ACTIVE, DEPRECATED or RETIRED pins. Concept membership requires a pinned CONCEPT of the vocabulary or a pinned value map targeting it."
+          },
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "unitRef": {
+            "type": "string",
+            "maxLength": 16,
+            "pattern": "^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"
+          },
+          "unitProfileRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["profileId", "profileVersion", "unitRef", "schemaHash"],
+            "properties": {
+              "profileId": {"$ref": "#/$defs/uuid"},
+              "profileVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+              "unitRef": {"$ref": "#/$defs/unitRef"},
+              "schemaHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+            }
           }
         },
-        "then": { "not": { "required": ["changes"] } },
+        "then": { "not": {"anyOf":[{"required":["changes"]},{"required":["assetRef","unitProfileRef"]}]} },
         "else": {
           "anyOf": [{ "required": ["changes"] }, { "required": ["compositions"] }],
           "not": { "required": ["newColumns"] }
@@ -6412,7 +6845,8 @@
                 }
               }
             }
-          }
+          },
+          "unitProfileRef": {"$ref":"#/$defs/unitProfileRef"}
         }
       }
     },
@@ -6883,7 +7317,8 @@
       "capabilityId": "ouf.source.analysis.plan",
       "purpose": "Plan finite semantic evidence work using the authoritative owned profile; budget is the sum of unique planned calls",
       "useWhen": [
-        "a managed tabular profile requires repeatable column-property analysis"
+        "a managed tabular profile requires repeatable column-property analysis",
+        "Use the same profile, analysis and onboarding flow for a CSV table or an XLSX worksheet. Each worksheet becomes a separate source."
       ],
       "doNotUseWhen": [
         "publication, approval, arbitrary network queries or unowned profiles are requested"
@@ -6930,8 +7365,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "assetId",
-          "profileId",
           "expectedRevision",
           "work"
         ],
@@ -6993,8 +7426,11 @@
                 }
               }
             }
-          }
-        }
+          },
+          "unitProfileRef": {"$ref":"#/$defs/unitProfileRef"}
+        },
+        "$defs": {"uuid":{"type":"string","format":"uuid","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},"unitRef":{"type":"string","maxLength":16,"pattern":"^(table|sheet|layer|collection):(0|[1-9][0-9]{0,3})$"},"unitProfileRef":{"type":"object","additionalProperties":false,"required":["profileId","profileVersion","unitRef","schemaHash"],"properties":{"profileId":{"$ref":"#/$defs/uuid"},"profileVersion":{"type":"integer","minimum":1,"maximum":2147483647},"unitRef":{"$ref":"#/$defs/unitRef"},"schemaHash":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}}},
+        "oneOf": [{"required":["assetId","profileId"],"not":{"required":["unitProfileRef"]}},{"required":["unitProfileRef"],"not":{"anyOf":[{"required":["assetId"]},{"required":["profileId"]}]}}]
       }
     },
     {

@@ -43,16 +43,21 @@ func IdentityScope(i orchestration.Identity) Scope {
 func (s Scope) Valid() bool { return s.Service != "" && s.Principal != "" && s.Tenant != "" }
 
 type Profile struct {
-	AssetID     string `json:"assetId"`
+	AssetID     string `json:"assetId,omitempty"`
 	ProfileID   string `json:"profileId"`
 	Version     int    `json:"profileVersion"`
 	SchemaHash  string `json:"schemaHash"`
 	ColumnCount int    `json:"columnCount"`
+	UnitRef     string `json:"unitRef,omitempty"`
 }
 
 func (p Profile) Valid() bool {
 	b, e := hex.DecodeString(strings.TrimPrefix(p.SchemaHash, "sha256:"))
-	return uuid.Validate(p.AssetID) == nil && uuid.Validate(p.ProfileID) == nil && p.Version > 0 && strings.HasPrefix(p.SchemaHash, "sha256:") && e == nil && len(b) == 32 && p.ColumnCount >= 1 && p.ColumnCount <= 1024
+	validOrigin := uuid.Validate(p.AssetID) == nil
+	if strings.HasPrefix(p.UnitRef, "collection:") {
+		validOrigin = p.UnitRef == "collection:0" && p.AssetID == ""
+	}
+	return validOrigin && (p.UnitRef == "" || (p.UnitRef != "table:0" && unitPattern.MatchString(p.UnitRef))) && uuid.Validate(p.ProfileID) == nil && p.Version > 0 && strings.HasPrefix(p.SchemaHash, "sha256:") && e == nil && len(b) == 32 && p.ColumnCount >= 1 && p.ColumnCount <= 1024
 }
 
 type Work struct {
@@ -157,6 +162,9 @@ func Digest(v any) string {
 }
 func AnalysisID(s Scope, p Profile) string {
 	// Manifest/conversation/correlation never create a fresh logical analysis.
+	if p.UnitRef != "" && p.UnitRef != "table:0" {
+		return Digest([]any{ProfileVersion, s, "unit", p.ProfileID, p.UnitRef})
+	}
 	return Digest([]any{ProfileVersion, s, p.AssetID, p.ProfileID})
 }
 func allowed(tool string) bool {
@@ -308,6 +316,10 @@ func ValidateID(id string) error {
 	return nil
 }
 func SafeError(err error) string {
+	var unit UnitError
+	if errors.As(err, &unit) && OwnerUnitError(string(unit)) != nil {
+		return string(unit)
+	}
 	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()

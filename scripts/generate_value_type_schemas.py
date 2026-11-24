@@ -254,6 +254,9 @@ def mapping_defs(contract, fields):
     return defs
 
 
+UNIT_DEFS = ("uuid", "unitRef", "unitProfileRef")
+
+
 def generate(source, contract):
     tools = {c["toolName"]: c for c in json.loads(source)["capabilities"] if "toolName" in c}
     fields = tools["source.onboarding.create"]["inputSchema"]["properties"]["fields"]
@@ -269,7 +272,9 @@ def generate(source, contract):
         start += len('        "$defs": ')
         previous, length = json.JSONDecoder().raw_decode(source[start:])
         assert previous == tools[name]["inputSchema"]["$defs"]
-        encoded = format_schema(defs).replace("\n", "\n        ")
+        # Hand-maintained $defs of ouf.extraction-unit.v1 (task-62e) follow the generated ones.
+        extra = {k: v for k, v in previous.items() if k in UNIT_DEFS and k not in defs}
+        encoded = format_schema({**defs, **extra}).replace("\n", "\n        ")
         source = source[:start] + encoded + source[start + length:]
     return source
 

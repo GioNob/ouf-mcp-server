@@ -57,7 +57,11 @@ func (s *workflowServer) publishedHint(ctx context.Context, id, request string, 
 	if err != nil {
 		return empty, false, err
 	}
-	summary, ok, err := store.PublishedHint(ctx, analysis.IdentityScope(i.Identity), id, checksum, request)
+	scope := analysis.IdentityScope(i.Identity)
+	summary, ok, err := store.PublishedHint(ctx, scope, id, checksum, request)
+	if old := manifest.AnalysisPredecessor(checksum); !ok && err == nil && old != "" {
+		summary, ok, err = store.PublishedHint(ctx, scope, id, old, request)
+	}
 	if !ok || err != nil {
 		return summary, ok, err
 	}

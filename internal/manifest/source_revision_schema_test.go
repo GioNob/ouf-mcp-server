@@ -40,6 +40,7 @@ func TestSourceRevisionPrepareRequiresOneIntent(t *testing.T) {
 	}
 	const base = `{"sourceId":"source-example","parentVersionId":"00000000-0000-4000-8000-000000000001","expectedVersion":7,"configurationHash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commandKey":"second-upload-1","publicationEffect":"NEW_PUBLICATION_MAY_START_ACQUISITION"`
 	const asset = `,"assetRef":{"assetId":"00000000-0000-4000-8000-000000000002","profileId":"00000000-0000-4000-8000-000000000003"}`
+	const unit = `,"unitProfileRef":{"profileId":"00000000-0000-4000-8000-000000000003","unitRef":"sheet:1","profileVersion":1,"schemaHash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
 	const changes = `,"changes":[{"propertyIri":"urn:name","sourceField":"name","reconciliation":{"policyRef":"urn:ouf:policy:linked-object-property-reconciliation:v1","cardinality":"SINGLE","normalizerRef":"EXACT_TYPED","normalizerVersion":1,"validity":"SOURCE_INTERVAL"}}]`
 	const reconciliation = `{"policyRef":"urn:ouf:policy:linked-object-property-reconciliation:v1","cardinality":"SINGLE","normalizerRef":"EXACT_TYPED","normalizerVersion":1,"validity":"UNBOUNDED"}`
 	const exclude = `{"column":"note","decision":"EXCLUDE"}`
@@ -57,6 +58,10 @@ func TestSourceRevisionPrepareRequiresOneIntent(t *testing.T) {
 		{"asset", asset, true},
 		{"changes", changes, true},
 		{"both", asset + changes, false},
+		{"incoming sheet", unit, true},
+		{"incoming sheet with decisions", unit + `,"newColumns":[]`, true},
+		{"two incoming selectors", asset + unit, false},
+		{"sheet and changes", unit + changes, false},
 		{"neither", "", false},
 		{"null asset", `,"assetRef":null`, false},
 		{"missing profile", `,"assetRef":{"assetId":"00000000-0000-4000-8000-000000000002"}`, false},

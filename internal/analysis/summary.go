@@ -40,15 +40,20 @@ func SummaryLimits(m *manifest.Snapshot) (Limits, error) {
 }
 
 func previewPage(body []byte, asset, profile string, pin Profile, offset, limit int) (Profile, []string, error) {
-	var page struct {
-		Profile
-		View               string
-		Offset, NextOffset *int
-		HasMore            *bool
-		Columns            []json.RawMessage
+	return parseProfilePage(body, asset, profile, nil, pin, offset, limit)
+}
+
+func parseProfilePage(body []byte, asset, profile string, unit *UnitProfileRef, pin Profile, offset, limit int) (Profile, []string, error) {
+	var page profilePage
+	if !ValidEvidenceJSON(body) || json.Unmarshal(body, &page) != nil {
+		return Profile{}, nil, ErrProfile
 	}
-	if !ValidEvidenceJSON(body) || json.Unmarshal(body, &page) != nil || !page.Profile.Valid() || !CanonicalUUID(page.AssetID) || !CanonicalUUID(page.ProfileID) || page.SchemaHash != strings.ToLower(page.SchemaHash) || page.AssetID != asset || page.ProfileID != profile ||
-		page.View != "COLUMNS" || page.Offset == nil || *page.Offset != offset || (offset > 0 && page.Profile != pin) ||
+	view, err := page.normalize(unit)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+	if !page.Profile.Valid() || !CanonicalUUID(page.AssetID) || !CanonicalUUID(page.ProfileID) || page.SchemaHash != strings.ToLower(page.SchemaHash) || (asset != "" && page.AssetID != asset) || page.ProfileID != profile ||
+		page.View != view || page.Offset == nil || *page.Offset != offset || (offset > 0 && page.Profile != pin) ||
 		len(page.Columns) == 0 || len(page.Columns) > limit {
 		return Profile{}, nil, ErrProfile
 	}
@@ -63,7 +68,7 @@ func previewPage(body []byte, asset, profile string, pin Profile, offset, limit 
 			Ordinal *int
 			Name    json.RawMessage
 		}
-		if json.Unmarshal(raw, &col) != nil || (col.Ordinal != nil && *col.Ordinal != offset+i) {
+		if json.Unmarshal(raw, &col) != nil || (unit != nil && col.Ordinal == nil) || (col.Ordinal != nil && *col.Ordinal != offset+i) {
 			return Profile{}, nil, ErrProfile
 		}
 		var name string
@@ -281,6 +286,7 @@ func OpenPosition(token string, key []byte, scope Scope, id string, now time.Tim
 }
 
 type Hint struct {
+	UnitProfileRef                                              *UnitProfileRef `json:"unitProfileRef,omitempty"`
 	Tool, TaskID, RequestID, AssetID, ProfileID, Header, Reason string
 	Ordinal                                                     int
 	Revision                                                    int64

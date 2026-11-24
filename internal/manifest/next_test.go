@@ -22,7 +22,8 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 			"(artifactType, authorityRef, commandKey, definition, labels, localName, namespace, ownerRef, semanticId, semanticVersion)",
 			"(artifactType=ONTOLOGY, authorityRef, commandKey, labels, localName, mediaType=text/turtle, namespace, ownerRef, rdfTurtle, semanticId, semanticVersion)",
 		},
-		"source.file.preview":             {"(assetId, profileId)", "(assetId, jobId)", "(view=ASSETS)", "(assetId, profileId, view=COLUMNS)", "(assetId, distinctValuesCursor, profileId, view=COLUMNS)"},
+		"source.file.preview":             {"(assetId, profileId)", "(assetId, jobId)", "(view=ASSETS)", "(assetId, profileId, view=COLUMNS)", "(assetId, distinctValuesCursor, profileId, view=COLUMNS)", "(profileId, view=UNITS)", "(profileId, unitRef, view=UNIT)", "(distinctValuesCursor, profileId, unitRef, view=UNIT)"},
+		"source.analysis.plan":            {"(assetId, expectedRevision, profileId, work)", "(expectedRevision, unitProfileRef, work)"},
 		"source.onboarding.read":          {"(onboardingVersionId, sourceId)", "(sourceId, view=LATEST)"},
 		"source.onboarding.revision.read": {"(onboardingVersionId, sourceId)", "(commandKey, parentVersionId, sourceId)"},
 	}

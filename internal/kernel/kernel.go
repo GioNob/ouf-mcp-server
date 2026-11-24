@@ -188,7 +188,7 @@ func registerPickerUploadTool(server *workflowServer, capability manifest.Capabi
 	}
 	addWorkflowTool(server, &mcp.Tool{
 		Name:        "source.file.upload",
-		Description: "Open the governed OUF file picker for an authenticated human. The user chooses a local file; OUF checks its format and reports unsupported formats. The handoffId identifies the status read while the user chooses a file.",
+		Description: "Open the governed OUF file picker for an authenticated human. Choose a CSV table or XLSX workbook. Each worksheet becomes a separate source. The handoffId identifies the status read while the user chooses a file.",
 		InputSchema: &schema,
 		Meta:        mcp.Meta{"ui": map[string]any{"resourceUri": pickerHandoffURI, "visibility": []string{"model", "app"}}, "openai/widgetAccessible": true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
@@ -299,7 +299,12 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 				return errorResult(hostfiles.FailureCode(err), false), nil, nil
 			}
 			defer staged.CloseAndRemove()
-			args, _ := json.Marshal(map[string]any{"fileId": descriptor.FileID, "contentHash": staged.SHA256, "sizeBytes": staged.Size})
+			descriptorArgs := map[string]any{"fileId": descriptor.FileID, "contentHash": staged.SHA256, "sizeBytes": staged.Size}
+			// CSV already has a deployed idempotency fingerprint.
+			if mediaType := descriptor.MediaType(); mediaType != "text/csv" {
+				descriptorArgs["mediaType"] = mediaType
+			}
+			args, _ := json.Marshal(descriptorArgs)
 			if identity.CorrelationID == "" {
 				identity.CorrelationID = uuid.NewString()
 			}
@@ -553,6 +558,12 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	internalRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
 	in := orchestration.Invocation{InternalWaitRead: internalRead, AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	if c.ToolName == "source.file.preview" {
+		var selection struct{ View string }
+		if json.Unmarshal(args, &selection) == nil && (selection.View == "UNIT" || selection.View == "UNITS") {
+			in.BudgetProfile = orchestration.ManagedSchemaBudgetProfile
+		}
+	}
 	if c.ToolName == "semantic.discovery.adopt" {
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}
@@ -586,6 +597,13 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 			}
 		}
 		return ownerProblemResult(problem, result.Body), nil, nil
+	}
+	if c.ToolName == "source.file.preview" {
+		body, err := projectUnitPreview(args, result.Body)
+		if err != nil {
+			return errorResult("OWNER_RESULT_INVALID", false), nil, nil
+		}
+		result.Body = body
 	}
 	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
 	if isSourceRevisionCapability(c.CapabilityID) {
@@ -676,6 +694,9 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 }
 
 func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallToolResult {
+	if projected := unitProblem(problem, body); projected != nil {
+		return projected
+	}
 	// Only typed timing fields may accompany an owner problem on the retry rail.
 	type timing struct {
 		Retryable         *bool      `json:"retryable,omitempty"`

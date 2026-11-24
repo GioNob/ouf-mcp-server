@@ -1,0 +1,40 @@
+{
+  "scope": {
+    "Service": "fixture-62e",
+    "Principal": "reader",
+    "Tenant": "tenant"
+  },
+  "profile": {
+    "assetId": "00000000-0000-4000-8000-000000000001",
+    "profileId": "00000000-0000-4000-8000-000000000002",
+    "profileVersion": 2,
+    "schemaHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "columnCount": 3
+  },
+  "analysisId": "85481065026eaeb28ec1deb3638b295756a7044d008336a26a2edd6c0cff0c00",
+  "manifestChecksum": "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa",
+  "revision": 1,
+  "task": {
+    "taskId": "490d7a9d0135d0b30b7ae7a52b1ac654521207cde0565ab0ecb2d2e83730dcbc",
+    "tool": "semantic.search",
+    "arguments": {
+      "q": "column_2"
+    },
+    "columns": [
+      2
+    ],
+    "state": "READY",
+    "attempts": 0,
+    "calls": 0,
+    "resultBytes": 0,
+    "callTimeMs": 0,
+    "windowWaits": 0,
+    "maxBytes": 262144,
+    "maxTimeMs": 3000,
+    "maxObjects": 100,
+    "notBefore": "0001-01-01T00:00:00Z",
+    "firstAttemptAt": "0001-01-01T00:00:00Z",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "leaseUntil": "0001-01-01T00:00:00Z"
+  }
+}
