@@ -206,7 +206,9 @@ func (s *Store) ReadRenewal(ctx context.Context, i orchestration.Identity, ref s
 	}
 	defer tx.Rollback(ctx)
 	p, err := scanProposal(tx.QueryRow(ctx, `select p.proposal,p.state,p.feedback from ouf_mcp.analysis_renewal_proposal p join ouf_mcp.analysis_run r using(analysis_id)
-		where p.review_ref=$1 and r.issuer=$2 and r.spec->>'Workload'=$3 and r.tenant=$4 and r.subject=$5 for update of p`,
+		where p.review_ref=$1 and r.issuer=$2 and r.spec->>'Workload'=$3 and r.tenant=$4 and r.subject=$5
+		and convert_from(p.proposal,'UTF8')::jsonb->>'mandateId'=r.mandate->>'mandateId'
+		and convert_from(p.proposal,'UTF8')::jsonb->>'generation'=r.mandate->>'generation' for update of p`,
 		ref, i.Issuer, i.ServicePrincipalID, i.TenantID, i.PrincipalID))
 	if err != nil {
 		return out, err

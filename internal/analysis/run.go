@@ -158,23 +158,33 @@ func DecodeMandate(raw []byte) (Mandate, error) {
 	return m, nil
 }
 
-func MandateStatus(m Mandate, raw []byte) (state, decision string) {
-	var status struct {
-		MandateID, Generation, State, DecisionRef string
-		ExpiresAt                                 time.Time
-	}
+type mandateStatusReceipt struct {
+	MandateID, Generation, State, DecisionRef string
+	ExpiresAt                                 time.Time
+}
+
+func decodeMandateStatus(id string, raw []byte) (mandateStatusReceipt, bool) {
+	var status mandateStatusReceipt
 	_, ok := closedFields(raw, "mandateId", "generation", "state", "expiresAt", "decisionRef")
 	if !ok || !ValidEvidenceJSON(raw) || json.Unmarshal(raw, &status) != nil ||
-		status.MandateID != m.ID || status.Generation != m.Generation || status.DecisionRef == "" ||
-		len(status.DecisionRef) > 256 || status.ExpiresAt.IsZero() || (status.State == "ACTIVE" && !status.ExpiresAt.Equal(m.Expires)) {
-		return "DRIFT", ""
+		status.MandateID != id || !canonicalSequence(status.Generation) || status.DecisionRef == "" ||
+		len(status.DecisionRef) > 256 || status.ExpiresAt.IsZero() {
+		return status, false
 	}
 	switch status.State {
 	case "ACTIVE", "REVOKED", "EXPIRED":
-		return status.State, status.DecisionRef
+		return status, true
 	default:
+		return status, false
+	}
+}
+
+func MandateStatus(m Mandate, raw []byte) (state, decision string) {
+	status, ok := decodeMandateStatus(m.ID, raw)
+	if !ok || status.Generation != m.Generation || (status.State == "ACTIVE" && !status.ExpiresAt.Equal(m.Expires)) {
 		return "DRIFT", ""
 	}
+	return status.State, status.DecisionRef
 }
 
 type RunRecord struct {

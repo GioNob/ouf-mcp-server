@@ -76,7 +76,7 @@ func TestStoppedMandateDuringPause(t *testing.T) { // MCP-50V-02
 	}
 }
 
-func TestOwnerWaitRequiresFreshStatusOnResume(t *testing.T) { // MCP-50V-02
+func TestOwnerWaitRequiresFreshStatusOnResume(t *testing.T) { // MCP-50V-02, MCP-58E-04
 	ctx, s, r := fixtureRun(t)
 	now := r.NotBefore.Add(time.Second)
 	s.analysisClock = func() time.Time { return now }
@@ -86,20 +86,39 @@ func TestOwnerWaitRequiresFreshStatusOnResume(t *testing.T) { // MCP-50V-02
 	}
 	w, c = claimFixture(t, ctx, s, r)
 	job := uuid.NewString()
-	receipt := RunReceipt{Decision: "fixture", Correlation: "fixture", Body: []byte(`{"requestId":"` + job + `"}`)}
+	receipt := RunReceipt{Decision: "fixture", Correlation: "fixture", Body: []byte(`{"requestId":"` + job + `","pollAfterSeconds":90}`)}
 	if err := s.FinishRunWork(ctx, c, w.Worker, nil, receipt); err != nil {
 		t.Fatal(err)
 	}
+	checkDue := func(delay time.Duration) {
+		t.Helper()
+		var runDue, taskDue time.Time
+		err := s.pool.QueryRow(ctx, `select not_before,(checkpoint #>> '{Queue,0,Task,notBefore}')::timestamptz
+			from ouf_mcp.analysis_run where analysis_id=$1`, r.ID()).Scan(&runDue, &taskDue)
+		if err != nil || !runDue.Equal(now.Add(delay)) || !taskDue.Equal(runDue) {
+			t.Fatal("poll deadline", runDue, taskDue, err)
+		}
+	}
+	checkDue(90 * time.Second)
+	now = now.Add(89 * time.Second)
+	verifyPausedRun(t, ctx, s, r)
+	if _, err := s.DueRun(ctx, r.Workload); !errors.Is(err, analysis.ErrScope) {
+		t.Fatal("first poll admitted early", err)
+	}
+	// The next control observation is due five seconds after the last one.
+	now = now.Add(5 * time.Second)
+	verifyPausedRun(t, ctx, s, r)
 	w, c = claimFixture(t, ctx, s, r)
-	receipt.Body = []byte(`{"requestId":"` + job + `","state":"PENDING"}`)
+	receipt.Body = []byte(`{"requestId":"` + job + `","state":"PENDING","pollAfterSeconds":120}`)
 	if err := s.FinishRunWork(ctx, c, w.Worker, nil, receipt); err != nil {
 		t.Fatal(err)
 	}
+	checkDue(120 * time.Second)
 	verifyPausedRun(t, ctx, s, r)
 	if _, err := s.DueRun(ctx, r.Workload); !errors.Is(err, analysis.ErrScope) {
 		t.Fatal("owner wait was shortened", err)
 	}
-	now = now.Add(5 * time.Second)
+	now = now.Add(120 * time.Second)
 	verifyPausedRun(t, ctx, s, r)
 	current, err := s.DueRun(ctx, r.Workload)
 	if err != nil {

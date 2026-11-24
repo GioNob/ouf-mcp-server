@@ -71,3 +71,64 @@ func TestRenewalCheckAgainstGatewayBytes(t *testing.T) { // MCP-55B-03
 		t.Fatal(d, err)
 	}
 }
+
+func TestDispatchCrossingCause(t *testing.T) { // MCP-58E-01
+	m := analysis.Mandate{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: "1"}
+	for _, tc := range []struct {
+		name       string
+		headers    []string
+		state, gen string
+		revoked    bool
+	}{
+		{"superseded", []string{"SUPERSEDED"}, "", "", false},
+		{"revoked", []string{"REVOKED"}, "", "", true},
+		{"both lines", []string{"SUPERSEDED", "REVOKED"}, "", "", true},
+		{"both combined", []string{"REVOKED, SUPERSEDED"}, "", "", true},
+		{"legacy active", nil, "ACTIVE", "1", false},
+		{"legacy revoked", nil, "REVOKED", "1", true},
+		{"legacy generation", nil, "ACTIVE", "2", true},
+		{"legacy malformed", nil, "ACTIVE", "", false},
+		{"legacy unavailable", nil, "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := NewGateway("https://gateway.invalid", "fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			reads := 0
+			g.Client = &http.Client{Transport: statusRoundTrip(func(r *http.Request) (*http.Response, error) {
+				status := 409
+				header := make(http.Header)
+				body := `{"code":"ANALYSIS_STALE_EXECUTION"}`
+				switch r.URL.Path {
+				case "/internal/analysis/v1/mandates/dispatch":
+					header.Set("X-OUF-Analysis-Effect", "IN_FLIGHT")
+					for _, h := range tc.headers {
+						header.Add("X-OUF-Analysis-Stale-Cause", h)
+					}
+				case "/internal/analysis/v1/mandates/status":
+					reads++
+					var target map[string]string
+					if json.NewDecoder(r.Body).Decode(&target) != nil || target["mandateId"] != m.ID || target["generation"] != m.Generation {
+						t.Fatal("wrong mandate")
+					}
+					status = 200
+					raw, _ := json.Marshal(map[string]string{"mandateId": m.ID, "generation": tc.gen, "state": tc.state, "decisionRef": "fixture", "expiresAt": "2030-10-01T00:00:00Z"})
+					body = string(raw)
+					if tc.state == "" {
+						status = 503
+					}
+				default:
+					t.Fatal(r.URL.Path)
+				}
+				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			ctx := context.Background()
+			reply, err := g.DispatchMandate(ctx, []byte("{}"), 4096, time.Second)
+			if err != nil || reply.Effect != "IN_FLIGHT" || analysis.CrossingRevoked(ctx, g, m, reply.StaleCause) != tc.revoked ||
+				(reads == 1) != (tc.headers == nil) || reads > 1 {
+				t.Fatal(reply.StaleCause, reads, err)
+			}
+		})
+	}
+}

@@ -17,6 +17,11 @@ type statusGateway struct {
 	err     error
 }
 
+func (g statusGateway) DispatchMandate(context.Context, json.RawMessage, int64, time.Duration) (analysis.DispatchResponse, error) {
+	g.t.Fatal("unexpected dispatch")
+	return analysis.DispatchResponse{}, nil
+}
+
 func (g statusGateway) MandateCall(_ context.Context, op string, body json.RawMessage, delegation string, limit int64, timeout time.Duration) (orchestration.MandateResponse, error) {
 	g.t.Helper()
 	var req map[string]string

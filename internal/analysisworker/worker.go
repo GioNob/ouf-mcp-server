@@ -14,9 +14,14 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
+type mandateGateway interface {
+	orchestration.AnalysisMandatePort
+	DispatchMandate(context.Context, json.RawMessage, int64, time.Duration) (analysis.DispatchResponse, error)
+}
+
 type Worker struct {
 	Store        *postgres.Store
-	Gateway      orchestration.AnalysisMandatePort
+	Gateway      mandateGateway
 	Manifest     *manifest.Snapshot
 	Installation analysis.RunInstallation
 	ID           string
@@ -70,7 +75,7 @@ func (w Worker) Once(ctx context.Context) error {
 	body, _ := json.Marshal(map[string]any{"mandateId": c.MandateID, "generation": c.Generation, "analysisId": c.AnalysisID,
 		"intentKey": c.IntentKey, "attemptId": c.AttemptID, "fence": c.Fence, "operation": c.Operation, "arguments": work.Arguments})
 	start := time.Now()
-	reply, err := w.Gateway.MandateCall(ctx, "dispatch", body, "", work.Maximum.Bytes, time.Duration(work.Maximum.Millis)*time.Millisecond)
+	reply, err := w.Gateway.DispatchMandate(ctx, body, work.Maximum.Bytes, time.Duration(work.Maximum.Millis)*time.Millisecond)
 	// The admission may have crossed the wire. Keep all maximum charges,
 	// the original key and lease for the next reconciliation decision.
 	if err != nil {
@@ -87,14 +92,16 @@ func (w Worker) Once(ctx context.Context) error {
 		var p struct{ Code string }
 		_ = json.Unmarshal(reply.Body, &p)
 		switch {
-		case reply.Effect == "IN_FLIGHT":
-			return w.Store.RecordCrossing(ctx, c, w.ID, reply.Decision, reply.Correlation, reply.Body)
+		case reply.Status == 409 && p.Code == "ANALYSIS_STALE_EXECUTION" && reply.Effect == "IN_FLIGHT":
+			revoked := analysis.CrossingRevoked(ctx, w.Gateway, r.Mandate, reply.StaleCause)
+			return w.Store.RecordCrossing(ctx, c, w.ID, reply.Decision, reply.Correlation, reply.Body, revoked)
 		case work.Operation == "ouf.semantic.search.batch" && ((reply.Status == 413 && p.Code == "SEM_BATCH_REQUEST_TOO_LARGE") || (reply.Status == 422 && p.Code == "SEM_BATCH_RESULT_TOO_LARGE")):
 			receipt.Code = "SEM_BATCH_REQUEST_TOO_LARGE"
 			if reply.Status == 422 {
 				receipt.Code = "SEM_BATCH_RESULT_TOO_LARGE"
 			}
-		case reply.Status == 409 && p.Code == "ANALYSIS_COMMAND_CONFLICT":
+		case reply.Status == 409 && (p.Code == "ANALYSIS_COMMAND_CONFLICT" ||
+			(work.Operation == "semantic.discovery.request" && p.Code == "SEM_DISCOVERY_IDEMPOTENCY_CONFLICT")):
 			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_EFFECT_UNCERTAIN")
 		case reply.Status == 409 && (p.Code == "ANALYSIS_STALE_EXECUTION" || p.Code == "ANALYSIS_SCOPE_DRIFT"):
 			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_SCOPE_DRIFT")

@@ -112,6 +112,23 @@ func (s *ClientCredentialsTokenSource) Token(ctx context.Context) (string, error
 	return s.token, nil
 }
 
+const defaultMandateScopes = "ouf.analysis.mandate.issue ouf.analysis.mandate.dispatch ouf.analysis.mandate.revoke ouf.analysis.mandate.status"
+
+func NewMandateTokenSource(endpoint, clientID, secretFile string) (*ClientCredentialsTokenSource, error) {
+	scope, set := os.LookupEnv("OUF_ANALYSIS_MANDATE_SCOPES")
+	if !set {
+		scope = defaultMandateScopes
+	}
+	if strings.TrimSpace(scope) == "" {
+		return nil, errors.New("OUF_ANALYSIS_MANDATE_SCOPES is empty")
+	}
+	s, err := NewClientCredentialsTokenSource(endpoint, clientID, secretFile)
+	if err == nil {
+		s.scope = strings.Join(strings.Fields(scope), " ")
+	}
+	return s, err
+}
+
 // Renewal uses a separate token cache, including its service scope.
 func NewRenewalTokenSource(endpoint, clientID, secretFile string) (*ClientCredentialsTokenSource, error) {
 	s, err := NewClientCredentialsTokenSource(endpoint, clientID, secretFile)

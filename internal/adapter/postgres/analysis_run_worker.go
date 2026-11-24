@@ -120,11 +120,10 @@ func (s *Store) FinishRunWork(ctx context.Context, c analysis.ReservationCheck, 
 			if state == "BLOCKED" {
 				reason = cp.Outcomes[0].Reason
 			}
-		} else if cp.Queue[0].Task.NotBefore.After(now) {
-			next = cp.Queue[0].Task.NotBefore
-			if receipt.RetryAfter.After(next) {
-				next = receipt.RetryAfter
-				cp.Queue[0].Task.NotBefore = next
+		} else {
+			head := &cp.Queue[0].Task
+			if head.Tool == "semantic.discovery.status" && receipt.RetryAfter.After(head.NotBefore) {
+				head.NotBefore = receipt.RetryAfter
 			}
 		}
 	} else {
@@ -219,6 +218,9 @@ func (s *Store) FinishRunWork(ctx context.Context, c analysis.ReservationCheck, 
 }
 
 func saveRunCheckpoint(ctx context.Context, tx pgx.Tx, r analysis.RunRecord, cp analysis.RunCheckpoint, before []analysis.Outcome, state, reason string, next, now time.Time) error {
+	if len(cp.Queue) > 0 && cp.Queue[0].Task.NotBefore.After(next) {
+		next = cp.Queue[0].Task.NotBefore
+	}
 	for n, o := range cp.Outcomes {
 		if o == before[n] {
 			continue
@@ -293,9 +295,15 @@ func (s *Store) ReconcileRunAttempt(ctx context.Context, c analysis.ReservationC
 	return err
 }
 
-func (s *Store) RecordCrossing(ctx context.Context, c analysis.ReservationCheck, worker, decision, correlation string, body []byte) error {
-	if decision == "" || len(decision) > 256 || correlation == "" || len(correlation) > 256 {
+func (s *Store) RecordCrossing(ctx context.Context, c analysis.ReservationCheck, worker, decision, correlation string, body []byte, revoked bool) error {
+	if revoked && (decision == "" || len(decision) > 256 || correlation == "" || len(correlation) > 256) {
 		return s.HoldRunAttempt(ctx, c, worker, "ANALYSIS_MANDATE_REVOKED")
+	}
+	if len(decision) > 256 {
+		decision = ""
+	}
+	if len(correlation) > 256 {
+		correlation = ""
 	}
 	var observed struct{ RequestID string }
 	if analysis.ValidEvidenceJSON(body) {
@@ -315,14 +323,19 @@ func (s *Store) RecordCrossing(ctx context.Context, c analysis.ReservationCheck,
 	if err = tx.QueryRow(ctx, "select fence from ouf_mcp.analysis_run where analysis_id=$1 for update", c.AnalysisID).Scan(&fence); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run_attempt set crossing_decision=$4,crossing_correlation=$5,
+	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_run_attempt set crossing_decision=coalesce(crossing_decision,nullif($4,'')),
+		crossing_correlation=coalesce(crossing_correlation,nullif($5,'')),
 		crossing_hash=$6,crossing_request=nullif($7,'')::uuid where attempt_id=$1 and analysis_id=$2 and worker=$3
-		and (crossing_hash is null or crossing_hash=$6)`, c.AttemptID, c.AnalysisID, worker, decision, correlation, analysis.BytesDigest(body), observed.RequestID)
+		and fence::text=$8 and generation=$9 and mandate_id=$10 and (crossing_hash is null or crossing_hash=$6)`,
+		c.AttemptID, c.AnalysisID, worker, decision, correlation, analysis.BytesDigest(body), observed.RequestID, c.Fence, c.Generation, c.MandateID)
 	if err == nil && tag.RowsAffected() != 1 {
 		return analysis.ErrFenced
 	}
 	if err != nil {
 		return err
+	}
+	if !revoked {
+		return tx.Commit(ctx)
 	}
 	_, err = tx.Exec(ctx, `update ouf_mcp.analysis_run r set state='BLOCKED',reason='ANALYSIS_MANDATE_REVOKED',mandate_state='REVOKED',seq=seq+1
 		from ouf_mcp.analysis_run_attempt a where r.analysis_id=$1 and r.state='RUNNING' and a.attempt_id=$2 and a.analysis_id=r.analysis_id and a.fence=$3`,

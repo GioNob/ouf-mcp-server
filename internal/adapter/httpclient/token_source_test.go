@@ -3,11 +3,13 @@ package httpclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -69,6 +71,49 @@ func TestClientCredentialsTokenSourceCachesAndReloadsSecretOnRefresh(t *testing.
 	refreshed, err := source.Token(context.Background())
 	if err != nil || refreshed != "token-2" || calls.Load() != 2 {
 		t.Fatalf("refreshed token=%q calls=%d err=%v", refreshed, calls.Load(), err)
+	}
+}
+
+func TestMandateTokenRequests(t *testing.T) { // MCP-58E-02
+	const setting = "OUF_ANALYSIS_MANDATE_SCOPES"
+	t.Setenv(setting, "")
+	if err := os.Unsetenv(setting); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(file, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "https://issuer.invalid/token"
+	for _, custom := range []string{"", "fixture.issue fixture.status"} {
+		want := "ouf.analysis.mandate.issue ouf.analysis.mandate.dispatch ouf.analysis.mandate.revoke ouf.analysis.mandate.status"
+		if custom != "" {
+			t.Setenv(setting, custom)
+			want = custom
+		}
+		ordinary, err := NewMandateTokenSource(endpoint, "fixture", file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewal, err := NewRenewalTokenSource(endpoint, "fixture", file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var requested []string
+		client := &http.Client{Transport: statusRoundTrip(func(r *http.Request) (*http.Response, error) {
+			scope := r.FormValue("scope")
+			requested = append(requested, scope)
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"access_token":"fixture","expires_in":300}`))}, nil
+		})}
+		ordinary.client, renewal.client = client, client
+		for _, source := range []*ClientCredentialsTokenSource{ordinary, renewal, ordinary, renewal} {
+			if _, err := source.Token(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(requested) != 2 || requested[0] != want || requested[1] != "ouf.analysis.mandate.renewal-check" {
+			t.Fatal(requested)
+		}
 	}
 }
 

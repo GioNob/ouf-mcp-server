@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -125,8 +126,8 @@ func (c *RunCheckpoint) Advance(r RunRecord, m *manifest.Snapshot, body []byte, 
 			return "", ErrInvalid
 		}
 		set(t.Columns, Outcome{State: "PENDING", RequestID: receipt.RequestID})
-		c.enqueueObservation(item, "semantic.discovery.status", receipt.RequestID, nil)
-		return receipt.RequestID, nil
+		err := c.enqueueObservation(item, "semantic.discovery.status", receipt.RequestID, nil, body, now)
+		return receipt.RequestID, err
 	case "semantic.discovery.status", "semantic.discovery.candidates":
 		var args struct{ RequestID string }
 		if json.Unmarshal(t.Arguments, &args) != nil || !CanonicalUUID(args.RequestID) {
@@ -135,10 +136,7 @@ func (c *RunCheckpoint) Advance(r RunRecord, m *manifest.Snapshot, body []byte, 
 		out, next := DiscoveryEvidenceWithCompletion(t.Tool, args.RequestID, body, item.Completion, now)
 		set(t.Columns, out)
 		if next != "" {
-			c.enqueueObservation(item, next, args.RequestID, CompletedCount(args.RequestID, body))
-			if next == "semantic.discovery.status" {
-				c.Queue[0].Task.NotBefore = now.Add(5 * time.Second)
-			}
+			return "", c.enqueueObservation(item, next, args.RequestID, CompletedCount(args.RequestID, body), body, now)
 		}
 	default:
 		return "", ErrInvalid
@@ -217,13 +215,28 @@ func (c *RunCheckpoint) FailHead(r RunRecord, m *manifest.Snapshot, code string,
 	return nil
 }
 
-func (c *RunCheckpoint) enqueueObservation(parent RunItem, tool, request string, completion *int) {
+func (c *RunCheckpoint) enqueueObservation(parent RunItem, tool, request string, completion *int, receipt []byte, now time.Time) error {
 	args := map[string]any{"requestId": request}
 	if tool == "semantic.discovery.candidates" {
 		args["includeState"] = true
 	}
 	raw, _ := json.Marshal(args)
 	t := Task{Work: Work{Tool: tool, Columns: parent.Task.Columns, Arguments: raw}, MaxObjects: 100, MaxBytes: MaxResultBytes, MaxTimeMS: 3000}
+	if tool == "semantic.discovery.status" {
+		var cadence struct{ PollAfterSeconds *int64 }
+		if err := json.Unmarshal(receipt, &cadence); err != nil {
+			return ErrInvalid
+		}
+		seconds := int64(5)
+		if cadence.PollAfterSeconds != nil {
+			seconds = *cadence.PollAfterSeconds
+		}
+		if seconds < 0 || seconds > math.MaxInt64/int64(time.Second) {
+			return ErrInvalid
+		}
+		t.NotBefore = now.Add(time.Duration(seconds) * time.Second)
+	}
 	// Observe the accepted owner job before opening the next one.
 	c.Queue = append([]RunItem{{Intent: parent.Intent, Task: t, Completion: completion}}, c.Queue...)
+	return nil
 }

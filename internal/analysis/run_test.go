@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 )
@@ -43,6 +45,51 @@ func TestRunGatewayFileAndArguments(t *testing.T) { // MCP-50U-01
 	for _, bad := range []string{`{"a":1,"a":1}`, `{"a":1.1}`, `{"a":null}`, `{"a":"\ud800"}`} {
 		if _, err = MandateHash([]byte(bad)); err == nil {
 			t.Fatal("accepted", bad)
+		}
+	}
+}
+
+func TestRetentionRunbook(t *testing.T) { // MCP-58E-06
+	raw, err := os.ReadFile("CONFIGURATION.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(raw)
+	for _, required := range []string{"ouf-mcp migrate-analysis-retention-019", "ouf-mcp analysis-retention-once",
+		"MCP_DATABASE_URL", "MCP_MIGRATION_DATABASE_OID", "MCP_MIGRATION_APPLICATION_ROLE", "OUF_ANALYSIS_WORKLOAD",
+		"OUF_ANALYSIS_RETENTION_BATCH", "default 256", "1–256", "sqlSha256", "ownerAclSha256", "counts", "UNVERIFIED"} {
+		if !strings.Contains(doc, required) {
+			t.Errorf("missing retention contract %q", required)
+		}
+	}
+	for _, obsolete := range []string{"psql -X -v ON_ERROR_STOP=1 -f", "go run ./internal/analysisworker/retention"} {
+		if strings.Contains(doc, obsolete) {
+			t.Errorf("obsolete retention instruction %q", obsolete)
+		}
+	}
+}
+
+func TestDiscoveryReceiptCadence(t *testing.T) { // MCP-58E-04
+	const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	r := RunRecord{RunSpec: RunSpec{Profile: Profile{ColumnCount: 1}}}
+	for _, tc := range []struct {
+		field string
+		delay time.Duration
+	}{
+		{"", 5 * time.Second},
+		{`,"pollAfterSeconds":2`, 2 * time.Second},
+		{`,"pollAfterSeconds":7200`, 2 * time.Hour},
+	} {
+		cp := RunCheckpoint{Outcomes: []Outcome{{State: "PENDING"}}, Queue: []RunItem{{Intent: "fixture",
+			Task: Task{Work: Work{Tool: "semantic.discovery.request", Columns: []int{0}}, MaxBytes: 4096}}}}
+		now := time.Unix(1000, 0).UTC()
+		body := []byte(`{"requestId":"` + id + `","state":"PENDING"` + tc.field + `}`)
+		for range 2 {
+			if _, err := cp.Advance(r, nil, body, now); err != nil || len(cp.Queue) != 1 || cp.Queue[0].Task.Tool != "semantic.discovery.status" ||
+				!cp.Queue[0].Task.NotBefore.Equal(now.Add(tc.delay)) {
+				t.Fatal(tc, cp.Queue, err)
+			}
+			now = now.Add(tc.delay)
 		}
 	}
 }

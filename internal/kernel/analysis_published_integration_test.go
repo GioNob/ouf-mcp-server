@@ -105,7 +105,7 @@ func (o *publishedPETOwner) Execute(ctx context.Context, r orchestration.Gateway
 		}
 		ref := uuid.NewString()
 		o.jobs[args.Intent] = ref
-		body = nextstep.Object{"requestId": ref, "state": "PENDING"}
+		body = nextstep.Object{"requestId": ref, "state": "PENDING", "pollAfterSeconds": 0}
 	case "ouf.semantic.discovery.status", "ouf.semantic.discovery.candidates":
 		return (summaryOwner{args.RequestID}).Execute(ctx, r, 0)
 	default:

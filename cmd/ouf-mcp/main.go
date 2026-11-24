@@ -140,6 +140,10 @@ func positiveDurationEnv(name string, fallback time.Duration) (time.Duration, er
 }
 
 func workloadTokenSource() (httpadapter.TokenSource, error) {
+	return configuredTokenSource(httpadapter.NewClientCredentialsTokenSource)
+}
+
+func configuredTokenSource(newSource func(string, string, string) (*httpadapter.ClientCredentialsTokenSource, error)) (httpadapter.TokenSource, error) {
 	endpoint := os.Getenv("MCP_OIDC_TOKEN_ENDPOINT")
 	clientID := os.Getenv("MCP_OIDC_CLIENT_ID")
 	secretFile := os.Getenv("MCP_OIDC_CLIENT_SECRET_FILE")
@@ -147,7 +151,7 @@ func workloadTokenSource() (httpadapter.TokenSource, error) {
 		if endpoint == "" || clientID == "" || secretFile == "" {
 			return nil, errors.New("MCP_OIDC_TOKEN_ENDPOINT, MCP_OIDC_CLIENT_ID and MCP_OIDC_CLIENT_SECRET_FILE must be configured together")
 		}
-		return httpadapter.NewClientCredentialsTokenSource(endpoint, clientID, secretFile)
+		return newSource(endpoint, clientID, secretFile)
 	}
 	if token := os.Getenv("MCP_WORKLOAD_TOKEN"); token != "" {
 		return httpadapter.StaticTokenSource(token), nil
@@ -326,7 +330,12 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		os.Exit(1)
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
-	service := &orchestration.Service{AnalysisMandates: gatewayClient, RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	mandates, err := ordinaryMandateGateway(os.Getenv("MCP_GATEWAY_ENDPOINT"))
+	if err != nil {
+		logger.Error("analysis mandate client initialization failed", "error", err)
+		os.Exit(1)
+	}
+	service := &orchestration.Service{AnalysisMandates: mandates, RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
 	if err := configureReprocessing(service, checksum); err != nil {
 		logger.Error("invalid semantic reprocessing configuration")
 		os.Exit(1)
