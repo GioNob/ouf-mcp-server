@@ -431,7 +431,45 @@ func ProposalSections(values []any) []string {
 	return sections
 }
 
+func acquisitionCorrection(template string, obs Object) string {
+	name, _ := obs["limit"].(string)
+	// The wire decoder preserves integers as json.Number.
+	integer := func(key string) (int64, bool) {
+		switch value := obs[key].(type) {
+		case json.Number:
+			n, err := value.Int64()
+			return n, err == nil
+		case int64:
+			return value, true
+		case int:
+			return int64(value), true
+		case float64:
+			n := int64(value)
+			return n, float64(n) == value
+		default:
+			return 0, false
+		}
+	}
+	observed, ok := integer("observed")
+	ceiling, bounded := integer("ceiling")
+	if !AcquisitionLimit(name) || !ok || !bounded || observed < 0 || ceiling < 1 || observed > ceiling {
+		return "Ometti il limite segnalato e ripeti con la nuova commandKey."
+	}
+	return strings.NewReplacer("{limit}", name, "{observed}", strconv.FormatInt(observed, 10), "{ceiling}", strconv.FormatInt(ceiling, 10)).Replace(template)
+}
+
 func (e Engine) blockedRule(r manifest.Rule, obs, input Object) Object {
+	switch r.Reason {
+	case "ONB_GOVERNED_IDENTITY_INVALID":
+		constraint, _ := obs["constraint"].(string)
+		if message, ok := IdentityConstraintMessage(constraint); ok {
+			r.Message = message + " Mantieni il resto della proposta e ripeti con la nuova commandKey."
+		}
+	case "ONB_ACQUISITION_LIMIT_BELOW_PROFILE":
+		r.Message = acquisitionCorrection(r.Message, obs)
+	case "ONB_ACQUISITION_LIMIT_INSTALLATION_EXCEEDED":
+		return e.installationLimitDecision(r)
+	}
 	if strings.Contains(r.Message, "{missingSections}") {
 		sections, _ := obs["missingSections"].([]any)
 		label := strings.Join(ProposalSections(sections), ", ")
@@ -539,7 +577,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		switch r.Action {
 		case "BLOCKED":
 			if r.Reason == "EXECUTION_PROPOSAL_REQUIRED" && lookup(obs, "deferredReaderChecks.0.fieldName") != nil {
-				r.Message = "Completa executionProposal ({missingSections}) con semanticId, semanticVersion, revisionId e publicationSetId da semantic.get. Usa quel publicationSetId per semanticPublicationSetRef e i limiti della preview. I campi in deferredReaderChecks saranno verificati in preparazione. Per un CSV, IDENTITY è sempre preparabile."
+				r.Message = "Completa {missingSections} coi quattro pin di semantic.get e usa publicationSetId per semanticPublicationSetRef. L’Onboarding calcola i limiti dal profilo del file. Usa limits solo per restringerli, mai sotto i valori reali. Verifica deferredReaderChecks in preparazione. Per un CSV puoi usare IDENTITY."
 			}
 			return e.blockedRule(r, obs, input)
 		case "DONE":

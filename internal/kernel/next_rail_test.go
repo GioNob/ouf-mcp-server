@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -34,16 +35,8 @@ type railFixture struct {
 
 // Only responses already delivered to the client may supply decision fields.
 type mappingEvidence struct {
-	columns                       []any
-	candidatePage, candidateQuery railObject
-	terms                         []railObject
-}
-
-func (e mappingEvidence) adoption() railObject {
-	return railObject{
-		"requestId":   e.candidateQuery["requestId"],
-		"candidateId": e.candidatePage["adoptableCandidateIds"].([]any)[0],
-	}
+	columns []any
+	terms   []railObject
 }
 
 func (e mappingEvidence) source() railObject {
@@ -79,8 +72,8 @@ func (e mappingEvidence) source() railObject {
 }
 
 // MCP-50P-001. The agent proposes the synthetic UDP policy for review.
-// Pins and limits come from the semantic.get and preview receipts.
-func (e mappingEvidence) executionProposal(preview, source railObject) railObject {
+// Pins come from semantic.get. Onboarding derives the acquisition limits.
+func (e mappingEvidence) executionProposal(source railObject) railObject {
 	set := e.terms[0]["publication_set_id"]
 	var bindings, signals, properties []railObject
 	var ids []string
@@ -108,7 +101,7 @@ func (e mappingEvidence) executionProposal(preview, source railObject) railObjec
 			"materialization": railObject{"policyRef": "urn:test:materialization", "properties": properties,
 				"bitemporalProperties": []string{}, "checkpointInterval": 1},
 		},
-		"limits": railObject{"maxRows": preview["rowCount"], "maxColumns": len(e.columns), "maxCellChars": preview["sizeBytes"]}}
+	}
 }
 
 func TestNextOnlyCSVToObjects(t *testing.T) {
@@ -360,6 +353,8 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	budget := railObject{"plannedCalls": len(tasks), "completedTasks": 0}
 	view["budget"] = budget
 	call("source.analysis.plan", view, false)
+	var adoptions []railObject
+	summary := analysis.Summary{Onboarding: true, Counts: analysis.Counts{Total: len(tasks), Ready: 2, Zero: len(tasks) - 2}}
 	for i, task := range tasks {
 		args := next["arguments"].(railObject)
 		if args["taskId"] != task["taskId"] || args["analysisId"] != aid {
@@ -388,17 +383,24 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		if query["requestId"] != request || query["analysisId"] != aid {
 			t.Fatal("discovery observed a different job", next)
 		}
-		switch i {
-		case 0:
+		outcome := railObject{"ordinal": i, "requestId": request, "state": "NO_CANDIDATES", "candidateCount": 0}
+		switch {
+		case i == 0:
 			replay(5)
-		case 1:
+		case i == 1 || i == 6:
 			call("semantic.discovery.status", railObject{"requestId": request, "state": "SUCCEEDED", "candidateCount": 1, "allowedActions": []string{"LIST_CANDIDATES"}}, false)
-			evidence.candidateQuery = next["arguments"].(railObject)
-			if evidence.candidateQuery["requestId"] != request || evidence.candidateQuery["analysisId"] != aid {
+			query := next["arguments"].(railObject)
+			if query["requestId"] != request || query["analysisId"] != aid {
 				t.Fatal("candidate listing lost its job", next)
 			}
-			evidence.candidatePage = call("semantic.discovery.candidates", c["candidatePage"], false)
-		case 2:
+			page := c["candidatePage"]
+			if i == 6 {
+				page = c["secondCandidatePage"]
+			}
+			delivered := call("semantic.discovery.candidates", page, false)
+			adoptions = append(adoptions, railObject{"requestId": query["requestId"], "candidateId": delivered["adoptableCandidateIds"].([]any)[0]})
+			outcome["state"], outcome["candidateCount"] = "CANDIDATES_READY", 1
+		case i == 2 && injectRefusals:
 			call("semantic.discovery.status", railObject{"state": "FAILED", "allowedActions": []string{"NONE"}}, false)
 			if next["reasonCode"] != "DISCOVERY_STOPPED" {
 				t.Fatal("failure confused with an empty success", next)
@@ -407,18 +409,69 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		default:
 			call("semantic.discovery.status", railObject{"state": "SUCCEEDED", "candidateCount": 0, "allowedActions": []string{"NONE"}}, false)
 		}
+		item, err := json.Marshal(outcome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary.Items = append(summary.Items, item)
+		if i == len(tasks)-1 && !injectRefusals {
+			// Exercise the production STATUS -> SUMMARY -> full plan boundary.
+			summary.Hint = analysis.Hint{AssetID: preview["assetId"].(string), ProfileID: preview["profileId"].(string), RequestID: adoptions[0]["requestId"].(string)}
+			for _, mode := range []string{"STATUS", "SUMMARY"} {
+				args := next["arguments"].(railObject)
+				if next["tool"] != "source.analysis.read" || args["view"] != mode || args["analysisId"] != aid {
+					t.Fatal("unexpected summary call", next)
+				}
+				result, _, err := s.summaryPage(ctx, aid.(string), mode, analysis.Scope{}, analysis.Position{Last: -1}, summary, 64<<10)
+				if err != nil {
+					t.Fatal(err)
+				}
+				next = checkNext(t, contract, result)
+			}
+			choose("source.analysis.read", nil)
+		}
 		call("source.analysis.read", view, false)
 	}
-	if next["reasonCode"] != "MAPPING_DECISION_REQUIRED" {
-		t.Fatal(next)
+	// PET-mcp-157. Both decisions use only pairs delivered for their own column.
+	if len(adoptions) != 2 || adoptions[0]["requestId"] == adoptions[1]["requestId"] || adoptions[0]["candidateId"] == adoptions[1]["candidateId"] {
+		t.Fatal("expected two distinct discovery pairs", adoptions)
 	}
-	choose("semantic.discovery.adopt", evidence.adoption())
-	receipt := maps.Clone(c["adoption"])
-	receipt["requestId"] = evidence.candidateQuery["requestId"]
-	call("semantic.discovery.adopt", receipt, false)
-	call("semantic.review.prepare", c["validated"], false)
-	call("semantic.approval.request", c["semanticReview"], false)
-	wait("semantic.proposal.read", c["semanticActive"])
+	for i, pair := range adoptions {
+		if next["reasonCode"] != "MAPPING_DECISION_REQUIRED" {
+			t.Fatal(next)
+		}
+		choose("semantic.discovery.adopt", pair)
+		receipt, validated := maps.Clone(c["adoption"]), maps.Clone(c["validated"])
+		active, review := maps.Clone(c["semanticActive"]), maps.Clone(c["semanticReview"])
+		receipt["requestId"], receipt["candidateId"] = pair["requestId"], pair["candidateId"]
+		if i == 1 {
+			// An independent draft revision, validation run and human challenge.
+			receipt["semanticId"] = f.Catalogue[3]["semantic_id"]
+			receipt["revisionId"], receipt["artifactId"] = uuid.NewString(), uuid.NewString()
+			validated["revisionId"], validated["currentValidationRunId"] = receipt["revisionId"], uuid.NewString()
+			current := maps.Clone(review["currentChallenge"].(railObject))
+			current["challengeId"] = uuid.NewString()
+			review["currentChallenge"], active["semanticId"] = current, receipt["semanticId"]
+			provenance := maps.Clone(receipt["provenance"].(railObject))
+			provenance["canonicalUri"] = receipt["semanticId"]
+			receipt["provenance"] = provenance
+		}
+		call("semantic.discovery.adopt", receipt, false)
+		call("semantic.review.prepare", validated, false)
+		call("semantic.approval.request", review, false)
+		approved := railObject{"state": "APPROVED", "version": strings.Repeat("d", 64)}
+		wait("semantic.proposal.read", approved)
+		if next["action"] != "POLL" || next["tool"] != "semantic.proposal.read" {
+			t.Fatal("approval must await publication", next)
+		}
+		call("semantic.proposal.read", active, false)
+		if next["tool"] != "source.analysis.read" || !reflect.DeepEqual(next["arguments"], railObject{"analysisId": aid}) {
+			t.Fatal("publication did not reopen the same analysis", next)
+		}
+		if i == 0 {
+			call("source.analysis.read", view, false)
+		}
+	}
 	for i, term := range f.Catalogue {
 		call("source.analysis.read", view, false)
 		query := "luogo"
@@ -453,7 +506,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	if next["reasonCode"] != "EXECUTION_PROPOSAL_REQUIRED" {
 		t.Fatal("incomplete draft offered an executable command", next)
 	}
-	proposal := evidence.executionProposal(preview, decision)
+	proposal := evidence.executionProposal(decision)
 	if len(proposal["semanticBindings"].([]railObject)) != 4 || len(proposal["udp"].(railObject)["materialization"].(railObject)["properties"].([]railObject)) != 3 {
 		t.Fatal("expected four published bindings and three INCLUDE mappings")
 	}
@@ -462,6 +515,9 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	if prepare["sourceId"] != create["sourceId"] || prepare["onboardingVersionId"] != c["draft"]["onboardingVersionId"] ||
 		prepare["expectedVersion"] != c["draft"]["lockVersion"] || prepare["analysisId"] != aid || prepare["commandKey"] == create["commandKey"] {
 		t.Fatal("prepare lost the observed draft identity or reused the create key", prepare)
+	}
+	if !injectRefusals {
+		next = repairMissingSignal(t, ctx, s, contract, prepare)
 	}
 	review := call("source.onboarding.review.prepare", c["sourceReview"], false)
 	if review["workflowState"] != "IN_REVIEW" {
@@ -482,4 +538,57 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	if len(objects["items"].([]any)) != 13 || next["action"] != "DONE" || next["outcome"] != "SUCCEEDED" {
 		t.Fatal("CSV rail did not finish", next)
 	}
+}
+
+// The owner fixture reports the omitted materialized property. The client only
+// receives the projected diagnostic and the identifiers in the prepare alternative.
+func repairMissingSignal(t *testing.T, ctx context.Context, s *workflowServer, contract *jsonschema.Resolved, input railObject) railObject {
+	t.Helper()
+	const tool = "source.onboarding.review.prepare"
+	const code = "ONB_GOVERNED_IDENTITY_INVALID"
+	proposal := input["executionProposal"].(railObject)
+	udp := proposal["udp"].(railObject)
+	identity := udp["resolution"].(railObject)["governedIdentity"].(railObject)
+	signals := identity["signals"].([]railObject)
+	original, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity["signals"] = signals[:len(signals)-1]
+	if !s.valid(tool, input) {
+		t.Fatal("missing coverage should reach the owner")
+	}
+	properties := udp["materialization"].(railObject)["properties"].([]railObject)
+	iri := properties[len(properties)-1]["propertyIri"].(string)
+	raw, err := json.Marshal(railObject{
+		"constraint": "SIGNALS_INCOMPLETE", "path": "/executionProposal/udp/resolution/governedIdentity/signals",
+		"propertyIris": []string{iri}, "propertyCount": 1,
+		"expectedSignals": []railObject{{"id": iri, "semanticRef": iri + "@" + proposal["semanticPublicationSetRef"].(string), "comparator": "TEXT_V1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal := onboardingProblem(tool, &orchestration.Problem{Status: 422, Code: code}, raw)
+	result := s.decorate(ctx, s.tools[tool], input, refusal)
+	n := checkNext(t, contract, result)
+	if n["actor"] != "AGENT" || n["reasonCode"] != code || !strings.Contains(n["userMessage"].(string), "expectedSignals") {
+		t.Fatal(n)
+	}
+	retry := n["alternatives"].([]any)[0].(railObject)
+	args := retry["arguments"].(railObject)
+	if retry["tool"] != tool || args["commandKey"] == input["commandKey"] || args["executionProposal"] != nil {
+		t.Fatal("incorrect repair alternative", retry)
+	}
+	for _, rawSignal := range textError(t, result)["expectedSignals"].([]any) {
+		signal := rawSignal.(railObject)
+		signal["assertionRef"] = signals[0]["assertionRef"]
+		signal["uniqueWithinScope"], signal["excludesOnDisagreement"] = false, false
+		identity["signals"] = append(identity["signals"].([]railObject), signal)
+	}
+	args["executionProposal"] = proposal
+	corrected, err := json.Marshal(proposal)
+	if err != nil || string(corrected) != string(original) || !s.valid(tool, args) {
+		t.Fatal("first correction must reconstruct exactly the governed proposal", err)
+	}
+	return retry
 }

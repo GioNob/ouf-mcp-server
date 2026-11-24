@@ -4,13 +4,16 @@ package manifest
 
 //go:generate go run generate_analysis_compatibility.go
 
-// Only the three approved batch installation states may resume an ea4033e plan.
+// Each approved batch installation state resumes a plan of the same state of
+// the 1.17.0 manifest in service (4b39568).
 func AnalysisPredecessor(current string) string {
 	switch current {
-	case "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa",
-		"42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f",
-		"e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab":
-		return "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"
+	case "08862439ab1b90c615bbaa8bad44e9bf4ebcdfbbdd650a8c6cc5abc60a75c984":
+		return "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"
+	case "3af54401e8228fec468659aee03591e45183c1e3d54f7ab52d973b94f442fb0e":
+		return "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f"
+	case "8b12709d6a4bcac49a53c5bb53cb8f9b668529d48a9ae61bd8da35d1bc295c45":
+		return "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab"
 	}
 	return ""
 }
