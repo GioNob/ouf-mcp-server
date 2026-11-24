@@ -110,6 +110,48 @@ La lease di verifica dura al massimo `ProofSeconds` (1–30 s) e termina comunqu
 | `analysis_run_outcome`, `analysis_run_snapshot`, `analysis_run_read` | Versioni degli esiti per ordinale, contatori e audit delle pagine. `STATUS` legge dati locali. |
 | `analysis_run_incident`, `analysis_run_budget_session` | Incidente stabile, versione attesa, attore HUMAN, motivo, riferimento alla decisione, limiti e storia delle sessioni. Il punto di confine fra sessioni è una fence. |
 
-La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding di esercizio e il trasporto della revoca verso un MCP in pausa richiedono integrazione con gli owner. Restano da qualificare archiviazione e capacità fisica delle tabelle e degli indici. La migrazione non espurga la storia.
+La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding HUMAN di esercizio e la qualifica con gli owner reali restano aperti. Per il controllo del mandato in pausa e la retention si applica l’addendum 50v seguente.
 
 I PET `MCP-50U-01`–`16` coprono file e hash, configurazione, deadline, alias, claim concorrenti, lease, fixture SDK a 18 colonne, crash, rinnovo HUMAN, autenticazione del listener, ritorno 017→018→50t→candidato, pausa/revoca, disattivazione, ripresa, schemi e retry finiti di issue. Le fixture usano riferimenti sintetici. La fixture SDK misura separatamente il percorso pubblico e le chiamate interne; il PET del listener verifica mTLS su loopback.
+
+### Addendum T2 del task-50v · D-058, D-065, D-082
+
+L’installazione configura i valori interi seguenti e li rilegge al riavvio. Il job di manutenzione legge i TTL a ogni invocazione.
+
+| Parametro | Default | Intervallo |
+|---|---:|---:|
+| `OUF_ANALYSIS_STATUS_SECONDS` | 30 s | 5–300 s |
+| `OUF_ANALYSIS_RESERVATION_DAYS` | 30 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_ATTEMPT_DAYS` | 90 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_SNAPSHOT_DAYS` | 30 giorni | 1–3650 giorni |
+| `OUF_ANALYSIS_READ_DAYS` | 90 giorni | 1–3650 giorni |
+
+**Mandato in pausa.** Il worker interroga `POST /internal/analysis/v1/mandates/status` con la credenziale del workload e i soli campi `mandateId` e `generation`. Ogni turno serve al massimo un controllo e una prenotazione owner. Il primo controllo è dovuto all’ingresso in backoff, in attesa di capacità, di osservazione owner o di riconciliazione. PostgreSQL assegna una lease di 5 s e il client usa un timeout di 3 s. Token, versione e generazione proteggono il commit. Un riscontro ACTIVE successivo a `not_before` abilita una sola prenotazione entro una cadenza. Un crash che supera questa finestra richiede un nuovo controllo. Il Gateway resta responsabile dell’autorizzazione a ogni dispatch.
+
+| Evento | Scope e transizione |
+|---|---|
+| REVOKED o 404 `ANALYSIS_MANDATE_UNKNOWN` | Intero mandato, `BLOCKED / ANALYSIS_MANDATE_REVOKED`. Si conservano checkpoint, prove e addebiti. |
+| EXPIRED o scadenza locale del mandato | Intero mandato, `BLOCKED / ANALYSIS_MANDATE_EXPIRED`. |
+| 409 stale, risposta con identità, generazione o scadenza incoerente, drift di profilo, manifest o policy | Intero piano, `ANALYSIS_SCOPE_DRIFT`. |
+| Trasporto del poll indisponibile, 429, 502, 503 o 504 | Rimane attivo il vincolo sulla prenotazione. Il controllo segue la cadenza, il backoff e Retry-After. La deadline originaria delimita l’attesa del Gateway e produce `WAIT_DEADLINE_EXPIRED`. |
+| Errore permanente di discovery o evidenza owner invalida | Si conserva l’eventuale requestId e si scrive `BLOCKED` con motivo per ogni ordinale dell’intento. Il worker avanza gli intenti indipendenti. Il riepilogo con esiti misti chiude `PARTIAL`. Se tutti gli ordinali sono bloccati vale lo stato B `BLOCKED`. |
+| Lettura a lotti respinta | Divisione del lotto multi-intento in letture più piccole. Il singolo intento fallito conserva il motivo per tutti i suoi ordinali. Un rifiuto owner di una pagina preview interessa gli ordinali di quella pagina. Una risposta incompatibile col profilo fissato ferma il piano. |
+| Effetto incerto | La riconciliazione ammessa riusa la chiave owner. Se richiede intervento, la quarantena conserva il lavoro, la prenotazione e l’eventuale slot owner. Gli altri gruppi restano soggetti alla capacità effettivamente disponibile. |
+| Massimo tentativi per operazione e intento | Quarantena dell’elemento di coda, un incidente OPEN per piano e chiave di scope. Gli ordinali ricevono `ANALYSIS_BUDGET_EXHAUSTED`. La quarantena protegge il lavoro originario per la riconciliazione. |
+| Limite cumulativo o scadenza del budget del piano | Quarantena di piano con l’incidente stabile 018. Una nuova sessione governata verifica anche il mandato prima del primo invio. |
+
+**Rilascio 018→019 (D-072, D-080).** Eseguire `migrate` con il normale ruolo applicativo proprietario dello schema. La 019 registra il checksum, aggiunge i dati di stato e gli archivi e crea la vista di eleggibilità. Il percorso amministrativo `MigrateSemanticReprocessing` è vincolato alla transizione 012→013.
+
+Prima di avviare il job di retention, eseguire il comando seguente dalla radice del sorgente del candidato, con la connessione amministrativa autorizzata puntata allo stesso database.
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -f internal/adapter/postgres/maintenance/019_analysis_run_retention.sql
+```
+
+Distribuire questo file SQL insieme al candidato. La transazione verifica la presenza della 019 e il ruolo NOLOGIN, prende lo stesso lock delle migrazioni, installa il corpo della funzione e ne trasferisce la proprietà a `ouf_mcp_retention_owner`. Solo questo ruolo riceve i privilegi di tabella necessari alla pulizia. Il ruolo di manutenzione riceve `EXECUTE`. L’amministratore effettua il trasferimento direttamente, senza concedere membership al ruolo applicativo. La fase può essere ripetuta. Se manca o fallisce alla prima installazione, il piano resta leggibile e il job di pulizia fallisce conservando i dati. La readiness dello schema certifica solo la fase ordinaria.
+
+**Retention.** Il job monouso `go run ./internal/analysisworker/retention` usa `MCP_DATABASE_URL` con il ruolo di manutenzione e `OUF_ANALYSIS_WORKLOAD`. Lo scheduler d’installazione ne stabilisce la frequenza in base ai volumi. Ogni invocazione elimina al massimo 256 righe per tabella, in una transazione. Per la riga condivisa prenotazione/tentativo vale il maggiore dei due TTL. Devono essere abbastanza vecchi sia l’ultimo snapshot del piano sia la riga candidata. I piani RUNNING e ISSUING, i BLOCKED con coda o ordinali pendenti e quelli con lavori owner aperti, effetti da riconciliare o quarantene conservano il grafo. Le letture hanno precedenza nella pulizia. L’ultimo snapshot e quelli con letture ancora in retention restano consultabili. Gli esiti ordinali, le sessioni e le chiavi di deduplicazione restano persistiti.
+
+**Incidenti di dipendenza.** La vista protetta `analysis_dependency_counts` espone episodio, scope opaco, dipendenza, causa e conteggi distinti di piani, coppie piano–intento e coppie piano–ordinale. Lo scope include issuer, workload, servizio e tenant. Per il rate limit comprende anche il soggetto, perché il codice owner da solo non dimostra una quota condivisa fra soggetti. La correlazione usa i codici espliciti di indisponibilità dell’autorità Gateway e di indisponibilità o rate limit del lotto Semantic. La sola pressione locale non identifica un guasto condiviso. Per la preview il gruppo semantico deve ancora essere identificato. Le osservazioni ripetute conservano gli stessi conteggi. L’episodio si chiude dopo riscontri positivi su tutti gli ordinali interessati. Il dettaglio del lavoro in quarantena resta nell’archivio protetto. La vista degli incidenti espone riferimenti e conteggi.
+
+**PET e ritorno.** `MCP-50V-01` verifica il client fittizio. `02–03` coprono osservatori concorrenti, esiti terminali, indisponibilità e deadline. `04–06` coprono indipendenza, quarantena e correlazione fra piani. `07` verifica i TTL e gli snapshot referenziati. `08` estende la prova D-080 in `scripts/predecessor_return/run.sh` con `PREDECESSOR=fbeb46eeb9e9499a544e34220505b1c2a711581e` e immagini locali esatte. `09` verifica i limiti d’installazione. `MCP-50V-10` verifica la seconda installazione amministrativa, il proprietario, i privilegi e la pulizia effettiva come ruolo di manutenzione. Il ciclo D-080 controlla anche i privilegi del ruolo applicativo di runtime. Per il ritorno si fermano worker, dispatch e job di pulizia secondo la procedura 50u. Lo schema 019 e gli archivi restano installati. Il predecessore legge e scrive lo schema 018 con i propri gate.

@@ -111,11 +111,24 @@ if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
   [[ "$before" == 16 && "$after" == 17 ]]
 fi
 base50t=9be4dd80e1e7c6a0d1b3f86eda8fb02c4909fc91
+base50u=fbeb46eeb9e9499a544e34220505b1c2a711581e
+if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
+  [[ "$before" == 18 && "$after" == 19 ]]
+  # MCP-50V-10: ordinary readiness precedes the separately authorized purge.
+  purge='ouf_mcp.purge_analysis_run_history(text,timestamptz,timestamptz,timestamptz)'
+  [[ "$(sql -c "select to_regprocedure('$purge') is null")" == t ]]
+  sql < "$dir/../../internal/adapter/postgres/maintenance/019_analysis_run_retention.sql"
+  [[ "$(sql -c "select has_function_privilege('ouf_mcp_maintenance_role','$purge','EXECUTE')
+    and not has_function_privilege('mcp_app','$purge','EXECUTE')
+    and not exists(select 1 from pg_class where oid in ('ouf_mcp.analysis_run_read'::regclass,
+      'ouf_mcp.analysis_run_snapshot'::regclass,'ouf_mcp.analysis_run_attempt'::regclass)
+      and has_table_privilege('mcp_app',oid,'DELETE'))")" == t ]]
+fi
 if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
   [[ "$before" == 17 && "$after" == 18 ]]
 fi
 start "$NEW_IMAGE" candidate
-if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 || "${PREDECESSOR:-}" == "$base50t" ]]; then
+if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 || "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; then
   # MCP-50T-09: candidate must execute the exact ea4033e plan before return.
   probe execute-predecessor
 else
@@ -129,12 +142,24 @@ stop
 # The synthetic execute origin uses HTTP. The mandate client requires HTTPS,
 # so issue fails before transmission and no worker runs in this probe.
 run_witness() {
+  local selection=""
+  if [[ "${PREDECESSOR:-}" == "$base50u" && -n "${returned_writes:-}" ]]; then
+    selection="order by r.started,r.analysis_id limit 1"
+  fi
   sql -c "select r.analysis_id,r.state,c.command_key,r.seq,r.fence,r.issue_attempts,r.deadline,md5(r.checkpoint::text),
     (select count(*) from ouf_mcp.analysis_run_attempt where analysis_id=r.analysis_id)
     from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_command c using(analysis_id)
-    where r.state='BLOCKED' and r.reason='ANALYSIS_AUTHORITY_UNAVAILABLE' and r.mandate is null"
+    where r.state='BLOCKED' and r.reason='ANALYSIS_AUTHORITY_UNAVAILABLE' and r.mandate is null
+    $selection"
 }
-if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
+hardening_witness() {
+  sql -c "select r.analysis_id,r.seq,r.fence,r.issue_attempts,c.command_key,
+    md5(r.checkpoint::text),s.seq,s.captured_at,s.state,s.reason
+    from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_command c using(analysis_id)
+    join ouf_mcp.analysis_run_snapshot s using(analysis_id)
+    order by r.analysis_id,c.command_key,s.seq"
+}
+if [[ "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; then
   start "$NEW_IMAGE" issuing
   probe issue-checkpoint
   checkpoint=$(run_witness)
@@ -147,12 +172,29 @@ probe return
 [[ "$(witness predecessor)" == "$old_witness" ]]
 [[ "$(witness candidate)" == "$new_witness" ]]
 witness return >/dev/null
-if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
+if [[ "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; then
   [[ "$(run_witness)" == "$checkpoint" ]]
   stop
+  # MCP-50V-08: 50u can replay its T2 issue command against schema 019.
+  if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
+    start "$OLD_IMAGE" issuing-return
+    probe issue-checkpoint
+    returned_writes=1
+    probe issue-checkpoint return
+    probe issue-checkpoint return
+    [[ "$(sql -c "select count(*) from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_snapshot s using(analysis_id,seq) where r.reason='ANALYSIS_AUTHORITY_UNAVAILABLE' and s.captured_at is not null")" == 2 ]]
+    [[ "$(run_witness)" == "$checkpoint" ]]
+    returned_witness=$(hardening_witness)
+    stop
+    migrate "$NEW_IMAGE"
+  fi
   start "$NEW_IMAGE" issuing-resume
   probe issue-checkpoint
   [[ "$(run_witness)" == "$checkpoint" ]]
+  if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
+    probe issue-checkpoint return
+    [[ "$(hardening_witness)" == "$returned_witness" ]]
+  fi
 fi
 echo "PASS predecessor-return (schema $before -> $after): reads, writes and deduplicated retries" \
   | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

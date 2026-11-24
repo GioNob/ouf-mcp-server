@@ -81,7 +81,11 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 		}
 		return check, analysis.ErrRunExhausted
 	}
-	if now.Before(r.NotBefore) {
+	var paused bool
+	if err = tx.QueryRow(ctx, "select status_due is not null and (status_valid_until is null or status_valid_until<=$2) from ouf_mcp.analysis_run where analysis_id=$1", r.ID(), now).Scan(&paused); err != nil {
+		return check, err
+	}
+	if paused || now.Before(r.NotBefore) {
 		return check, analysis.ErrRunPressure
 	}
 	var busy bool
@@ -172,7 +176,8 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 	// full charge; a new attempt is restricted to the identical operation.
 	var uncertain, identical bool
 	err = tx.QueryRow(ctx, `select count(*)>0,coalesce(bool_and(operation=$2 and intent_key=$3 and arguments_hash=$4
-		and generation=$5 and mandate_id=$6),false) from ouf_mcp.analysis_run_attempt where analysis_id=$1 and finished_at is null and superseded_at is null`,
+		and generation=$5 and mandate_id=$6),false) from ouf_mcp.analysis_run_attempt where analysis_id=$1 and finished_at is null and superseded_at is null
+		and not exists(select 1 from ouf_mcp.analysis_group_quarantine q where q.analysis_id=$1 and q.intent_key=analysis_run_attempt.intent_key)`,
 		r.ID(), work.Operation, work.Intent, hash, r.Mandate.Generation, r.Mandate.ID).Scan(&uncertain, &identical)
 	if err != nil {
 		return check, err
@@ -187,7 +192,6 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 			}
 			return check, analysis.ErrFenced
 		}
-
 	}
 	if work.Operation == "semantic.discovery.status" || work.Operation == "semantic.discovery.candidates" {
 		var owned bool
@@ -215,7 +219,7 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 	maximum := work.Maximum
 	total := analysis.RunCost{Calls: spent.Calls + maximum.Calls, Attempts: spent.Attempts + 1, Objects: spent.Objects + maximum.Objects,
 		Bytes: spent.Bytes + maximum.Bytes, Millis: spent.Millis + maximum.Millis}
-	if attemptCount >= analysis.MaxRetryAttempts || !maximum.Fits(r.Limits.Maximum) || !total.Fits(sessionMaximum) || now.Add(duration).After(r.BudgetEnd) {
+	if !maximum.Fits(r.Limits.Maximum) || !total.Fits(sessionMaximum) || now.Add(duration).After(r.BudgetEnd) {
 		if err = exhaustRun(ctx, tx, r); err != nil {
 			return check, err
 		}
@@ -224,13 +228,22 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 		}
 		return check, analysis.ErrRunExhausted
 	}
+	if attemptCount >= analysis.MaxRetryAttempts {
+		if err := quarantineRunWork(ctx, tx, r, item, "ANALYSIS_BUDGET_EXHAUSTED", now); err != nil {
+			return check, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return check, err
+		}
+		return check, analysis.ErrRunExhausted
+	}
 	if uncertain {
-		if _, err = tx.Exec(ctx, "update ouf_mcp.analysis_run_attempt set superseded_at=$2 where analysis_id=$1 and finished_at is null and superseded_at is null", r.ID(), now); err != nil {
+		if _, err = tx.Exec(ctx, "update ouf_mcp.analysis_run_attempt set superseded_at=$2 where analysis_id=$1 and finished_at is null and superseded_at is null and intent_key=$3", r.ID(), now, work.Intent); err != nil {
 			return check, err
 		}
 	}
 	var fence int64
-	err = tx.QueryRow(ctx, "update ouf_mcp.analysis_run set fence=fence+1,seq=seq+1,reason=case when $2 then 'ANALYSIS_RECONCILING' else 'ANALYSIS_RUNNING' end where analysis_id=$1 returning fence", r.ID(), uncertain).Scan(&fence)
+	err = tx.QueryRow(ctx, "update ouf_mcp.analysis_run set fence=fence+1,seq=seq+1,status_due=null,status_valid_until=null,status_token=null,reason=case when $2 then 'ANALYSIS_RECONCILING' else 'ANALYSIS_RUNNING' end where analysis_id=$1 returning fence", r.ID(), uncertain).Scan(&fence)
 	if err != nil {
 		return check, err
 	}
@@ -278,7 +291,8 @@ func (s *Store) CheckReservation(ctx context.Context, c analysis.ReservationChec
 	var matches bool
 	var request, ordinals string
 	var end time.Time
-	err = tx.QueryRow(ctx, `select a.intent_key=$3 and a.operation=$4 and a.arguments_hash=$5 and a.generation=$6
+	err = tx.QueryRow(ctx, `select r.status_due is null and not exists(select 1 from ouf_mcp.analysis_group_quarantine q
+		where q.analysis_id=a.analysis_id and q.intent_key=a.intent_key) and a.intent_key=$3 and a.operation=$4 and a.arguments_hash=$5 and a.generation=$6
 		and a.fence::text=$7 and a.fence=r.fence and a.finished_at is null
 		and (a.request_id is null or exists(select 1 from ouf_mcp.analysis_run_request q
 		where q.analysis_id=a.analysis_id and q.request_id=a.request_id and q.intent_key=a.intent_key)),

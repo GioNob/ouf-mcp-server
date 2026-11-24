@@ -55,11 +55,12 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close()              { s.pool.Close() }
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) Ready(ctx context.Context) error {
-	var installed string
-	if err := s.pool.QueryRow(ctx, "select checksum from ouf_mcp.schema_migration where version=18").Scan(&installed); err != nil {
+	var installed, hardening string
+	if err := s.pool.QueryRow(ctx, `select a.checksum,b.checksum from ouf_mcp.schema_migration a
+		join ouf_mcp.schema_migration b on b.version=19 where a.version=18`).Scan(&installed, &hardening); err != nil {
 		return err
 	}
-	if installed != runMigrationChecksum {
+	if installed != runMigrationChecksum || hardening != hardeningMigrationChecksum {
 		return errors.New("analysis migration checksum mismatch")
 	}
 	return nil

@@ -26,6 +26,16 @@ func (w Worker) Once(ctx context.Context) error {
 	if !w.Installation.Enabled || !w.Installation.Limits.OwnerDedupQualified || w.Gateway == nil || !analysis.CanonicalUUID(w.ID) {
 		return analysis.ErrUnavailable
 	}
+	claim, err := w.Store.ClaimPausedStatus(ctx, w.Installation.Workload)
+	if err != nil && !errors.Is(err, analysis.ErrScope) {
+		return err
+	}
+	if claim.Token != "" {
+		state, decision, retry := observeMandate(ctx, w.Gateway, claim.Run.Mandate)
+		if err := w.Store.FinishPausedStatus(ctx, claim, state, decision, retry, w.Installation.StatusInterval); err != nil && !errors.Is(err, analysis.ErrFenced) {
+			return err
+		}
+	}
 	r, err := w.Store.DueRun(ctx, w.Installation.Workload)
 	if errors.Is(err, analysis.ErrScope) {
 		return nil
@@ -37,6 +47,9 @@ func (w Worker) Once(ctx context.Context) error {
 		return w.Store.StopRun(ctx, r, "ANALYSIS_SCOPE_DRIFT")
 	}
 	work, err := w.Store.NextRunWork(ctx, r, w.ID)
+	if errors.Is(err, analysis.ErrRunDrift) {
+		return w.Store.StopRun(ctx, r, "ANALYSIS_SCOPE_DRIFT")
+	}
 	if err != nil {
 		return err
 	}
@@ -45,6 +58,8 @@ func (w Worker) Once(ctx context.Context) error {
 	}
 	c, err := w.Store.ReserveRunWork(ctx, r, work)
 	switch {
+	case errors.Is(err, analysis.ErrRunDrift):
+		return w.Store.StopRun(ctx, r, "ANALYSIS_SCOPE_DRIFT")
 	case errors.Is(err, analysis.ErrRunPressure):
 		return w.Store.DelayRun(ctx, r)
 	case errors.Is(err, analysis.ErrMandateExpired):
@@ -72,18 +87,19 @@ func (w Worker) Once(ctx context.Context) error {
 		var p struct{ Code string }
 		_ = json.Unmarshal(reply.Body, &p)
 		switch {
-		case work.Operation == "ouf.semantic.search.batch" && (reply.Status == 413 || reply.Status == 422):
+		case reply.Effect == "IN_FLIGHT":
+			return w.Store.RecordCrossing(ctx, c, w.ID, reply.Decision, reply.Correlation, reply.Body)
+		case work.Operation == "ouf.semantic.search.batch" && ((reply.Status == 413 && p.Code == "SEM_BATCH_REQUEST_TOO_LARGE") || (reply.Status == 422 && p.Code == "SEM_BATCH_RESULT_TOO_LARGE")):
 			receipt.Code = "SEM_BATCH_REQUEST_TOO_LARGE"
 			if reply.Status == 422 {
 				receipt.Code = "SEM_BATCH_RESULT_TOO_LARGE"
 			}
-		case reply.Effect == "IN_FLIGHT":
-			return w.Store.RecordCrossing(ctx, c, w.ID, reply.Decision, reply.Correlation, reply.Body)
 		case reply.Status == 409 && p.Code == "ANALYSIS_COMMAND_CONFLICT":
 			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_EFFECT_UNCERTAIN")
-		case reply.Status == 409 && p.Code == "ANALYSIS_STALE_EXECUTION":
+		case reply.Status == 409 && (p.Code == "ANALYSIS_STALE_EXECUTION" || p.Code == "ANALYSIS_SCOPE_DRIFT"):
 			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_SCOPE_DRIFT")
-		case reply.Status == 403 || reply.Status == 404 && p.Code == "ANALYSIS_MANDATE_UNKNOWN":
+		case reply.Status == 403 && (p.Code == "ANALYSIS_AUTHORITY_DENIED" || reply.Decision == "" || reply.Correlation == ""),
+			reply.Status == 404 && p.Code == "ANALYSIS_MANDATE_UNKNOWN":
 			receipt.Code = "ANALYSIS_MANDATE_REVOKED"
 		case reply.Status == 410 && p.Code == "ANALYSIS_MANDATE_EXPIRED":
 			receipt.Code = "ANALYSIS_MANDATE_EXPIRED"
@@ -94,14 +110,25 @@ func (w Worker) Once(ctx context.Context) error {
 				return err
 			}
 			receipt.Code = "ANALYSIS_BACKOFF"
+			receipt.DependencyCause = p.Code
 			receipt.RetryAfter = analysis.RunRetryAt(time.Now(), n, reply.RetryAfter)
 		default:
-			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_OWNER_FAILURE")
+			if work.Operation == "semantic.discovery.request" && reply.Status >= 500 {
+				return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_EFFECT_UNCERTAIN")
+			}
+			receipt.Code = "ANALYSIS_OWNER_FAILURE"
 		}
 	}
 	err = w.Store.FinishRunWork(ctx, c, w.ID, w.Manifest, receipt)
-	if errors.Is(err, analysis.ErrInvalid) || errors.Is(err, analysis.ErrRunDrift) {
-		return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_OWNER_FAILURE")
+	if errors.Is(err, analysis.ErrRunDrift) || errors.Is(err, analysis.ErrUnavailable) {
+		return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_SCOPE_DRIFT")
+	}
+	if errors.Is(err, analysis.ErrInvalid) && receipt.Code == "" {
+		if work.Operation == "semantic.discovery.request" {
+			return w.Store.HoldRunAttempt(ctx, c, w.ID, "ANALYSIS_EFFECT_UNCERTAIN")
+		}
+		receipt.Code = "ANALYSIS_OWNER_FAILURE"
+		return w.Store.FinishRunWork(ctx, c, w.ID, w.Manifest, receipt)
 	}
 	return err
 }
