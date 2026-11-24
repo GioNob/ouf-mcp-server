@@ -157,6 +157,7 @@
       "canonical_uri": "https://example.invalid/onto/Place",
       "artifact_type": "CLASS",
       "local_name": "Place",
+      "semantic_version": "1.0.0",
       "label": {
         "it": "Luogo"
       },
@@ -170,6 +171,7 @@
       "canonical_uri": "https://example.invalid/onto/id",
       "artifact_type": "PROPERTY",
       "local_name": "id_redazionale",
+      "semantic_version": "1.0.0",
       "label": {
         "it": "id_redazionale"
       },
@@ -183,11 +185,22 @@
       "canonical_uri": "https://example.invalid/onto/name",
       "artifact_type": "PROPERTY",
       "local_name": "nome",
+      "semantic_version": "1.0.0",
       "label": {
         "it": "nome"
       },
       "owner_ref": "owner-example",
       "revision_id": "44444444-4444-4444-8444-444444444444",
+      "publication_set_id": "55555555-5555-4555-8555-555555555555",
+      "status": "ACTIVE"
+    },
+    {
+      "semantic_id": "https://example.invalid/onto/fullAddress",
+      "canonical_uri": "https://example.invalid/onto/fullAddress",
+      "artifact_type": "PROPERTY",
+      "local_name": "indirizzo",
+      "semantic_version": "1.0.0",
+      "revision_id": "00000000-0000-4000-8000-000000000004",
       "publication_set_id": "55555555-5555-4555-8555-555555555555",
       "status": "ACTIVE"
     }
@@ -274,7 +287,11 @@
       "sourceId": "place",
       "onboardingVersionId": "33333333-3333-4333-8333-333333333333",
       "state": "DRAFT",
-      "lockVersion": 1
+      "lockVersion": 0,
+      "reasonCode": "EXECUTION_PROPOSAL_REQUIRED",
+      "executionProposalRequired": true,
+      "allowedActions": ["PREPARE_REVIEW"],
+      "missingSections": ["semanticBindings", "semanticPublicationSetRef", "udp.resolution", "udp.materialization", "limits"]
     },
     "sourceReview": {
       "sourceId": "place",

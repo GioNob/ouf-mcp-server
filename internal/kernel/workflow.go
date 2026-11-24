@@ -166,12 +166,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			_ = decoder.Decode(&args)
 		}
 		if name == "ouf.wait" && result.StructuredContent != nil {
-			out := s.boundedResult(result, t)
-			if out != result {
-				body := out.StructuredContent.(map[string]any)
-				body["changed"], body["observation"] = false, nil
-			}
-			result = out
+			result = s.boundedResult(result, t)
 		} else {
 			result = s.decorate(ctx, t, args, result)
 		}
@@ -192,6 +187,10 @@ func (s *workflowServer) validateNext(name string, result *mcp.CallToolResult) *
 	if name == "ouf.wait" {
 		body["changed"], body["observation"] = false, nil
 	}
+	return workflowError(body)
+}
+
+func workflowError(body nextstep.Object) *mcp.CallToolResult {
 	wire, _ := json.Marshal(body)
 	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
 }
@@ -299,18 +298,23 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
-	code, _ := structured["code"].(string)
-	windowRefusal := result.IsError && nextstep.AdmissionWindowCode(code)
 	pickerIssued := c.ToolName == "source.file.upload" && obs["pickerUrl"] != nil
-	if windowRefusal || pickerIssued {
-		// Some MCP clients surface only text content for tool errors.
+	if result.IsError {
+		// Keep the original public text projection. Only the validated
+		// continuation is needed by clients that omit structured content.
+		message := ownerObject(&mcp.CallToolResult{Content: result.Content})
+		if message == nil {
+			message = nextstep.Object{"code": structured["code"]}
+		}
+		message["next"] = structured["next"]
+		wire, _ := json.Marshal(message)
+		result.Content = []mcp.Content{&mcp.TextContent{Text: string(wire)}}
+	} else if pickerIssued {
 		body, _ := json.Marshal(structured)
 		result.Content = []mcp.Content{&mcp.TextContent{Text: string(body)}}
 	}
 	out := s.boundedResult(result, t)
-	if out != result && (windowRefusal || pickerIssued) {
-		// Prefer the complete structured retry if only its text duplicate
-		// overflows the wire budget, as for large preview pages below.
+	if out != result && pickerIssued && !result.IsError {
 		compact := *result
 		compact.Content = []mcp.Content{&mcp.TextContent{Text: "Il risultato e il passo successivo sono in structuredContent."}}
 		return s.boundedResult(&compact, t)
@@ -346,15 +350,17 @@ func (s *workflowServer) boundedResult(result *mcp.CallToolResult, t registeredT
 	if body, err := json.Marshal(result); err == nil && len(body) <= t.limit {
 		return result
 	}
-	small := errorResult("TOOL_RESULT_LIMIT", false)
 	const message = "Consulta la risorsa con una lettura circoscritta."
 	read := s.manifest.NextPolicies[t.capability.NextPolicy].Read
 	next := nextstep.Block("TOOL_RESULT_LIMIT", read, message)
 	if read == t.capability.ToolName {
 		next = nextstep.ManualBlock("TOOL_RESULT_LIMIT", message, "OPERATOR")
 	}
-	small.StructuredContent = map[string]any{"next": next}
-	return small
+	body := map[string]any{"code": "TOOL_RESULT_LIMIT", "retryable": false, "next": next}
+	if t.capability.ToolName == "ouf.wait" {
+		body["changed"], body["observation"] = false, nil
+	}
+	return workflowError(body)
 }
 
 func waitBinding(ctx context.Context) []byte {

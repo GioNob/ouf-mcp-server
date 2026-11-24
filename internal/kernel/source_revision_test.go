@@ -315,16 +315,18 @@ func TestSourceRevisionNewAsset(t *testing.T) {
 				if err != nil || res.IsError != wantError || len(res.Content) != 1 {
 					t.Fatalf("unexpected %s result: %+v %v", tool, res, err)
 				}
+				if wantError {
+					checkErrorText(t, res, want)
+					return
+				}
 				if got := res.Content[0].(*mcp.TextContent).Text; got != want {
 					t.Fatalf("%s returned %s, want %s", tool, got, want)
 				}
-				if !wantError {
-					var owner map[string]any
-					if err := json.Unmarshal([]byte(want), &owner); err != nil {
-						t.Fatal(err)
-					}
-					checkOwnerAndNext(t, res, owner)
+				var owner map[string]any
+				if err := json.Unmarshal([]byte(want), &owner); err != nil {
+					t.Fatal(err)
 				}
+				checkOwnerAndNext(t, res, owner)
 			}
 			if tc.name == "oversize owner body" {
 				body, err := json.Marshal(map[string]any{"Arguments": prepareArgs})

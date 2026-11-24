@@ -51,7 +51,7 @@ func (e mappingEvidence) source() railObject {
 	properties := map[string]any{}
 	var pins []string
 	for _, term := range e.terms {
-		pins = append(pins, fmt.Sprintf("%s@%s", term["semantic_id"], term["publication_set_id"]))
+		pins = append(pins, fmt.Sprintf("%s@%s", term["semantic_id"], term["semantic_version"]))
 		if term["artifact_type"] == "PROPERTY" {
 			properties[term["local_name"].(string)] = term["canonical_uri"]
 		}
@@ -60,9 +60,13 @@ func (e mappingEvidence) source() railObject {
 	var keys []string
 	for _, col := range e.columns {
 		name := col.(railObject)["name"].(string)
-		f := railObject{"fieldName": name, "dataAccessLabel": "RESTRICTED", "extractionDecision": "EXCLUDE"}
+		f := railObject{"fieldName": name, "dataAccessLabel": "OPEN", "extractionDecision": "EXCLUDE"}
+		if name == "telefono" {
+			f["dataAccessLabel"] = "PERSONAL"
+		}
 		if iri := properties[name]; iri != nil {
 			f["extractionDecision"], f["targetPropertyIri"] = "INCLUDE", iri
+			f["transform"] = "TEXT_NFC_TRIM_V1"
 			if name == "id_redazionale" {
 				keys = append(keys, name)
 			}
@@ -72,6 +76,39 @@ func (e mappingEvidence) source() railObject {
 	return railObject{"sourceId": strings.ToLower(class["local_name"].(string)), "name": class["label"].(railObject)["it"],
 		"owner": class["owner_ref"], "targetClassIri": class["canonical_uri"], "semanticRefs": pins,
 		"sourceObjectKeyFields": keys, "fields": fields}
+}
+
+// MCP-50P-001. The agent proposes the synthetic UDP policy for review.
+// Pins and limits come from the semantic.get and preview receipts.
+func (e mappingEvidence) executionProposal(preview, source railObject) railObject {
+	set := e.terms[0]["publication_set_id"]
+	var bindings, signals, properties []railObject
+	var ids []string
+	for _, term := range e.terms {
+		bindings = append(bindings, railObject{"semanticId": term["semantic_id"], "semanticVersion": term["semantic_version"],
+			"revisionId": term["revision_id"], "publicationSetId": term["publication_set_id"]})
+	}
+	for _, field := range source["fields"].([]railObject) {
+		if field["extractionDecision"] != "INCLUDE" {
+			continue
+		}
+		iri := field["targetPropertyIri"].(string)
+		ids = append(ids, iri)
+		signals = append(signals, railObject{"id": iri, "semanticRef": iri + "@" + set.(string), "comparator": "TEXT_V1",
+			"uniqueWithinScope": false, "excludesOnDisagreement": false, "assertionRef": "urn:test:review"})
+		properties = append(properties, railObject{"sourceField": iri, "propertyIri": iri, "datatype": "http://www.w3.org/2001/XMLSchema#string",
+			"accessLabel": field["dataAccessLabel"], "authorityOrder": []any{source["sourceId"]}})
+	}
+	identity := railObject{"ref": "urn:test:identity", "version": "1", "tenantId": "tenant", "canonicalClass": source["targetClassIri"],
+		"sourceId": source["sourceId"], "maxCandidates": 10, "allowAutoNew": false, "signals": signals,
+		"sufficientRules": []railObject{{"id": "all-three", "signalIds": ids, "assertionRef": "urn:test:review"}}}
+	return railObject{"semanticBindings": bindings, "semanticPublicationSetRef": set,
+		"udp": railObject{
+			"resolution": railObject{"strategyId": "GOVERNED_IDENTITY", "strategyVersion": "1", "policyRef": identity["ref"], "governedIdentity": identity},
+			"materialization": railObject{"policyRef": "urn:test:materialization", "properties": properties,
+				"bitemporalProperties": []string{}, "checkpointInterval": 1},
+		},
+		"limits": railObject{"maxRows": preview["rowCount"], "maxColumns": len(e.columns), "maxCellChars": preview["sizeBytes"]}}
 }
 
 func TestNextOnlyCSVToObjects(t *testing.T) {
@@ -299,6 +336,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		columns = append(columns, railObject{"name": name, "distinctValuesComplete": true})
 	}
 	profile["columns"], profile["format"], profile["rowCount"] = columns, "CSV", 13
+	profile["sizeBytes"] = 4096
 	preview := call("source.file.preview", profile, false)
 	evidence := mappingEvidence{columns: preview["columns"].([]any)}
 	work := next["arguments"].(railObject)["work"].([]any)
@@ -385,7 +423,12 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		call("source.analysis.read", view, false)
 		query := "luogo"
 		if i > 0 {
-			query = evidence.columns[i-1].(railObject)["name"].(string)
+			// The mapping selects these three columns from the delivered preview.
+			mapped := []int{0, 1, 6}
+			query = evidence.columns[mapped[i-1]].(railObject)["name"].(string)
+			if query != term["local_name"] {
+				t.Fatal("fixture term does not correspond to the selected column", query)
+			}
 		}
 		choose("semantic.search", railObject{"q": query})
 		call("semantic.search", []railObject{term}, false)
@@ -407,7 +450,23 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		t.Fatal("missing bound source identity", create)
 	}
 	call("source.onboarding.create", c["draft"], false)
-	call("source.onboarding.review.prepare", c["sourceReview"], false)
+	if next["reasonCode"] != "EXECUTION_PROPOSAL_REQUIRED" {
+		t.Fatal("incomplete draft offered an executable command", next)
+	}
+	proposal := evidence.executionProposal(preview, decision)
+	if len(proposal["semanticBindings"].([]railObject)) != 4 || len(proposal["udp"].(railObject)["materialization"].(railObject)["properties"].([]railObject)) != 3 {
+		t.Fatal("expected four published bindings and three INCLUDE mappings")
+	}
+	choose("source.onboarding.review.prepare", railObject{"executionProposal": proposal})
+	prepare := next["arguments"].(railObject)
+	if prepare["sourceId"] != create["sourceId"] || prepare["onboardingVersionId"] != c["draft"]["onboardingVersionId"] ||
+		prepare["expectedVersion"] != c["draft"]["lockVersion"] || prepare["analysisId"] != aid || prepare["commandKey"] == create["commandKey"] {
+		t.Fatal("prepare lost the observed draft identity or reused the create key", prepare)
+	}
+	review := call("source.onboarding.review.prepare", c["sourceReview"], false)
+	if review["workflowState"] != "IN_REVIEW" {
+		t.Fatal("owner did not issue a review", review)
+	}
 	wait("source.onboarding.read", c["activate"])
 	if next["reasonCode"] != "HUMAN_ACTIVATION_REQUIRED" || next["deadline"] != c["activate"]["activationProgress"].(railObject)["budgetExpiresAt"] {
 		t.Fatal("activation must use the owner decision window", next)
