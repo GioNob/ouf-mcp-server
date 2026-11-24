@@ -186,7 +186,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 				}
 				result = summaryFailure(inputErr, id)
 			}
-		} else if (summaryInput(name, args) || name == "source.analysis.plan") && !validJCSInput(req.Params.Arguments) {
+		} else if (summaryInput(name, args) || name == "source.analysis.plan" || name == analysis.RenewalTool) && !validJCSInput(req.Params.Arguments) {
 			result = summaryFailure(analysis.ErrInvalid, "")
 		} else {
 			var err error
@@ -214,7 +214,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
 		}
-		if (name == "ouf.wait" || summaryInput(name, args) || (name == "source.analysis.plan" && args["mode"] != nil)) && result.StructuredContent != nil {
+		if (name == "ouf.wait" || name == analysis.RenewalTool || summaryInput(name, args) || (name == "source.analysis.plan" && args["mode"] != nil)) && result.StructuredContent != nil {
 			result = s.boundedResult(result, t)
 		} else {
 			result = s.decorate(ctx, t, args, result)

@@ -77,6 +77,8 @@ func (l RunLimits) Valid() bool {
 }
 
 type RunSpec struct {
+	ProposalSeconds                                int    `json:",omitempty"`
+	SourceFile                                     string `json:",omitempty"`
 	Onboarding                                     bool
 	Scope                                          Scope
 	Issuer, Workload, CommandKey, Manifest, Policy string
@@ -88,7 +90,7 @@ func (s RunSpec) ID() string { return AnalysisID(s.Scope, s.Profile) }
 
 func (s RunSpec) Valid() bool {
 	key, err := uuid.Parse(s.CommandKey)
-	return err == nil && key.String() == s.CommandKey && key.Version() == 4 && key.Variant() == uuid.RFC4122 &&
+	return s.ProposalSeconds >= 0 && s.ProposalSeconds <= maxRenewalSeconds && err == nil && key.String() == s.CommandKey && key.Version() == 4 && key.Variant() == uuid.RFC4122 &&
 		s.Scope.Valid() && s.Issuer != "" && s.Workload != "" && s.Policy != "" && s.Limits.Valid() && s.Profile.Valid() &&
 		CanonicalUUID(s.Profile.AssetID) && CanonicalUUID(s.Profile.ProfileID) && strings.ToLower(s.Profile.SchemaHash) == s.Profile.SchemaHash &&
 		ValidateID(s.Manifest) == nil && strings.ToLower(s.Manifest) == s.Manifest
@@ -164,6 +166,14 @@ type RunRecord struct {
 // Gateway hashes sorted ASCII object keys, UTF-8 strings and decimal
 // integers. UseNumber preserves integers beyond the binary64 exact range.
 func MandateHash(raw []byte) (string, error) {
+	wire, err := mandateWire(raw)
+	if err != nil {
+		return "", err
+	}
+	return BytesDigest([]byte(wire)), nil
+}
+
+func mandateWire(raw []byte) (string, error) {
 	if !ValidEvidenceJSON(raw) {
 		return "", ErrInvalid
 	}
@@ -177,7 +187,7 @@ func MandateHash(raw []byte) (string, error) {
 	if err := writeMandateValue(&b, value); err != nil {
 		return "", err
 	}
-	return BytesDigest([]byte(b.String())), nil
+	return b.String(), nil
 }
 
 func BytesDigest(raw []byte) string {

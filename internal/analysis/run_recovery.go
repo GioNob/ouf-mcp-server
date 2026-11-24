@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -36,6 +37,7 @@ func (w RunRenewal) SessionEnd(r RunRecord, now time.Time) time.Time {
 // Only the adapter receives the opaque HUMAN delegation. The binding and
 // its digest contain the logical scope and the exact finite decision.
 type RunRenewalCheck struct {
+	Command RenewalCommand `json:"-"`
 	RunRenewal
 	Contract   string `json:"contract"`
 	Action     string `json:"action"`
@@ -48,11 +50,38 @@ type RunRenewalCheck struct {
 }
 
 func (c RunRenewalCheck) Hash() (string, error) {
-	raw, err := json.Marshal(c)
+	wire, err := c.Wire()
 	if err != nil {
 		return "", err
 	}
-	return MandateHash(raw)
+	return BytesDigest(wire), nil
+}
+
+// Wire is the closed Gateway request. Local transaction guards stay in MCP.
+func (c RunRenewalCheck) Wire() ([]byte, error) {
+	// In-process 020 authorities retain their original binding. The HTTP
+	// adapter requires a complete THS command before requesting wire bytes.
+	if c.Command.ReviewRef == "" {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return nil, err
+		}
+		canonical, err := mandateWire(raw)
+		return []byte(canonical), err
+	}
+	body := struct {
+		RenewalCommand
+		AnalysisID string `json:"analysisId"`
+		IncidentID string `json:"incidentId"`
+		MandateID  string `json:"mandateId"`
+		Generation string `json:"generation"`
+	}{c.Command, c.AnalysisID, c.IncidentID, c.MandateID, c.Generation}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := mandateWire(raw)
+	return []byte(canonical), err
 }
 
 type RenewalDecision struct {
@@ -87,4 +116,16 @@ func (l RunLimits) RenewalDuration() int {
 		return maxRenewalSeconds
 	}
 	return l.RenewalSeconds
+}
+
+func DecodeRenewalDecision(raw, wire []byte) (RenewalDecision, error) {
+	var result RenewalDecision
+	var receipt struct {
+		RequestHash, DecisionRef, GrantRef string
+		ValidUntil                         int64
+	}
+	if _, ok := closedFields(raw, "requestHash", "decisionRef", "grantRef", "validUntil"); !ok || !ValidEvidenceJSON(raw) || json.Unmarshal(raw, &receipt) != nil || receipt.RequestHash != BytesDigest(wire) || receipt.ValidUntil <= 0 || strings.TrimSpace(receipt.DecisionRef) == "" || len(receipt.DecisionRef) > 256 || strings.TrimSpace(receipt.GrantRef) == "" || len(receipt.GrantRef) > 256 {
+		return result, orchestration.ErrUnauthorized
+	}
+	return RenewalDecision{RequestHash: receipt.RequestHash, DecisionRef: receipt.DecisionRef, GrantRef: receipt.GrantRef, ValidUntil: time.Unix(receipt.ValidUntil, 0).UTC()}, nil
 }

@@ -73,6 +73,17 @@ func (s *workflowServer) startRun(ctx context.Context, svc *orchestration.Servic
 		}
 	}
 	next := nextstep.RunNext(r, time.Now(), s.waits.interval)
+	if r.State == "BLOCKED" && r.Reason == analysis.ErrRunExhausted.Error() && s.runConfig.Renewal.Configured() {
+		if planner, ok := store.(analysis.RenewalPlanner); ok {
+			p, e := planner.CurrentRenewal(ctx, r)
+			if e != nil && !errors.Is(e, analysis.ErrScope) {
+				return summaryFailure(e, r.ID())
+			}
+			if e == nil {
+				next = s.engine(ctx).RenewalNext(p, s.runConfig.Renewal.ReviewBase)
+			}
+		}
+	}
 	state := r.State
 	if next["reasonCode"] == "WAIT_DEADLINE_EXPIRED" {
 		state = "BLOCKED"

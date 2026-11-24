@@ -31,7 +31,7 @@ func (s *Store) ClaimRunIssue(ctx context.Context, r analysis.RunRecord) (analys
 		return r, 0, err
 	}
 	if n >= analysis.MaxRetryAttempts || !now.Add(3*time.Second).Before(current.BudgetEnd) {
-		if err = exhaustRun(ctx, tx, current); err != nil {
+		if err = s.exhaustRun(ctx, tx, current); err != nil {
 			return r, 0, err
 		}
 		if err = tx.Commit(ctx); err != nil {

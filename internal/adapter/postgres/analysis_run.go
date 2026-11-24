@@ -161,7 +161,7 @@ func (s *Store) AttachMandate(ctx context.Context, spec analysis.RunSpec, raw []
 			return r, err
 		}
 		if r.Reason == "ANALYSIS_BUDGET_EXHAUSTED" {
-			if err = exhaustRun(ctx, tx, r); err != nil {
+			if err = s.exhaustRun(ctx, tx, r); err != nil {
 				return r, err
 			}
 			r.Seq++

@@ -33,6 +33,26 @@ func (s *Store) ClaimPausedStatus(ctx context.Context, workload string) (StatusC
 		where state='RUNNING' and spec->>'Workload'=$1 and status_due is not null
 		and least(status_due,budget_end,(mandate->>'expiresAt')::timestamptz)<=$2
 		order by status_due,analysis_id limit 1 for update skip locked`, workload, now))
+	if errors.Is(err, analysis.ErrScope) {
+		// Use an idle control turn to expire one unattended proposal. No
+		// traffic lease, plan slot or retry budget is acquired by this work.
+		p, e := scanProposal(tx.QueryRow(ctx, `select p.proposal,p.state,p.feedback from ouf_mcp.analysis_renewal_proposal p
+			join ouf_mcp.analysis_run r using(analysis_id) where p.state in ('OPEN','CHANGES_REQUESTED')
+			and p.expires_at <= $1 and r.spec->>'Workload'=$2 order by p.expires_at,p.review_ref limit 1 for update of p skip locked`, now, workload))
+		if errors.Is(e, analysis.ErrScope) {
+			return claim, err
+		}
+		if e != nil {
+			return claim, e
+		}
+		if e = observeProposal(ctx, tx, &p, now); e != nil {
+			return claim, e
+		}
+		if e = tx.Commit(ctx); e != nil {
+			return claim, e
+		}
+		return claim, err
+	}
 	if err != nil {
 		return claim, err
 	}
@@ -44,7 +64,7 @@ func (s *Store) ClaimPausedStatus(ctx context.Context, workload string) (StatusC
 	case !now.Before(r.Mandate.Expires):
 		_, err = tx.Exec(ctx, "update ouf_mcp.analysis_run set state='BLOCKED',reason='ANALYSIS_MANDATE_EXPIRED',mandate_state='EXPIRED',seq=seq+1 where analysis_id=$1", r.ID())
 	case !now.Before(r.BudgetEnd):
-		err = exhaustRun(ctx, tx, r)
+		err = s.exhaustRun(ctx, tx, r)
 	case failures > 0 && !now.Before(r.Deadline):
 		_, err = tx.Exec(ctx, "update ouf_mcp.analysis_run set state='BLOCKED',reason='WAIT_DEADLINE_EXPIRED',seq=seq+1 where analysis_id=$1", r.ID())
 	case failures >= analysis.MaxRetryAttempts:

@@ -138,6 +138,17 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
 		return summaryFailure(err, id)
 	}
+	if result.Run != nil && result.Run.State == "BLOCKED" && result.Run.Reason == analysis.ErrRunExhausted.Error() && pos.Last < 0 {
+		if planner, ok := c.Store.(analysis.RenewalPlanner); ok {
+			p, e := planner.CurrentRenewal(ctx, *result.Run)
+			if e != nil && !errors.Is(e, analysis.ErrScope) {
+				return summaryFailure(e, id)
+			}
+			if e == nil {
+				result.Renewal = &p
+			}
+		}
+	}
 	if !page && result.Run != nil && result.Run.State == "RUNNING" {
 		at, allowed, err := runStore.ClaimRunPoll(ctx, *result.Run, s.waits.interval)
 		if err != nil {
@@ -205,6 +216,14 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 			}
 		}
 		body["next"] = engine.SummaryNext(id, view, cursor, result)
+		if r := result.Run; r != nil && cursor == "" && r.State == "BLOCKED" && r.Reason == analysis.ErrRunExhausted.Error() {
+			if result.Renewal != nil && result.Renewal.State != "CLOSED_PARTIAL" {
+				body["next"] = nextstep.RunNext(*r, time.Now(), s.waits.interval)
+			}
+			if result.Renewal != nil && result.Renewal.State != "CLOSED_PARTIAL" && s.runConfig.Renewal.Configured() {
+				body["next"] = engine.RenewalNext(*result.Renewal, s.runConfig.Renewal.ReviewBase)
+			}
+		}
 		if r := result.Run; r != nil && cursor == "" && r.State == "RUNNING" {
 			now := time.Now()
 			body["next"] = nextstep.RunNext(*r, now, s.waits.interval)

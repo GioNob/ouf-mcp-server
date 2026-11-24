@@ -64,15 +64,7 @@ type ReservationVerifier interface {
 func ReservationHandler(store ReservationVerifier, gatewayURI string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-			w.WriteHeader(403)
-			return
-		}
-		matched := false
-		for _, u := range r.TLS.VerifiedChains[0][0].URIs {
-			matched = matched || (gatewayURI != "" && u.String() == gatewayURI)
-		}
-		if !matched {
+		if !gatewayPeer(r, gatewayURI) {
 			w.WriteHeader(403)
 			return
 		}
@@ -126,4 +118,16 @@ func ReservationHandler(store ReservationVerifier, gatewayURI string) http.Handl
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(proof)
 	})
+}
+
+func gatewayPeer(r *http.Request, gatewayURI string) bool {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return false
+	}
+	for _, uri := range r.TLS.VerifiedChains[0][0].URIs {
+		if gatewayURI != "" && uri.String() == gatewayURI {
+			return true
+		}
+	}
+	return false
 }
