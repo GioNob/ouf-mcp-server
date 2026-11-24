@@ -130,8 +130,11 @@ func TestRenewalCommandUnicodeAndTypes(t *testing.T) {
 		t.Fatal(label)
 	}
 	res := httptest.NewRecorder()
-	renewalProblem(res, &RenewalBackoff{ErrRunPressure, "7"})
-	if res.Code != http.StatusTooManyRequests || res.Header().Get("Retry-After") != "7" {
+	at := time.Unix(7, 0).UTC()
+	renewalProblem(res, &RenewalBackoff{Cause: ErrRunPressure, RetryAfter: "7", NotBefore: at})
+	var problem map[string]string
+	if res.Code != http.StatusTooManyRequests || res.Header().Get("Retry-After") != "7" ||
+		json.Unmarshal(res.Body.Bytes(), &problem) != nil || problem["code"] != ErrRunPressure.Error() || problem["notBefore"] != at.Format(time.RFC3339Nano) {
 		t.Fatal(res)
 	}
 }

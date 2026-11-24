@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -91,7 +92,7 @@ func TestRenewalInstallationLimits(t *testing.T) { // MCP-55A-03
 		t.Setenv("OUF_ANALYSIS_RUN_LIMITS", string(raw))
 		return RunConfiguration(m)
 	}
-	for _, field := range []string{"RenewalPercent", "RenewalSeconds"} {
+	for _, field := range []string{"RenewalPercent", "RenewalSeconds", "InstallationActivePlans"} {
 		for _, bad := range []any{nil, -1, 0, 1.5, "1", 3601} {
 			fields[field] = bad
 			if _, err = configure(); err != ErrInvalid {
@@ -100,12 +101,35 @@ func TestRenewalInstallationLimits(t *testing.T) { // MCP-55A-03
 		}
 		delete(fields, field)
 	}
+	for _, bad := range []any{nil, 1, "", " ", "a/b", strings.Repeat("x", 129)} {
+		fields["InstallationRef"] = bad
+		if _, err = configure(); err != ErrInvalid {
+			t.Fatal("InstallationRef", bad, err)
+		}
+	}
+	fields["InstallationRef"] = "fixture"
+	fields["InstallationActivePlans"] = 129
+	if _, err = configure(); err != ErrInvalid {
+		t.Fatal("installation plan maximum", err)
+	}
+	fields["InstallationActivePlans"] = 4
+	cfg, err := configure()
+	if err != nil || cfg.Limits != base.Limits || cfg.Limits.InstallationPlanLimit() != 4 {
+		t.Fatal("pre-55e profile with explicit defaults", err)
+	}
+	fields["InstallationRef"], fields["InstallationActivePlans"] = "shared-fixture", 128
+	cfg, err = configure()
+	if err != nil || cfg.Limits.InstallationPlanLimit() != 128 || cfg.Limits.InstallationRef != "shared-fixture" {
+		t.Fatal("installation overrides", err)
+	}
+	delete(fields, "InstallationRef")
+	delete(fields, "InstallationActivePlans")
 	fields["RenewalPercent"] = 26
 	if _, err = configure(); err != ErrInvalid {
 		t.Fatal("percentage above D-091", err)
 	}
 	fields["RenewalPercent"], fields["RenewalSeconds"] = 25, 3600
-	cfg, err := configure()
+	cfg, err = configure()
 	if err != nil || cfg.Limits != base.Limits || cfg.Limits.RenewalDuration() != 3600 {
 		t.Fatal("pre-020 profile compatibility", err)
 	}

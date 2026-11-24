@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -48,7 +49,7 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 		return cfg, fmt.Errorf("invalid OUF_ANALYSIS_RUN_ENABLED")
 	}
 	cfg.Workload = os.Getenv("OUF_ANALYSIS_WORKLOAD")
-	if cfg.Workload == "" {
+	if strings.TrimSpace(cfg.Workload) == "" {
 		return cfg, fmt.Errorf("analysis workload required")
 	}
 	if limits, ok := os.LookupEnv("OUF_ANALYSIS_RUN_LIMITS"); ok {
@@ -56,7 +57,7 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 		if !ValidEvidenceJSON([]byte(limits)) || json.Unmarshal([]byte(limits), &fields) != nil {
 			return cfg, ErrInvalid
 		}
-		for _, k := range []string{"RenewalPercent", "RenewalSeconds"} {
+		for _, k := range []string{"RenewalPercent", "RenewalSeconds", "InstallationActivePlans"} {
 			if raw, ok := fields[k]; ok {
 				var n int
 				if json.Unmarshal(raw, &n) != nil || n < 1 {
@@ -64,6 +65,13 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 				}
 				delete(fields, k)
 			}
+		}
+		if raw, ok := fields["InstallationRef"]; ok {
+			var ref string
+			if json.Unmarshal(raw, &ref) != nil || !installationRefPattern.MatchString(ref) {
+				return cfg, ErrInvalid
+			}
+			delete(fields, "InstallationRef")
 		}
 		if len(fields) != 9 {
 			return cfg, ErrInvalid
@@ -83,7 +91,13 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 		if json.Unmarshal([]byte(limits), &l) != nil || !l.Valid() {
 			return cfg, ErrInvalid
 		}
-		// Keep an explicit default equivalent to a pre-020 persisted profile.
+		// Keep explicit defaults equivalent to profiles persisted without them.
+		if l.InstallationActivePlans == defaultInstallationActivePlans {
+			l.InstallationActivePlans = 0
+		}
+		if l.InstallationRef == cfg.Workload {
+			l.InstallationRef = ""
+		}
 		if l.RenewalPercent == maxRenewalPercent {
 			l.RenewalPercent = 0
 		}
