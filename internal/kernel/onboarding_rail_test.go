@@ -44,6 +44,10 @@ func TestOnboardingOwnerRail(t *testing.T) {
 	}
 	mismatchArgs := maps.Clone(prepareArgs)
 	mismatchArgs["executionProposal"] = proposal
+	asset := railObject{"assetId": validCreate["assetId"], "profileId": validCreate["profileId"]}
+	replaceArgs := maps.Clone(mismatchArgs)
+	replaceArgs["draftAssetRef"] = asset
+	readers := []railObject{{"fieldName": "shape", "transform": "TEXT_NFC_TRIM_V1", "allowedTransforms": []string{"IDENTITY"}}}
 	draft := railObject{"reasonCode": "EXECUTION_PROPOSAL_REQUIRED", "workflowState": "DRAFT", "sourceId": readArgs["sourceId"],
 		"onboardingVersionId": version, "lockVersion": 0, "allowedActions": []string{"PREPARE_REVIEW"}, "executionProposalRequired": true,
 		"missingSections": []string{"udp.resolution", "limits"}}
@@ -58,6 +62,10 @@ func TestOnboardingOwnerRail(t *testing.T) {
 		{create, "ONB_SEMANTIC_REF_FORM_INVALID", create, createArgs, railObject{"index": float64(0)}, 422},
 		{prepare, "ONB_SEMANTIC_REF_VERSION_MISMATCH", read, mismatchArgs, railObject{"semanticRef": "urn:example:place@1.0.0"}, 422},
 		{create, "ONB_READER_UNSUPPORTED", read, validCreate, railObject{"fieldName": "shape"}, 422},
+		{create, "ONB_READER_UNSUPPORTED", create, validCreate, railObject{"fields": readers}, 422},
+		{prepare, "ONB_DATATYPE_UNRESOLVED", create, replaceArgs, railObject{"fields": readers, "resolutions": []string{"REPLACE_DRAFT"}}, 422},
+		{create, "ONB_REVISION_ASSET_SOURCE_CONFLICT", read, validCreate, railObject{"resolutions": []string{"CREATE_REVISION"}, "boundSourceId": "readable-source"}, 409},
+		{create, "ONB_REVIEW_STALE_VERSION", read, validCreate, railObject{}, 412},
 		{prepare, "ONB_REVIEW_INTERNAL_ERROR", "", prepareArgs, railObject{}, 500},
 	} {
 		t.Run(tc.tool+"/"+tc.reason, func(t *testing.T) {
@@ -65,9 +73,14 @@ func TestOnboardingOwnerRail(t *testing.T) {
 			if tc.status >= 400 {
 				owner["code"], owner["detail"], owner["retryable"] = tc.reason, "private-owner-diagnostic", true
 			}
+			if rows, ok := owner["fields"].([]railObject); ok {
+				row := maps.Clone(rows[0])
+				row["sample"] = "private-owner-diagnostic"
+				owner["fields"] = []railObject{row}
+			}
 			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req orchestration.GatewayRequest
-				if json.NewDecoder(r.Body).Decode(&req) != nil || strings.Contains(string(req.Arguments), "analysisId") {
+				if json.NewDecoder(r.Body).Decode(&req) != nil || strings.Contains(string(req.Arguments), "analysisId") || strings.Contains(string(req.Arguments), "draftAssetRef") {
 					t.Error("invalid owner dispatch")
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -133,6 +146,11 @@ func TestOnboardingOwnerRail(t *testing.T) {
 					if !reflect.DeepEqual(args, withKey(prepareArgs, key)) {
 						t.Fatal("incorrect prepare arguments", args)
 					}
+				} else if tc.reason == "ONB_READER_UNSUPPORTED" || tc.reason == "ONB_DATATYPE_UNRESOLVED" {
+					want := railObject{"assetId": validCreate["assetId"], "profileId": validCreate["profileId"], "sourceId": validCreate["sourceId"], "analysisId": analysis, "commandKey": key}
+					if !reflect.DeepEqual(args, want) || !strings.Contains(next["userMessage"].(string), "fields[].allowedTransforms") {
+						t.Fatal("reader correction lost its draft references", next)
+					}
 				} else if !reflect.DeepEqual(args, withKey(createArgs, key)) || !strings.Contains(next["userMessage"].(string), "semanticId@semanticVersion") {
 					t.Fatal("create correction lost original request", step)
 				}
@@ -140,6 +158,12 @@ func TestOnboardingOwnerRail(t *testing.T) {
 				want := readArgs
 				if tc.tool == create {
 					want = railObject{"sourceId": createArgs["sourceId"], "view": "LATEST", "analysisId": analysis}
+					switch tc.reason {
+					case "ONB_REVISION_ASSET_SOURCE_CONFLICT":
+						want["sourceId"], want["revisionAssetRef"] = tc.owner["boundSourceId"], asset
+					case "ONB_REVIEW_STALE_VERSION":
+						want["draftAssetRef"] = asset
+					}
 				}
 				if !reflect.DeepEqual(args, want) {
 					t.Fatal("incorrect read arguments", args)

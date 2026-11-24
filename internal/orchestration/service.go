@@ -315,6 +315,12 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 		in.IdempotencyKey = command.IdempotencyKey
 	}
+	if in.CapabilityID == "ouf.managed-source.onboarding.review.prepare" || in.CapabilityID == "ouf.managed-source.onboarding.read" {
+		in.Arguments, err = withoutDraftContext(in.Arguments)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 	requestHash := sha256.Sum256(in.Arguments)
 	fingerprintArguments := in.Arguments
 	if in.ReadPositionRef != "" {
