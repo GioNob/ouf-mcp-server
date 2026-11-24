@@ -1,14 +1,18 @@
 package kernel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,11 +23,118 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// PET-mcp-144/168. Exercise the published schema, byte budget and governed
+// refusal on tools/call, capturing the proposal or action at the Gateway.
+func TestSourceReviewBatchAndCandidateActions(t *testing.T) {
+	const tool = "source.onboarding.review.prepare"
+	const capability = "ouf.managed-source.onboarding.review.prepare"
+	const version = "11111111-1111-4111-8111-111111111111"
+	const limit = 2 << 20
+	received := make(chan orchestration.GatewayRequest, 1)
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
+			return
+		}
+		select {
+		case received <- request:
+		default:
+			t.Error("unexpected additional review dispatch")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"state":"DRAFT","sourceId":"theatres"}`)
+	}))
+	defer gateway.Close()
+	endpoint, _ := url.Parse(gateway.URL)
+	admission := &statusAdmission{}
+	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: admission,
+		Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("workload")}, FingerprintKey: make([]byte, 32)}
+	session := revisionSession(t, service, capability)
+	contract := nextContract(t)
+	base := map[string]any{"sourceId": "theatres", "onboardingVersionId": version, "expectedVersion": 1}
+	check := func(t *testing.T, args map[string]any, valid bool) {
+		t.Helper()
+		before := admission.calls.Load()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := checkNext(t, contract, result)
+		if !valid {
+			if !result.IsError || result.StructuredContent.(map[string]any)["code"] != "INVALID_TOOL_ARGUMENTS" ||
+				next["action"] != "BLOCKED" || next["reasonCode"] != "INVALID_TOOL_ARGUMENTS" || admission.calls.Load() != before || len(received) != 0 {
+				t.Fatal("invalid prepare did not stop before admission", next)
+			}
+			return
+		}
+		if result.IsError || admission.calls.Load() != before+1 || len(received) != 1 {
+			t.Fatal("valid prepare did not reach the Gateway", next)
+		}
+		req := <-received
+		want, err := json.Marshal(args)
+		if err != nil || req.CapabilityID != capability || req.IdempotencyKey != args["commandKey"] || !bytes.Equal(req.Arguments, want) {
+			t.Fatal("review arguments or command key changed in dispatch", err)
+		}
+	}
+
+	var proposal map[string]any
+	if err := json.Unmarshal([]byte(reviewExecutionJSON), &proposal); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		action       string
+		withProposal bool
+		valid        bool
+	}{
+		{"WITHDRAW", false, true}, {"RESTART_DRAFT", false, true}, {"APPROVE", false, false},
+		{"WITHDRAW", true, false}, {"RESTART_DRAFT", true, false},
+	} {
+		t.Run(fmt.Sprintf("%s/proposal=%t", tc.action, tc.withProposal), func(t *testing.T) {
+			args := maps.Clone(base)
+			args["commandKey"], args["candidateAction"] = "action-"+tc.action, tc.action
+			if tc.withProposal {
+				args["executionProposal"] = proposal
+			}
+			check(t, args, tc.valid)
+		})
+	}
+	t.Run("1024 bindings at byte boundary", func(t *testing.T) {
+		bindings := make([]map[string]any, 1024)
+		for i := range bindings {
+			bindings[i] = map[string]any{"semanticId": fmt.Sprintf("urn:test:property:%d", i), "semanticVersion": "1",
+				"revisionId": fmt.Sprintf("11111111-1111-4111-8111-%012x", i), "publicationSetId": proposal["semanticPublicationSetRef"]}
+		}
+		proposal["semanticBindings"] = bindings
+		args := maps.Clone(base)
+		args["commandKey"], args["executionProposal"] = "review-wide", proposal
+		body, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Keep every binding schema-valid on both sides of the boundary.
+		left := limit - len(body)
+		for _, pin := range bindings {
+			n := min(2047, left)
+			pin["semanticVersion"] = "1" + strings.Repeat("v", n)
+			left -= n
+		}
+		if left != 0 {
+			t.Fatal("fixture cannot reach the argument limit")
+		}
+		check(t, args, true)
+		args["commandKey"] = "review-wide2"
+		check(t, args, false)
+	})
+}
+
+const reviewExecutionJSON = `{"semanticBindings":[{"semanticId":"urn:test:theatres","semanticVersion":"1.0.0","revisionId":"11111111-1111-4111-8111-111111111111","publicationSetId":"22222222-2222-4222-8222-222222222222"}],"semanticPublicationSetRef":"22222222-2222-4222-8222-222222222222","udp":{"resolution":{"strategyId":"GOVERNED_IDENTITY","strategyVersion":"1","policyRef":"urn:test:identity","governedIdentity":{"ref":"urn:test:identity","version":"1","tenantId":"tenant-a","canonicalClass":"https://schema.org/PerformingArtsTheater","sourceId":"theatres","maxCandidates":10,"allowAutoNew":true,"signals":[{"id":"name","semanticRef":"https://schema.org/name@22222222-2222-4222-8222-222222222222","comparator":"TEXT_V1","excludesOnDisagreement":false,"uniqueWithinScope":false,"assertionRef":"urn:test:human-review"}],"sufficientRules":[{"id":"name-rule","signalIds":["name"],"assertionRef":"urn:test:human-review"}]}},"materialization":{"policyRef":"urn:test:materialization","properties":[{"sourceField":"https://schema.org/name","propertyIri":"https://schema.org/name","datatype":"http://www.w3.org/2001/XMLSchema#string","accessLabel":"RESTRICTED","authorityOrder":["theatres"]}],"bitemporalProperties":[],"checkpointInterval":1}},"limits":{"maxRows":100,"maxColumns":20,"maxCellChars":1000}}`
+
 // Official SDK -> scoped policy -> admission -> TLS Gateway transport.
 // The owner response is a fixture, not a real HUMAN approval or source run.
 func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	const version = "11111111-1111-4111-8111-111111111111"
-	const executionJSON = `{"semanticBindings":[{"semanticId":"urn:test:theatres","semanticVersion":"1.0.0","revisionId":"11111111-1111-4111-8111-111111111111","publicationSetId":"22222222-2222-4222-8222-222222222222"}],"semanticPublicationSetRef":"22222222-2222-4222-8222-222222222222","udp":{"resolution":{"strategyId":"GOVERNED_IDENTITY","strategyVersion":"1","policyRef":"urn:test:identity","governedIdentity":{"ref":"urn:test:identity","version":"1","tenantId":"tenant-a","canonicalClass":"https://schema.org/PerformingArtsTheater","sourceId":"theatres","maxCandidates":10,"allowAutoNew":true,"signals":[{"id":"name","semanticRef":"https://schema.org/name@22222222-2222-4222-8222-222222222222","comparator":"TEXT_V1","excludesOnDisagreement":false,"uniqueWithinScope":false,"assertionRef":"urn:test:human-review"}],"sufficientRules":[{"id":"name-rule","signalIds":["name"],"assertionRef":"urn:test:human-review"}]}},"materialization":{"policyRef":"urn:test:materialization","properties":[{"sourceField":"https://schema.org/name","propertyIri":"https://schema.org/name","datatype":"http://www.w3.org/2001/XMLSchema#string","accessLabel":"RESTRICTED","authorityOrder":["theatres"]}],"bitemporalProperties":[],"checkpointInterval":1}},"limits":{"maxRows":100,"maxColumns":20,"maxCellChars":1000}}`
 	for _, tc := range []struct {
 		tool, capability, operation, mode, datatype string
 		latest                                      bool
@@ -36,7 +147,7 @@ func TestSourceReviewUsesExactVersionScopeAndStableCommand(t *testing.T) {
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			var execution map[string]any
-			if err := json.Unmarshal([]byte(executionJSON), &execution); err != nil {
+			if err := json.Unmarshal([]byte(reviewExecutionJSON), &execution); err != nil {
 				t.Fatal(err)
 			}
 			udp := execution["udp"].(map[string]any)

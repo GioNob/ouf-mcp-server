@@ -47,7 +47,7 @@ func TestManagedSchemaPagesPersistCapacityAcrossConnections(t *testing.T) {
 	if err = store.Pool().QueryRow(ctx, "select consumed_tool_calls from ouf_mcp.budget_window where tenant_id=$1", tenant).Scan(&consumed); err != nil || consumed != 24 {
 		t.Fatal("consumption not retained", consumed, err)
 	}
-	for index := 0; index < 3; index++ {
+	for index := 0; index < orchestration.DefaultAdmissionCallsPerMinute; index++ {
 		request := controlRequest(manifest, tenant)
 		request.BudgetProfile = ""
 		request.CapabilityID = "ouf.semantic.propose"

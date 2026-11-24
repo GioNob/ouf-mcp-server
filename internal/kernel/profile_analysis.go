@@ -89,7 +89,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			}
 			var denied *analysis.OwnerDenial
 			if errors.As(err, &denied) {
-				return ownerDenialResult(&orchestration.Problem{Status: 403, Code: denied.ReasonCode}), nil, nil
+				return ownerDenialResult(&orchestration.Problem{Status: 403, Code: denied.ReasonCode}, denied.CapabilityID), nil, nil
 			}
 			if wait := windowAdmissionErrorResult(err); wait != nil {
 				return wait, nil, nil

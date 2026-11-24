@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -79,6 +80,9 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 				if err := json.Unmarshal(in.Arguments, &forwarded); err != nil {
 					t.Fatal(err)
 				}
+				if _, sent := forwarded["analysisId"]; sent {
+					t.Error("MCP analysis context reached the owner")
+				}
 				if rdf, ok := tc.args["rdfTurtle"]; ok && forwarded["rdfTurtle"] != rdf {
 					t.Error("Turtle draft content changed")
 				}
@@ -125,7 +129,9 @@ func TestSemanticProposalToolsUseOwnerScopesStableIntentAndClosedGateway(t *test
 					}
 				}
 				before := calls.Load()
-				res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
+				input := maps.Clone(tc.args)
+				input["analysisId"] = strings.Repeat("a", 64)
+				res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: input})
 				if err != nil {
 					t.Fatal(err)
 				}

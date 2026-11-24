@@ -11,6 +11,8 @@ import (
 func replayResultID(in Invocation, body []byte) *uuid.UUID {
 	var field string
 	switch in.CapabilityID {
+	case HandoffIssueCapability:
+		field = "handoffId"
 	case "ouf.managed-source.file.upload":
 		if in.Upload == nil {
 			return nil // picker status has its own current owner read

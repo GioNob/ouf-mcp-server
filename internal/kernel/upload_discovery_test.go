@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -49,13 +51,32 @@ func TestHostFileToolIsOptInAndAdvertisesFileParameter(t *testing.T) {
 }
 
 func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
-	const picker = "https://api.ouf-lab.it/trusted-human/managed-files/"
-	h, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), &orchestration.Service{}, picker)
+	const picker = "https://widget.example.invalid/trusted-human/managed-files/"
+	const ownerURL = "https://widget.example.invalid/picker?key=owner-selected"
+	const id = "11111111-1111-4111-8111-111111111111"
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in orchestration.GatewayRequest
+		var args map[string]string
+		if json.NewDecoder(r.Body).Decode(&in) != nil || json.Unmarshal(in.Arguments, &args) != nil || len(args) != 1 || uuid.Validate(args["commandKey"]) != nil || args["commandKey"] != in.IdempotencyKey || r.Header.Get("X-OUF-Delegation") != "human-proof" || r.URL.Path != "/internal/capabilities/v1/execute/managed.file/handoff-issue" {
+			t.Error("invalid delegated issue request")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"handoffId": id, "pickerUrl": ownerURL, "state": "PENDING", "observationVersion": "1", "issuedAt": time.Now().UTC().Format(time.RFC3339), "waitUntil": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	}))
+	defer gateway.Close()
+	clientGateway, err := httpclient.NewGateway(gateway.URL+"/internal/capabilities/v1/execute", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Gateway: clientGateway, Admission: &statusAdmission{}, FingerprintKey: make([]byte, 32)}
+	h, err := NewGovernedHTTPHandlerWithFilePicker(slog.New(slog.NewTextHandler(io.Discard, nil)), service, picker)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("X-OUF-Gateway-Verified", "true")
+		r.Header.Set("X-OUF-Service-Principal", "mcp")
+		r.Header.Set("X-OUF-Principal-ID", "reader")
+		r.Header.Set("X-OUF-Tenant-ID", "tenant")
 		r.Header.Set("X-OUF-Delegation", "human-proof")
 		r.Header.Set("X-OUF-Actor-Type", "HUMAN")
 		h.ServeHTTP(w, r)
@@ -110,11 +131,12 @@ func TestPickerModeUsesSameUploadToolWithoutHostFileParameter(t *testing.T) {
 		t.Fatalf("invalid picker result: %+v %v", result, err)
 	}
 	structured, ok := result.StructuredContent.(map[string]any)
-	if !ok || !strings.HasPrefix(structured["pickerUrl"].(string), picker+"?handoff=") || structured["status"] != "AWAITING_FILE_SELECTION" {
-		t.Fatalf("invalid picker result: %+v %v", result, err)
+	if !ok || structured["pickerUrl"] != ownerURL || structured["handoffId"] != id {
+		t.Fatal("owner receipt lost", structured)
 	}
-	if !strings.HasSuffix(structured["pickerUrl"].(string), structured["handoffId"].(string)) {
-		t.Fatal("picker URL not bound to status handoff")
+	next := checkNext(t, nextContract(t), result)
+	if next["action"] != "WAIT_FOR_HUMAN" || next["human"].(map[string]any)["reviewUrl"] != ownerURL {
+		t.Fatal(next)
 	}
 }
 

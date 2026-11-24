@@ -62,7 +62,15 @@ func TestSemanticAdoptionDescriptorMatchesOwnerPR49(t *testing.T) {
 			continue
 		}
 		var got map[string]any
-		if json.Unmarshal(c.InputSchema, &got) != nil || !reflect.DeepEqual(want, got) ||
+		if err := json.Unmarshal(c.InputSchema, &got); err != nil {
+			t.Fatal(err)
+		}
+		props := got["properties"].(map[string]any)
+		if props["analysisId"].(map[string]any)["pattern"] != "^[a-f0-9]{64}$" {
+			t.Fatal("invalid local analysis context")
+		}
+		delete(props, "analysisId")
+		if !reflect.DeepEqual(want, got) ||
 			c.CapabilityID != "ouf.semantic.discovery.adopt" || c.RequiredAuthorization != c.CapabilityID ||
 			c.GatewayBindingRef != "capability://"+c.CapabilityID || c.OperationClass != "COMMAND" || c.Owner != "semantic" ||
 			c.RequiredScope != "ouf.semantic.discovery" || !reflect.DeepEqual(c.AllowedActors, []string{"HUMAN"}) {

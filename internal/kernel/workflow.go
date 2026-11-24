@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/contracts"
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
@@ -30,11 +31,12 @@ type registeredTool struct {
 
 type workflowServer struct {
 	*mcp.Server
-	manifest *manifest.Snapshot
-	tools    map[string]registeredTool
-	waits    *waitService
-	thsLinks map[string]func(context.Context, nextstep.Object) nextstep.Object
-	key      []byte
+	manifest   *manifest.Snapshot
+	nextSchema *jsonschema.Resolved
+	tools      map[string]registeredTool
+	waits      *waitService
+	thsLinks   map[string]linkLookup
+	key        []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -46,7 +48,11 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 		installationKey = make([]byte, 32)
 		rand.Read(installationKey)
 	}
-	return &workflowServer{Server: sdk, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	schema, err := contracts.NextStepSchema()
+	if err != nil {
+		return nil, err
+	}
+	return &workflowServer{Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -73,7 +79,7 @@ func (s *workflowServer) valid(name string, args nextstep.Object) bool {
 	// Validate JSON values, including nested typed slices built by the planner.
 	raw, err := json.Marshal(args)
 	var v map[string]any
-	return err == nil && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil
+	return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(raw)) && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil
 }
 
 // Keep argument diagnostics inside the tool result. Typed SDK registration
@@ -131,6 +137,11 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 	if !strings.HasSuffix(tool.Description, manifest.FollowNext) {
 		tool.Description += " " + manifest.FollowNext
 	}
+	c.ToolName = name
+	if name == "source.file.upload.status" {
+		// The predecessor Gateway route uses the upload envelope. Its bound handoff operation is read-only.
+		c.OperationClass = "READ"
+	}
 	t := registeredTool{c, input, manifest.InputForms(raw), budget.HardMaxResultBytes, run}
 	s.tools[name] = t
 	s.Server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -139,7 +150,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		if len(req.Params.Arguments) == 0 {
 			req.Params.Arguments = json.RawMessage("{}")
 		}
-		if json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
+		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
 		} else {
 			var err error
@@ -155,15 +166,34 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			_ = decoder.Decode(&args)
 		}
 		if name == "ouf.wait" && result.StructuredContent != nil {
-			out := boundedResult(result, t.limit, s.manifest.NextPolicies[c.NextPolicy].Read)
+			out := s.boundedResult(result, t)
 			if out != result {
 				body := out.StructuredContent.(map[string]any)
 				body["changed"], body["observation"] = false, nil
 			}
-			return out, nil
+			result = out
+		} else {
+			result = s.decorate(ctx, t, args, result)
 		}
-		return s.decorate(ctx, t, args, result), nil
+		return s.validateNext(name, result), nil
 	})
+}
+
+func (s *workflowServer) validateNext(name string, result *mcp.CallToolResult) *mcp.CallToolResult {
+	body, _ := result.StructuredContent.(nextstep.Object)
+	raw, err := json.Marshal(body["next"])
+	var next nextstep.Object
+	if err == nil && json.Unmarshal(raw, &next) == nil && next != nil && s.nextSchema.Validate(next) == nil {
+		return result
+	}
+	const code = "NEXT_CONTRACT_INVALID"
+	fallback := nextstep.ManualBlock(code, "Chiedi all’operatore di verificare il passo successivo.", "OPERATOR")
+	body = nextstep.Object{"code": code, "next": fallback}
+	if name == "ouf.wait" {
+		body["changed"], body["observation"] = false, nil
+	}
+	wire, _ := json.Marshal(body)
+	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
 }
 
 func ownerObject(result *mcp.CallToolResult) nextstep.Object {
@@ -179,8 +209,10 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 		return nil
 	}
 	if trimmed := bytes.TrimSpace(raw); trimmed[0] == '[' {
-		var items []json.RawMessage
-		if json.Unmarshal(raw, &items) == nil {
+		var items []any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if decoder.Decode(&items) == nil {
 			return nextstep.Object{"legacyList": true, "items": items}
 		}
 		return nil
@@ -195,12 +227,12 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 }
 
 func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
-	return nextstep.Engine{Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
+	return nextstep.Engine{WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
 		t, ok := s.tools[r.Tool]
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
 		}
-		var link nextstep.Object
+		var link nextstep.LinkResult
 		switch r.Tool {
 		case "ouf.ingestion.status":
 			if fetch := s.thsLinks[recoveryLinkID]; fetch != nil {
@@ -241,7 +273,9 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured[k] = v
 	}
 	if result.IsError && obs["reasonCode"] == "NO_APPLICABLE_GRANT" {
-		structured["requiredCapability"] = c.RequiredAuthorization
+		if structured["requiredCapability"] == nil {
+			structured["requiredCapability"] = c.RequiredAuthorization
+		}
 		if isAcquisitionRead(c.CapabilityID) {
 			identity, _ := ctx.Value(identityKey{}).(requestIdentity)
 			raw, _ := json.Marshal(args)
@@ -265,7 +299,22 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
-	out := boundedResult(result, t.limit, p.Read)
+	code, _ := structured["code"].(string)
+	windowRefusal := result.IsError && nextstep.AdmissionWindowCode(code)
+	pickerIssued := c.ToolName == "source.file.upload" && obs["pickerUrl"] != nil
+	if windowRefusal || pickerIssued {
+		// Some MCP clients surface only text content for tool errors.
+		body, _ := json.Marshal(structured)
+		result.Content = []mcp.Content{&mcp.TextContent{Text: string(body)}}
+	}
+	out := s.boundedResult(result, t)
+	if out != result && (windowRefusal || pickerIssued) {
+		// Prefer the complete structured retry if only its text duplicate
+		// overflows the wire budget, as for large preview pages below.
+		compact := *result
+		compact.Content = []mcp.Content{&mcp.TextContent{Text: "Il risultato e il passo successivo sono in structuredContent."}}
+		return s.boundedResult(&compact, t)
+	}
 	if out != result && !result.IsError && c.ToolName == "source.file.preview" {
 		// A wave-2 column page can occupy 768 KiB on its own. Keep the
 		// complete structured page when duplicating it as text exceeds the
@@ -274,7 +323,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		if args["distinctValuesCursor"] != nil || next["reasonCode"] == "DISTINCT_VALUES_PAGE" || hasPagedValues(obs) {
 			page := *result
 			page.Content = []mcp.Content{&mcp.TextContent{Text: "La pagina completa dei valori e il passo successivo sono in structuredContent."}}
-			return boundedResult(&page, t.limit, p.Read)
+			return s.boundedResult(&page, t)
 		}
 	}
 	return out
@@ -293,12 +342,18 @@ func hasPagedValues(obs nextstep.Object) bool {
 
 // Measure the final wire result (including escaping and legacy text) before
 // release. A command whose owner effect already happened must be reconciled.
-func boundedResult(result *mcp.CallToolResult, limit int, read string) *mcp.CallToolResult {
-	if body, err := json.Marshal(result); err == nil && len(body) <= limit {
+func (s *workflowServer) boundedResult(result *mcp.CallToolResult, t registeredTool) *mcp.CallToolResult {
+	if body, err := json.Marshal(result); err == nil && len(body) <= t.limit {
 		return result
 	}
 	small := errorResult("TOOL_RESULT_LIMIT", false)
-	small.StructuredContent = map[string]any{"next": nextstep.Block("TOOL_RESULT_LIMIT", read, "Consulta la risorsa con una lettura circoscritta.")}
+	const message = "Consulta la risorsa con una lettura circoscritta."
+	read := s.manifest.NextPolicies[t.capability.NextPolicy].Read
+	next := nextstep.Block("TOOL_RESULT_LIMIT", read, message)
+	if read == t.capability.ToolName {
+		next = nextstep.ManualBlock("TOOL_RESULT_LIMIT", message, "OPERATOR")
+	}
+	small.StructuredContent = map[string]any{"next": next}
 	return small
 }
 

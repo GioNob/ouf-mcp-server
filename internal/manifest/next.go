@@ -8,9 +8,7 @@ import (
 	"strings"
 )
 
-const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key."
-
-const PickerStatusInputSchema = `{"type":"object","additionalProperties":false,"required":["handoffId"],"properties":{"handoffId":{"type":"string","format":"uuid"}}}`
+const FollowNext = "After this tool, follow the `next` block of the result exactly; never infer the next step. For a new command MCP supplies a UUIDv4 commandKey in next.arguments. Retry that step with the same arguments and key. For BLOCKED/AGENT choose only a listed alternative, preserve its supplied arguments, and complete missing decision fields from the indicated evidence using its input schema."
 
 type Policy struct {
 	Read       string              `json:"read"`
@@ -21,16 +19,17 @@ type Policy struct {
 // Rules run in order. Selectors address owner fields. An @ prefix explicitly
 // refers to the current request. Constants are prefixed with =.
 type Rule struct {
-	When     map[string]string `json:"when"`
-	Action   string            `json:"action"`
-	Reason   string            `json:"reason"`
-	Tool     string            `json:"tool,omitempty"`
-	Args     map[string]string `json:"args,omitempty"`
-	Decision string            `json:"decision,omitempty"`
-	Terminal []string          `json:"terminal,omitempty"`
-	Actor    string            `json:"actor,omitempty"`
-	Outcome  string            `json:"outcome,omitempty"`
-	Message  string            `json:"message,omitempty"`
+	When         map[string]string `json:"when"`
+	Action       string            `json:"action"`
+	Reason       string            `json:"reason"`
+	Tool         string            `json:"tool,omitempty"`
+	Args         map[string]string `json:"args,omitempty"`
+	Decision     string            `json:"decision,omitempty"`
+	Terminal     []string          `json:"terminal,omitempty"`
+	Actor        string            `json:"actor,omitempty"`
+	Outcome      string            `json:"outcome,omitempty"`
+	Message      string            `json:"message,omitempty"`
+	Alternatives []Rule            `json:"alternatives,omitempty"`
 }
 
 type branch struct {

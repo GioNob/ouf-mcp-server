@@ -3,7 +3,6 @@ package orchestration
 import (
 	"encoding/json"
 	"errors"
-	"time"
 )
 
 const ManagedSchemaBudgetProfile = "ouf.managed-schema-pages.v1"
@@ -22,7 +21,7 @@ func isManagedSchemaPage(in Invocation) bool {
 
 func managedSchemaWindowBudget(in AdmissionRequest) (string, Cost, error) {
 	if in.CapabilityID != "ouf.managed-source.preview" || in.OperationClass != "READ" ||
-		in.ManifestChecksum == "" || in.Window != time.Minute || in.RetryThreshold != 3 ||
+		in.ManifestChecksum == "" || in.Window != AdmissionWindow || in.RetryThreshold != AdmissionRetryThreshold ||
 		in.Maximum.ToolCalls != 1 || in.Maximum.ResultBytes < 1 || in.Maximum.ResultBytes > 1<<20 ||
 		in.Maximum.DistinctObjects < 0 || in.Maximum.DistinctObjects > 200 {
 		return "", Cost{}, errors.New("unsupported managed schema budget")

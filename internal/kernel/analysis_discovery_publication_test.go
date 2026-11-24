@@ -108,6 +108,11 @@ func TestPublishedAnalysisDiscoveryDenyBeforeOwnerOrStore(t *testing.T) {
 					if json.Unmarshal([]byte(raw), &denial) != nil || denial.ReasonCode != "NO_APPLICABLE_GRANT" || denial.EvaluatedPolicyVersion != 17 || strings.Contains(raw, "private-fixture") {
 						t.Fatal("policy denial lost or disclosed private data", tool, raw)
 					}
+					required := "ouf." + strings.TrimSuffix(tool, ".request")
+					if strings.HasPrefix(tool, "source.analysis.") {
+						required = "ouf.managed-source.preview"
+					}
+					checkPermissionAlternatives(t, checkNext(t, nextContract(t), result), required, denial.ReasonCode)
 				}
 			}
 			if governed && auth.calls.Load() != 6 {

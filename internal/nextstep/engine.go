@@ -2,8 +2,11 @@
 package nextstep
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math/big"
 	"net/http"
 	"regexp"
 	"slices"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
 
@@ -20,13 +24,17 @@ type Object = map[string]any
 
 const Contract = "ouf.next-step.v1"
 
+const DefaultWaitMaxSeconds = 3600
+
 type Engine struct {
-	Errors     []manifest.Rule
-	Valid      func(string, Object) bool
-	Issue      func(manifest.Rule, Object, Object) Object
-	Now        func() time.Time
-	AnalysisID func(string, string) string
-	CommandKey func(string, Object, Object, Object) string
+	WaitMaxSeconds      int
+	PollIntervalSeconds int
+	Errors              []manifest.Rule
+	Valid               func(string, Object) bool
+	Issue               func(manifest.Rule, Object, Object) Object
+	Now                 func() time.Time
+	AnalysisID          func(string, string) string
+	CommandKey          func(string, Object, Object, Object) string
 }
 
 func step(action, reason, message string) Object {
@@ -114,6 +122,45 @@ func get(obs, input Object, paths string) any {
 			}
 		}
 		return nil
+	case "#resumeTask", "#allTerminal", "#nextTaskOffset":
+		tasks, ok := obs["tasks"].([]any)
+		if !ok || len(tasks) == 0 {
+			return nil
+		}
+		if paths == "#nextTaskOffset" {
+			offset, err := strconv.Atoi(fmt.Sprint(obs["offset"]))
+			if obs["hasMore"] == true && err == nil && offset >= 0 {
+				return offset + len(tasks)
+			}
+			return nil
+		}
+		terminal := true
+		for _, item := range tasks {
+			task, _ := item.(Object)
+			switch task["state"] {
+			case "COMPLETED", "SUCCEEDED":
+				continue
+			case "WAITING", "RUNNING":
+				if paths == "#resumeTask" {
+					return task["taskId"]
+				}
+			case "HELD", "FAILED":
+				if paths == "#resumeTask" && task["retryable"] == true {
+					return task["taskId"]
+				}
+			}
+			terminal = false
+		}
+		if paths == "#allTerminal" {
+			// A caller can resume on a later page. The owner's totals cover
+			// the whole plan, including tasks that are not in this page.
+			if planned := lookup(obs, "budget.plannedCalls"); planned != nil &&
+				fmt.Sprint(planned) != fmt.Sprint(lookup(obs, "budget.completedTasks")) {
+				return false
+			}
+			return terminal && obs["hasMore"] != true
+		}
+		return nil
 	}
 	for _, path := range strings.Split(paths, "|") {
 		if strings.HasPrefix(path, "=") {
@@ -146,6 +193,18 @@ func matches(when map[string]string, obs, input Object) bool {
 			}
 		case string, bool:
 			found = found || slices.Contains(allowed, fmt.Sprint(v))
+		case json.Number, float64, float32, int, int64, int32, int16, int8, uint, uint64, uint32, uint16, uint8:
+			if found {
+				continue
+			}
+			number, ok := new(big.Rat).SetString(fmt.Sprint(v))
+			for _, literal := range allowed {
+				want, valid := new(big.Rat).SetString(literal)
+				if ok && valid && number.Cmp(want) == 0 {
+					found = true
+					break
+				}
+			}
 		}
 		if !found {
 			return false
@@ -192,6 +251,17 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 			value = true
 		case "#uuid":
 			continue
+		case "#decisionKey":
+			// The agent has not authored the intent yet. Allocate a key for
+			// this offered command; retries use the completed arguments.
+			value = uuid.NewString()
+		case "#searchQuery":
+			// Discovery intents can exceed the search schema's query limit.
+			// Only bind the original wording when it is executable as a query.
+			value = nil
+			if intent := get(obs, input, "intent|@intent"); intent != nil && e.Valid(r.Tool, Object{"q": intent}) {
+				value = intent
+			}
 		case "#zero":
 			value = 0
 		case "#discovery":
@@ -218,9 +288,133 @@ func call(action, reason, tool string, args Object) Object {
 }
 
 func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
-	obs := Observation(c.ToolName, input, owner)
+	return ensureProgress(c.ToolName, input, e.evaluate(c, policy, input, owner, failed))
+}
+
+// Compare decoded JSON numbers by value, including 1, 1.0 and 1e0.
+// Float64 would also merge distinct integer versions above 2^53.
+func sameJSON(a, b any) bool {
+	switch x := a.(type) {
+	case Object:
+		y, ok := b.(Object)
+		return ok && maps.EqualFunc(x, y, sameJSON)
+	case []any:
+		y, ok := b.([]any)
+		return ok && slices.EqualFunc(x, y, sameJSON)
+	case json.Number:
+		y, ok := b.(json.Number)
+		if !ok || x == y {
+			return ok
+		}
+		left, ok := new(big.Rat).SetString(x.String())
+		right, valid := new(big.Rat).SetString(y.String())
+		return ok && valid && left.Cmp(right) == 0
+	default:
+		return a == b
+	}
+}
+
+func wireArgumentsEqual(input Object, args any) bool {
+	decode := func(v any) (Object, error) {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		var obj Object
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		err = decoder.Decode(&obj)
+		return obj, err
+	}
+	a, err := decode(input)
+	b, otherErr := decode(args)
+	return err != nil || otherErr != nil || sameJSON(a, b)
+}
+
+// A missing argument list on a same-tool hint cannot identify a different
+// request. Compare wire values so typed maps, integers and decoded JSON agree.
+func ensureProgress(tool string, input, next Object) Object {
+	same := func(target Object) bool {
+		if target["tool"] != tool {
+			return false
+		}
+		delay, _ := target["pollAfterSeconds"].(int)
+		states, _ := target["terminalStates"].([]string)
+		if target["action"] == "POLL" && delay > 0 && len(states) > 0 {
+			return false
+		}
+		if target["arguments"] == nil {
+			return true
+		}
+		return wireArgumentsEqual(input, target["arguments"])
+	}
+	reason := next["reasonCode"].(string)
+	if same(next) {
+		return ManualBlock(reason, "Il passo indicato ripete la richiesta. Chiedi all’operatore di verificare lo stato.", "OPERATOR")
+	}
+	if alts, ok := next["alternatives"].([]Object); ok {
+		remaining := slices.DeleteFunc(alts, same)
+		if len(alts) > 0 && len(remaining) == 0 {
+			actor, _ := next["actor"].(string)
+			if actor == "AGENT" || reason == "WAIT_DEADLINE_EXPIRED" {
+				actor = "OPERATOR"
+			}
+			message := next["userMessage"].(string)
+			return ManualBlock(reason, message, actor)
+		}
+		next["alternatives"] = remaining
+	}
+	return next
+}
+
+func ManualBlock(reason, message, actor string) Object {
+	s := Block(reason, "", message)
+	s["actor"] = actor
+	s["alternatives"] = []Object{{"action": "WAIT_FOR_HUMAN", "reasonCode": reason, "userMessage": message}}
+	return s
+}
+
+// Neither a denial nor a catalogue entry supplies a user's grant interval,
+// grant ID or intended role changes. Read the complete role catalogue before
+// preparing a role proposal, preserving unrelated entries and assignments.
+func PermissionDenied(capability, reason string) Object {
+	message := "Manca il permesso per " + capability + ". Verifica la configurazione dei permessi nella THS."
+	s := Block(reason, "", message)
+	s["actor"] = "HUMAN_THS"
+	read := func(view, instruction string) Object {
+		return Object{"action": "CALL_TOOL", "tool": "authorization.permissions.read", "arguments": Object{"view": view},
+			"reasonCode": reason, "userMessage": instruction}
+	}
+	s["alternatives"] = []Object{
+		read("CAPABILITIES", "Verifica se il catalogo include il permesso "+capability+"."),
+		read("ROLES", "Leggi ruoli e assegnazioni per preparare la modifica con authorization.permissions.propose."),
+	}
+	return s
+}
+
+func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
 	if failed {
-		return e.failure(c, policy, input, obs)
+		return e.failure(c, policy, input, owner)
+	}
+	obs := Observation(c.ToolName, input, owner)
+	if c.ToolName == "source.file.upload.status" || c.ToolName == "source.file.upload" {
+		if obs["legacy"] == true {
+			return (WaitRef{Read: "source.file.upload", Args: Object{}}).Block("HANDOFF_NOT_ISSUED", "Apri un nuovo selettore per scegliere il file.")
+		}
+		if obs["state"] == "EXPIRED" || obs["status"] == "EXPIRED" {
+			args := Object{"handoffId": get(obs, input, "@handoffId|handoffId")}
+			return (WaitRef{Read: "source.file.upload.status", Args: args}).Block("WAIT_DEADLINE_EXPIRED", "Rileggi l’esito registrato.")
+		}
+		waitUntil, _ := obs["waitUntil"].(string)
+		if waitUntil == "" && (obs["handoffId"] != nil || c.ToolName == "source.file.upload.status" || obs["status"] == "AWAITING_FILE_SELECTION") {
+			return ManualBlock("HANDOFF_DEADLINE_REQUIRED", "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
+		}
+		if c.ToolName == "source.file.upload.status" && obs["state"] == "PENDING" && obs["pickerUrl"] == nil {
+			if end, err := time.Parse(time.RFC3339Nano, waitUntil); err == nil && !e.Now().Before(end) {
+				return (WaitRef{Read: c.ToolName, Args: input}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta.")
+			}
+			return Block("HANDOFF_REFERENCE_REQUIRED", "ouf.wait", "Riprendi l’attesa con il waitRef ricevuto all’apertura del selettore.")
+		}
 	}
 	if c.ToolName == "ouf.ingestion.status" {
 		obs = recoveryObservation(obs)
@@ -228,7 +422,15 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 	if obs["replay"] == true {
 		tool, _ := obs["readTool"].(string)
 		args, _ := obs["readArguments"].(Object)
-		if tool == policy.Read && args != nil && e.Valid(tool, args) {
+		pickerReceipt := c.ToolName == "source.file.upload" && tool == "source.file.upload.status"
+		if (tool == policy.Read || pickerReceipt) && args != nil && e.Valid(tool, args) {
+			if id := input["analysisId"]; id != nil {
+				contextual := maps.Clone(args)
+				contextual["analysisId"] = id
+				if e.Valid(tool, contextual) {
+					args = contextual
+				}
+			}
 			return call("CALL_TOOL", "READ_ORIGINAL_RECEIPT", tool, args)
 		}
 		return Block("READ_ORIGINAL_RECEIPT", policy.Read, "Consulta la ricevuta del comando originale.")
@@ -254,6 +456,20 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		switch r.Action {
 		case "BLOCKED":
 			s := Block(r.Reason, r.Tool, r.Message)
+			if len(r.Alternatives) > 0 {
+				alts := make([]Object, 0, len(r.Alternatives))
+				for _, option := range r.Alternatives {
+					alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
+					if args := e.project(option, obs, input); len(args) > 0 {
+						alt["arguments"] = args
+					}
+					alts = append(alts, alt)
+				}
+				s["alternatives"] = alts
+			}
+			if r.Actor == "OPERATOR" && r.Tool == "" {
+				return ManualBlock(r.Reason, r.Message, r.Actor)
+			}
 			if len(r.Args) > 0 {
 				args := e.project(r, obs, input)
 				if e.Valid(r.Tool, args) {
@@ -296,28 +512,78 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		if r.Action == "WAIT_FOR_HUMAN" {
 			if e.Issue != nil {
-				return e.Issue(r, args, obs)
+				next := e.Issue(r, args, obs)
+				// Both semantic review commands bind admission and owner
+				// deduplication to commandKey. Poll the original invocation;
+				// a replay receipt continues with its authorized read.
+				if next["action"] == "POLL" && next["reasonCode"] == "OWNER_REVIEW_LINK_UNAVAILABLE" &&
+					(c.ToolName == "semantic.review.prepare" || c.ToolName == "semantic.approval.request") &&
+					input["commandKey"] != nil && e.Valid(c.ToolName, input) {
+					next["tool"], next["arguments"] = c.ToolName, input
+				}
+				return next
 			}
 			return Block("WAIT_UNAVAILABLE", r.Tool, "Consulta lo stato della decisione.")
 		}
 		s := call(r.Action, r.Reason, r.Tool, args)
+		if r.Message != "" {
+			s["userMessage"] = r.Message
+		}
 		if r.Action == "POLL" {
-			delay, ok := retryDelay(obs, e.Now())
-			if !ok {
-				return Block("RETRY_WINDOW_UNAVAILABLE", policy.Read, "Verifica la finestra di ripresa.")
-			}
-			s["pollAfterSeconds"], s["terminalStates"] = delay, r.Terminal
-			if raw := get(obs, nil, "budgetDeadline|activationProgress.budgetExpiresAt"); raw != nil {
-				end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
-				if err != nil || !e.Now().Add(time.Duration(delay)*time.Second).Before(end) {
-					return Block("RETRY_WINDOW_EXHAUSTED", policy.Read, "Verifica il budget prima della prossima lettura.")
-				}
-				s["deadline"] = end.UTC().Format(time.RFC3339Nano)
-			}
+			return e.machinePoll(s, policy.Read, obs, args, r.Terminal)
 		}
 		return s
 	}
 	return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+}
+
+// A deadline is checked before proposing another delay, including an owner error.
+func (e Engine) machinePoll(next Object, read string, obs, args Object, terminal []string) Object {
+	now := e.Now()
+	end, valid := e.machineDeadline(obs)
+	if !valid {
+		return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la scadenza del lavoro con l’owner.", "OPERATOR")
+	}
+	if !end.IsZero() {
+		if !now.Before(end) {
+			if next["tool"] == read {
+				return (WaitRef{Read: read, Args: args}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Rileggi l’esito registrato su richiesta dell’utente.")
+			}
+			return ManualBlock("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Verifica l’esito del lavoro con l’operatore.", "OPERATOR")
+		}
+		next["deadline"] = end.UTC().Format(time.RFC3339Nano)
+	}
+	delay, ok := retryDelay(obs, now)
+	if !ok {
+		return Block("RETRY_WINDOW_UNAVAILABLE", read, "Verifica la finestra di ripresa.")
+	}
+	next["pollAfterSeconds"], next["terminalStates"] = max(delay, e.PollIntervalSeconds), terminal
+	return next
+}
+
+func (e Engine) machineDeadline(obs Object) (time.Time, bool) {
+	maximum := e.WaitMaxSeconds
+	if maximum == 0 {
+		maximum = DefaultWaitMaxSeconds
+	}
+	var earliest time.Time
+	for _, field := range []string{"deadline", "waitUntil", "expiresAt", "decisionDeadline", "budgetDeadline", "activationProgress.budgetExpiresAt", "createdAt", "startedAt"} {
+		raw := lookup(obs, field)
+		if raw == nil {
+			continue
+		}
+		end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+		if err != nil {
+			return time.Time{}, false
+		}
+		if field == "createdAt" || field == "startedAt" {
+			end = end.Add(time.Duration(maximum) * time.Second)
+		}
+		if earliest.IsZero() || end.Before(earliest) {
+			earliest = end
+		}
+	}
+	return earliest, true
 }
 
 // Only a single visible source in a complete page can select a run. Preserve
@@ -359,6 +625,25 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	if !reasonPattern.MatchString(code) {
 		code = "OWNER_REQUEST_FAILED"
 	}
+	if c.ToolName == "source.file.upload" && code == "HANDOFF_DEADLINE_REQUIRED" {
+		return ManualBlock(code, "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
+	}
+	if c.ToolName == "source.file.upload.status" && code == "ONB_HANDOFF_UNKNOWN" {
+		return (WaitRef{Read: "source.file.upload", Args: Object{}}).Block(code, "Apri un nuovo selettore per scegliere il file.")
+	}
+	if AdmissionWindowCode(code) {
+		// The admission store refused before dispatch. It knows the exact
+		// remaining window even for a command with no owner commandKey.
+		delay, err := strconv.Atoi(fmt.Sprint(obs["retryAfterSeconds"]))
+		end, _ := obs["windowEndsAt"].(string)
+		deadline, dateErr := time.Parse(time.RFC3339Nano, end)
+		if obs["retryable"] == true && err == nil && delay > 0 && delay <= 3600 && dateErr == nil && !deadline.IsZero() && e.Valid(c.ToolName, args) {
+			s := call("POLL", code, c.ToolName, args)
+			s["pollAfterSeconds"], s["deadline"], s["terminalStates"] = delay, end, []string{"ADMITTED", "BLOCKED"}
+			return s
+		}
+		return ManualBlock(code, "Verifica il budget di ammissione e la disponibilità di una finestra di ripresa.", "OPERATOR")
+	}
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
 	retryable := obs["retryable"] == true || (obs["retryable"] == nil && (status == "503" || status == "429"))
 	safe := c.OperationClass == "READ" || c.OperationClass == "SEARCH" || (args["commandKey"] != nil && args["commandKey"] != "")
@@ -375,6 +660,16 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			target = c.ToolName
 		}
 		if r.Action == "BLOCKED" {
+			if code == "NO_APPLICABLE_GRANT" && target == "authorization.permissions.propose" {
+				capability := c.RequiredAuthorization
+				if required, ok := obs["requiredCapability"].(string); ok && (obs["authorizationPhase"] == "MCP_PRE_ADMISSION" || obs["authorizationPhase"] == "OWNER") {
+					capability = required
+				}
+				if c.ToolName == "authorization.permissions.read" {
+					return ManualBlock(code, "Manca il permesso per "+capability+". Chiedi a un responsabile autorizzato di preparare la modifica con authorization.permissions.propose.", "HUMAN_THS")
+				}
+				return PermissionDenied(capability, code)
+			}
 			return Block(code, target, r.Message)
 		}
 		projected := e.project(r, obs, args)
@@ -389,45 +684,48 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		}
 		s := call(r.Action, code, target, projected)
 		if r.Action == "POLL" {
-			delay, ok := retryDelay(obs, e.Now())
-			if !ok {
-				return Block(code, p.Read, "Verifica la finestra di ripresa.")
-			}
-			s["pollAfterSeconds"], s["terminalStates"] = delay, r.Terminal
-			if t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(obs["windowEndsAt"])); err == nil {
-				s["deadline"] = t.UTC().Format(time.RFC3339Nano)
-			}
+			return e.machinePoll(s, p.Read, obs, projected, r.Terminal)
 		}
 		return s
 	}
 	return Block(code, p.Read, "Verifica il motivo del rifiuto.")
 }
 
+func AdmissionWindowCode(code string) bool {
+	return code == "TOOL_SELECTION_STALL" || strings.HasSuffix(code, "_WINDOW_BUDGET_EXHAUSTED")
+}
+
 func retryDelay(obs Object, now time.Time) (int, bool) {
-	raw := get(obs, nil, "RetryAfter|retryAfterSeconds|pollAfterSeconds")
-	if obs["recoveryAction"] != nil && obs["retryAt"] != nil && obs["RetryAfter"] == nil {
-		raw = nil
-	}
-	if raw == nil {
-		if at := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt"); at != nil {
-			t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(at))
+	delay := orchestration.PollIntervalSeconds
+	for _, field := range []string{"RetryAfter", "retryAfterSeconds", "pollAfterSeconds"} {
+		raw := get(obs, nil, field)
+		if raw == nil {
+			continue
+		}
+		seconds, err := strconv.Atoi(fmt.Sprint(raw))
+		if err != nil {
+			date, err := http.ParseTime(fmt.Sprint(raw))
 			if err != nil {
 				return 0, false
 			}
-			delay := max(5, int((t.Sub(now)+time.Second-1)/time.Second))
-			return delay, delay <= 3600
+			if date.After(now.Add(time.Hour)) {
+				return 0, false
+			}
+			seconds = max(0, int((date.Sub(now)+time.Second-1)/time.Second))
 		}
-		return 5, true
-	}
-	s := fmt.Sprint(raw)
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		date, err := http.ParseTime(s)
-		if err != nil {
+		if seconds < 0 || seconds > 3600 {
 			return 0, false
 		}
-		n = int((date.Sub(now) + time.Second - 1) / time.Second)
-		n = max(n, 0)
+		delay = max(delay, seconds)
 	}
-	return max(n, 5), n >= 0 && n <= 3600
+	if raw := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); raw != nil {
+		at, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+		if err != nil || at.After(now.Add(time.Hour)) {
+			return 0, false
+		}
+		if at.After(now) {
+			delay = max(delay, int((at.Sub(now)+time.Second-1)/time.Second))
+		}
+	}
+	return delay, true
 }

@@ -3,6 +3,7 @@ package nextstep
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -15,20 +16,21 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schemas := map[string]*jsonschema.Resolved{
-		"source.file.upload.status": resolve(t, []byte(manifest.PickerStatusInputSchema)),
-	}
+	schemas := map[string]*jsonschema.Resolved{}
 	for _, c := range s.ToolEligible() {
 		schemas[c.ToolName] = resolve(t, c.InputSchema)
+		if c.ToolName == "source.file.upload" {
+			schemas["source.file.upload.status"] = resolve(t, c.HandoffInputSchema)
+		}
 	}
 	const id = "11111111-1111-4111-8111-111111111111"
 	fixture := Object{
-		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "TEATRO",
+		"sourceId": "teatri", "source_ref": "teatri", "type": "TEATRO", "typeCode": "FILE", "canonicalType": "urn:example:teatro",
 		"lockVersion": 1, "rowVersion": 2, "revisionId": id, "currentValidationRunId": id,
 		"assetId": id, "profileId": id, "jobId": id, "resultRef": id, "proposalId": id, "handoffId": id,
 		"onboardingVersionId": id, "runId": id, "nextLineageId": id, "nextHandoffId": id, "requestId": id,
-		"offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
-		"commandKey": "fixture-review-1", "analysisId": strings.Repeat("a", 64),
+		"hasMore": true, "taskId": strings.Repeat("b", 64), "offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
+		"commandKey": id, "analysisId": strings.Repeat("a", 64),
 		"columns": []any{Object{"name": "tipologia", "distinctValuesComplete": false, "distinctValuesCursor": "opaque"}}, "result": Object{"requestId": id},
 		"tasks": []any{Object{"taskId": strings.Repeat("b", 64), "state": "READY"}},
 		"items": []any{Object{"assetId": id, "latestProfileId": id, "semanticId": "urn:example:teatro", "publicationSetId": id, "revisionId": id}},
@@ -52,10 +54,46 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 				if r.Tool != "" && schemas[r.Tool] == nil {
 					t.Errorf("%s/%s: missing alternative", name, r.Reason)
 				}
+				if len(r.Alternatives) > 4 {
+					t.Fatalf("%s/%s: too many alternatives", name, r.Reason)
+				}
+				for _, alt := range r.Alternatives {
+					if schemas[alt.Tool] == nil || alt.Message == "" {
+						t.Errorf("%s/%s: invalid decision alternative %s", name, r.Reason, alt.Tool)
+					}
+				}
 			case "DONE":
 			default:
 				t.Fatalf("%s: unrecognized action %s", name, r.Action)
 			}
+		}
+	}
+
+	// Exercise every rule in isolation, including rules normally shadowed
+	// by earlier matches. Feed its own projected target arguments back as
+	// the producer input (e.g. an owner repeats a pagination cursor).
+	engine := Engine{Now: time.Now, Valid: func(name string, args Object) bool {
+		return schemas[name] != nil && schemas[name].Validate(asJSON(t, args)) == nil
+	}}
+	for _, c := range s.ToolEligible() {
+		p := s.NextPolicies[c.NextPolicy]
+		for _, rule := range p.Rules {
+			t.Run(c.ToolName+"/"+rule.Reason, func(t *testing.T) {
+				rule.When = nil
+				input := asJSON(t, engine.project(rule, fixture, fixture))
+				policy := manifest.Policy{Read: p.Read, Rules: []manifest.Rule{rule}}
+				result := engine.Evaluate(c, policy, input, fixture, false)
+				assertProgress(t, c.ToolName, input, asJSON(t, result))
+			})
+		}
+		for _, rule := range s.NextErrors {
+			t.Run(c.ToolName+"/error/"+rule.Reason, func(t *testing.T) {
+				rule.When = nil
+				engine.Errors = []manifest.Rule{rule}
+				input := asJSON(t, engine.project(rule, fixture, fixture))
+				result := engine.Evaluate(c, p, input, Object{"code": rule.Reason}, true)
+				assertProgress(t, c.ToolName, input, asJSON(t, result))
+			})
 		}
 	}
 }
@@ -69,7 +107,7 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 	}
 	for _, family := range []struct{ policy, field, states string }{
 		{"onboarding", "workflowState|state", "DRAFT IN_REVIEW APPROVED ACTIVE SUPERSEDED REJECTED REVOKED CHANGES_REQUESTED COMMAND_ABSENT ERROR"},
-		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED"},
+		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED EXHAUSTED"},
 		{"semanticDecision", "state", "DRAFT VALIDATED VALIDATION_FAILED UNDER_REVIEW APPROVED REJECTED EXPIRED ACTIVE DEPRECATED RETIRED UNKNOWN"},
 		{"ingestion", "runState|run_state", "AWAITING_START READY PREFLIGHT RUNNING DRAINING RETRY_WAIT SUCCEEDED COMPLETED COMPLETED_WITH_WARNINGS FAILED PAUSED ABORTED DISABLED BLOCKED"},
 		{"ingestion", "recoveryAction", "NONE AUTOMATIC_RETRY AUTOMATIC_RECONCILIATION HUMAN_RESUME_OR_ABORT HUMAN_ABORT_REQUIRED HUMAN_QUARANTINE_REVIEW HUMAN_SCHEDULE_REVIEW WAITING_FOR_PUBLICATION_VERIFICATION NEW_PUBLICATION_REQUIRED TERMINAL"},
@@ -88,6 +126,32 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 		for _, state := range known {
 			if !seen[state] {
 				t.Errorf("%s: missing %s", family.policy, state)
+			}
+		}
+	}
+}
+
+func TestNoApplicableGrantRoutesEveryToolToPermissionProposal(t *testing.T) {
+	s, err := manifest.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := Engine{Errors: s.NextErrors}
+	for _, c := range s.ToolEligible() {
+		for _, field := range []string{"reasonCode", "code", "Code"} {
+			next := engine.Evaluate(c, s.NextPolicies[c.NextPolicy], Object{"view": "ROLES"}, Object{field: "NO_APPLICABLE_GRANT"}, true)
+			if next["action"] != "BLOCKED" || next["actor"] != "HUMAN_THS" || next["reasonCode"] != "NO_APPLICABLE_GRANT" ||
+				!strings.Contains(next["userMessage"].(string), c.RequiredAuthorization) {
+				t.Fatalf("%s/%s: %v", c.ToolName, field, next)
+			}
+			found := false
+			for _, alt := range next["alternatives"].([]Object) {
+				if strings.Contains(alt["userMessage"].(string), "authorization.permissions.propose") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s/%s: missing next step for permission proposal", c.ToolName, field)
 			}
 		}
 	}

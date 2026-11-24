@@ -194,6 +194,11 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/review-read"
 	case "ouf.managed-source.onboarding.create":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/create"
+	case orchestration.HandoffIssueCapability:
+		if !orchestration.ValidHandoffIssue(in.Identity, in.OperationClass, in.IdempotencyKey, in.Arguments) {
+			return orchestration.GatewayResponse{}, errors.New("invalid governed handoff issue")
+		}
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/handoff-issue"
 	case "ouf.managed-source.file.upload":
 		if in.Upload == nil {
 			endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/handoff"

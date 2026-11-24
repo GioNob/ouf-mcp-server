@@ -157,3 +157,76 @@ func TestDiscoveryBindsExistingTransportClaimOnlyOnExactPayload(t *testing.T) {
 		t.Fatal("legacy owner key failed to bind", err)
 	}
 }
+
+func TestWaitAndStatusShareOrdinaryAdmission(t *testing.T) {
+	ctx, store, manifest := controlStore(t)
+	identity := controlRequest(manifest, uuid.NewString()).Identity
+	gateway := &repeatabilityGateway{body: "{}"}
+	service := orchestration.Service{Auth: controlPolicyFixture{}, Admission: store, Gateway: gateway, FingerprintKey: make([]byte, 32)}
+	in := orchestration.Invocation{Identity: identity, CapabilityID: "ouf.managed-source.file.upload",
+		Owner: "onboarding", OperationClass: "COMMAND", GatewayBindingRef: "capability://ouf.managed-source.file.upload",
+		ManifestChecksum: manifest, Arguments: json.RawMessage(`{"handoffId":"11111111-1111-4111-8111-111111111111"}`),
+		Window: time.Minute, Timeout: time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold,
+		Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 4096, DistinctObjects: 1}}
+	// Competing replicas must not dispatch two reads for a signed wait in one interval.
+	end := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	tokenHash := hash64(uuid.NewString())
+	claims := make(chan bool, 2)
+	for range 2 {
+		go func() {
+			ok, err := store.ClaimWaitRead(ctx, identity, tokenHash, 5*time.Second, end)
+			if err != nil {
+				t.Error(err)
+			}
+			claims <- ok
+		}()
+	}
+	if first, second := <-claims, <-claims; first == second {
+		t.Fatal("expected exactly one owner read slot", first, second)
+	}
+	const limit = orchestration.DefaultAdmissionCallsPerMinute
+	if err := store.ChargeWait(ctx, identity, manifest, limit); err != nil {
+		t.Fatal(err)
+	}
+	call := func(internal bool) error {
+		in.InternalWaitRead = internal
+		in.IdempotencyKey, in.CorrelationID = uuid.NewString(), uuid.NewString()
+		_, err := service.Call(ctx, in)
+		return err
+	}
+	for range 8 {
+		if err := call(true); err != nil {
+			t.Fatal("internal read failed", err)
+		}
+	}
+	var charged, usedBytes int
+	err := store.Pool().QueryRow(ctx, `select consumed_tool_calls,consumed_result_bytes from ouf_mcp.budget_window where tenant_id=$1 and policy_ref=$2`, identity.TenantID, manifest).Scan(&charged, &usedBytes)
+	if err != nil || charged != 1 || usedBytes != 8*len(gateway.body) {
+		t.Fatal("incorrect byte or call accounting", charged, usedBytes, err)
+	}
+	for n := 2; n <= limit; n++ {
+		if err := call(false); err != nil {
+			t.Fatalf("ordinary call %d failed: %v", n, err)
+		}
+	}
+	for _, err := range []error{call(false), store.ChargeWait(ctx, identity, manifest, limit)} {
+		var refusal *orchestration.WindowBudgetExhaustedError
+		if !errors.As(err, &refusal) || refusal.Dimension != "TOOL_CALLS" {
+			t.Fatal("missing window refusal", err)
+		}
+	}
+	in.CapabilityID = orchestration.HandoffIssueCapability
+	in.AuthorizationCapabilityID = "ouf.managed-source.file.upload"
+	in.Identity.Delegation = "fixture"
+	in.InternalWaitRead = false
+	in.GatewayBindingRef = "capability://" + in.CapabilityID
+	in.Identity.TenantID = uuid.NewString()
+	for n := 1; n <= orchestration.AdmissionRetryThreshold; n++ {
+		in.IdempotencyKey = uuid.NewString()
+		in.Arguments, _ = json.Marshal(map[string]string{"commandKey": in.IdempotencyKey})
+		_, err := service.Call(ctx, in)
+		if n < orchestration.AdmissionRetryThreshold && err != nil || n == orchestration.AdmissionRetryThreshold && !errors.Is(err, orchestration.ErrToolSelectionStall) {
+			t.Fatal("equivalent picker command", n, err)
+		}
+	}
+}

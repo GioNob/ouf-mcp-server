@@ -255,7 +255,7 @@ def mapping_defs(contract, fields):
 
 
 def generate(source, contract):
-    tools = {c["toolName"]: c for c in json.loads(source)["capabilities"]}
+    tools = {c["toolName"]: c for c in json.loads(source)["capabilities"] if "toolName" in c}
     fields = tools["source.onboarding.create"]["inputSchema"]["properties"]["fields"]
     mapping = mapping_defs(contract, fields)
     proposal_labels = tools["semantic.propose"]["inputSchema"]["properties"]["labels"]["properties"]

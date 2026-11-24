@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"sync"
@@ -15,41 +16,68 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sync/singleflight"
 )
 
+type internalWaitReadKey struct{}
+
+type waitAdmission interface {
+	ChargeWait(context.Context, orchestration.Identity, string, int) error
+	ClaimWaitRead(context.Context, orchestration.Identity, string, time.Duration, time.Time) (bool, error)
+}
+
 type waitService struct {
-	signer             *nextstep.Signer
-	interval, duration time.Duration
-	principalLimit     int
-	totalLimit         int
-	reads              readGate
-	group              singleflight.Group
-	mu                 sync.Mutex
-	active             map[string]int
-	total              int
+	maxSeconds, callsPerMinute int
+	charge                     func(context.Context, orchestration.Identity) error
+	claimRead                  func(context.Context, orchestration.Identity, string, time.Duration, time.Time) (bool, error)
+	signer                     *nextstep.Signer
+	interval, duration         time.Duration
+	principalLimit             int
+	totalLimit                 int
+	reads                      readGate
+	group                      singleflight.Group
+	mu                         sync.Mutex
+	active                     map[string]int
+	total                      int
 }
 
 // Consume a slot at dispatch time. A delayed process cannot spend a backlog
 // of reservations in one burst when its goroutines wake up together.
 type readGate struct {
-	mu   sync.Mutex
-	next time.Time
-	gap  time.Duration
+	mu     sync.Mutex
+	next   time.Time
+	gap    time.Duration
+	recent map[string]time.Time
 }
 
 func (g *readGate) Wait(ctx context.Context) error {
+	return g.waitFor(ctx, "", 0)
+}
+
+func (g *readGate) waitFor(ctx context.Context, scope string, interval time.Duration) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		g.mu.Lock()
 		now := time.Now()
-		delay := g.next.Sub(now)
+		delay := max(g.next.Sub(now), g.recent[scope].Sub(now))
 		if delay <= 0 {
 			g.next = now.Add(g.gap)
+			if scope != "" {
+				if g.recent == nil {
+					g.recent = make(map[string]time.Time)
+				}
+				for key, end := range g.recent {
+					if !now.Before(end) {
+						delete(g.recent, key)
+					}
+				}
+				g.recent[scope] = now.Add(interval)
+			}
 			g.mu.Unlock()
 			return nil
 		}
@@ -77,18 +105,20 @@ func setting(name string, def, low, high int) (int, error) {
 }
 
 func configuredWait(installationKey []byte) (*waitService, error) {
-	interval, e1 := setting("OUF_WAIT_INTERVAL_SECONDS", 5, 5, 45)
+	interval, e1 := setting("OUF_WAIT_INTERVAL_SECONDS", orchestration.PollIntervalSeconds, orchestration.PollIntervalSeconds, 45)
 	duration, e2 := setting("OUF_WAIT_DURATION_SECONDS", 45, 5, 45)
 	principal, e3 := setting("OUF_WAIT_PER_PRINCIPAL", 2, 1, 100)
 	total, e4 := setting("OUF_WAIT_MAX_ACTIVE", 100, 1, 100)
 	rps, e5 := setting("OUF_WAIT_OWNER_READS_PER_SECOND", 20, 1, 20)
-	if err := errors.Join(e1, e2, e3, e4, e5); err != nil {
+	maximum, e6 := setting("OUF_WAIT_MAX_SECONDS", nextstep.DefaultWaitMaxSeconds, 1, nextstep.DefaultWaitMaxSeconds)
+	calls, e7 := setting("OUF_ADMISSION_CALLS_PER_MINUTE", orchestration.DefaultAdmissionCallsPerMinute, 1, 2147483647)
+	if err := errors.Join(e1, e2, e3, e4, e5, e6, e7); err != nil {
 		return nil, err
 	}
 	if duration <= interval {
 		return nil, errors.New("OUF wait duration must exceed the read interval")
 	}
-	w := &waitService{interval: time.Duration(interval) * time.Second, duration: time.Duration(duration) * time.Second,
+	w := &waitService{maxSeconds: maximum, callsPerMinute: calls, interval: time.Duration(interval) * time.Second, duration: time.Duration(duration) * time.Second,
 		principalLimit: principal, totalLimit: total, active: map[string]int{},
 		reads: readGate{gap: (time.Second + time.Duration(rps) - 1) / time.Duration(rps)}}
 	if key, set := os.LookupEnv("OUF_WAIT_KEY_BASE64"); set {
@@ -142,6 +172,13 @@ func waitResult(changed bool, observation, next nextstep.Object) *mcp.CallToolRe
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}, StructuredContent: out}
 }
 
+func waitError(result *mcp.CallToolResult, next nextstep.Object) *mcp.CallToolResult {
+	body := ownerObject(result)
+	body["changed"], body["observation"], body["next"] = false, nil, next
+	wire, _ := json.Marshal(body)
+	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
+}
+
 func (s *workflowServer) registerWait(c manifest.Capability) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
@@ -178,11 +215,31 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
 	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
-	// Earlier semantic references could carry a URL supplied by Semantic.
-	if ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" {
-		return stop("OWNER_REVIEW_LINK_REQUIRED")
+	// Refresh from a complete authorized observation before exposing a new
+	// link. Earlier semantic references could carry a URL supplied by Semantic.
+	refreshLink := func() bool {
+		return ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" ||
+			!linkEnd.IsZero() && !time.Now().Before(linkEnd)
 	}
 	scope := string(binding)
+	identity := ctx.Value(identityKey{}).(requestIdentity)
+	windowRefusal := func(result *mcp.CallToolResult) *mcp.CallToolResult {
+		outer := s.tools["ouf.wait"]
+		next := s.engine(ctx).Evaluate(outer.capability, s.manifest.NextPolicies[outer.capability.NextPolicy], nextstep.Object{"waitRef": token}, ownerObject(result), true)
+		if next["action"] == "POLL" {
+			next["deadline"] = ref.Deadline
+		}
+		return waitError(result, next)
+	}
+	if w.charge != nil {
+		if err := w.charge(ctx, identity.Identity); err != nil {
+			var refusal *orchestration.WindowBudgetExhaustedError
+			if !errors.As(err, &refusal) {
+				return stop("WAIT_ADMISSION_UNAVAILABLE")
+			}
+			return windowRefusal(governedCallErrorResult(err))
+		}
+	}
 	if !w.admit(scope) {
 		return stop("WAIT_CAPACITY_REACHED")
 	}
@@ -206,6 +263,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	defer cancel()
 
 	args := ref.ReadArgs()
+	if refreshLink() {
+		args = ref.Args
+	}
 	if !s.valid(ref.Read, args) {
 		return stop("WAIT_READ_SCHEMA_CHANGED")
 	}
@@ -215,58 +275,81 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	params.Name, params.Arguments = ref.Read, raw
 	read.Params = &params
 
-	i := ctx.Value(identityKey{}).(requestIdentity)
+	i := identity
 	// A new authorized observation needs a fresh read attempt, including
 	// when the outer request has its own idempotency key.
 	i.IdempotencyKey = ""
 	ctx = context.WithValue(ctx, identityKey{}, i)
-	authority, _ := json.Marshal([]any{scope, i.Delegation, i.AuthenticationContextRef, i.Claims, i.Scopes, ref.Read, args})
+	ctx = context.WithValue(ctx, internalWaitReadKey{}, true)
+	authority, _ := json.Marshal([]any{scope, i.Delegation, i.AuthenticationContextRef, i.Claims, i.Scopes, token, ref.Read, args})
 	key := fmt.Sprintf("%x", sha256.Sum256(authority))
 
+	// Bind the cadence to the principal and read selector, including overlapping tranches.
+	selector, _ := json.Marshal([]any{scope, ref.Read, ref.Args})
+	readScope := fmt.Sprintf("%x", sha256.Sum256(selector))
+	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 	var last nextstep.Object
+	finish := func() *mcp.CallToolResult {
+		if !time.Now().Before(exp) {
+			return stop("WAIT_DEADLINE_EXPIRED")
+		}
+		if ctx.Err() == context.Canceled || time.Now().Before(until) {
+			return stop("WAIT_OBSERVATION_UNAVAILABLE")
+		}
+		if refreshLink() {
+			return waitResult(false, last, ref.Refresh())
+		}
+		return waitResult(false, last, ref.Next(token))
+	}
+	ticks := time.NewTicker(w.interval)
+	defer ticks.Stop()
 	for {
-		timer := time.NewTimer(w.interval)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
+		case <-ticks.C:
 		}
-		if ctx.Err() != nil {
-			if !time.Now().Before(exp) {
-				return stop("WAIT_DEADLINE_EXPIRED")
-			}
-			if last == nil || ctx.Err() == context.Canceled {
-				return stop("WAIT_OBSERVATION_UNAVAILABLE")
-			}
-			if !linkEnd.IsZero() && !time.Now().Before(linkEnd) {
-				return stop("OWNER_REVIEW_LINK_REQUIRED")
-			}
-			return waitResult(false, last, ref.Next(token))
+		if ctx.Err() != nil || !time.Now().Before(until) {
+			return finish()
 		}
 		ch := w.group.DoChan(key, func() (any, error) {
-			if err := w.reads.Wait(ctx); err != nil {
+			if err := w.reads.waitFor(ctx, readScope, w.interval); err != nil {
 				return nil, err
+			}
+			if w.claimRead != nil {
+				claimed, err := w.claimRead(ctx, identity.Identity, tokenHash, w.interval, exp)
+				if err != nil || !claimed {
+					return nil, err
+				}
+				// Start the next interval after the DB claim. Network jitter must not
+				// make the next tick arrive just early and skip a whole interval.
+				w.reads.mu.Lock()
+				w.reads.recent[readScope] = time.Now().Add(w.interval)
+				w.reads.mu.Unlock()
 			}
 			return t.run(ctx, &read)
 		})
 		select {
 		case <-ctx.Done():
-			if !time.Now().Before(exp) {
-				return stop("WAIT_DEADLINE_EXPIRED")
-			}
-			return stop("WAIT_OBSERVATION_UNAVAILABLE")
+			return finish()
 		case response := <-ch:
 			if !time.Now().Before(exp) {
 				return stop("WAIT_DEADLINE_EXPIRED")
 			}
+			if response.Val == nil && response.Err == nil {
+				// Another replica already owns this tick of the signed wait.
+				continue
+			}
 			result, ok := response.Val.(*mcp.CallToolResult)
 			if response.Err != nil || !ok || result == nil {
-				return stop("WAIT_OBSERVATION_UNAVAILABLE")
+				return finish()
 			}
 			body := ownerObject(result)
 			obs := nextstep.Observation(ref.Read, ref.Args, body)
 			if result.IsError {
-				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], ref.Args, body, true)
+				if code, ok := body["code"].(string); ok && nextstep.AdmissionWindowCode(code) {
+					return windowRefusal(result)
+				}
+				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
 				denial := waitResult(false, nil, next)
 				denial.IsError = true
 				return denial
@@ -274,9 +357,26 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			if !ref.MatchesResource(obs) {
 				return stop("WAIT_RESOURCE_CHANGED")
 			}
+			if ref.Decision == "CHOOSE_FILE" && obs["legacy"] != true && obs["waitUntil"] != nil {
+				ownerEnd, err := time.Parse(time.RFC3339Nano, fmt.Sprint(obs["waitUntil"]))
+				if err != nil || !ownerEnd.Equal(exp) {
+					return stop("WAIT_DEADLINE_CHANGED")
+				}
+			}
 			last = obs
-			changed := nextstep.Version(obs) != ref.Version
-			if changed || (!linkEnd.IsZero() && !time.Now().Before(linkEnd)) {
+			state := nextstep.ObservedState(obs)
+			stateChanged := obs["unchanged"] != true && obs["changed"] != false && ref.State != "" && state != "" && ref.State != state
+			invalidHandoff := ref.Decision == "CHOOSE_FILE" && (obs["legacy"] == true || obs["waitUntil"] == nil)
+			changed := nextstep.Version(obs) != ref.Version || stateChanged || invalidHandoff
+			if refreshLink() && (obs["unchanged"] == true || obs["changed"] == false) && len(args) != len(ref.Args) {
+				return waitResult(changed, obs, ref.Refresh())
+			}
+			if changed || refreshLink() {
+				if ref.Decision == "CHOOSE_FILE" && state == "PENDING" && obs["legacy"] != true {
+					// The read contract omits pickerUrl. Reuse only the URL authenticated for this handoff.
+					body = maps.Clone(body)
+					body["pickerUrl"] = ref.URL
+				}
 				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
 				return waitResult(changed, obs, next)
 			}
