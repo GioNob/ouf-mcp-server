@@ -237,17 +237,47 @@ func TestRunCrashAroundOwnerInsertion(t *testing.T) { // MCP-50U-07
 	}
 }
 
-type fixtureRenewal struct{}
-
-func (fixtureRenewal) AuthorizeRunRenewal(_ context.Context, i orchestration.Identity, r analysis.RunRecord, grant analysis.RunRenewal) (analysis.RenewalDecision, error) {
-	if i.Delegation != "fixture-proof" || i.PrincipalID != r.Scope.Principal || grant.ExpectedSeq != r.Seq {
-		return analysis.RenewalDecision{}, orchestration.ErrUnauthorized
-	}
-	return analysis.RenewalDecision{Ref: "fixture-budget-decision", ValidUntil: time.Now().Add(time.Minute)}, nil
+type fixtureRenewal struct {
+	now    time.Time
+	verify func(*analysis.RenewalDecision)
 }
 
-func TestRunExhaustionAndConcurrentHumanSession(t *testing.T) { // MCP-50U-08
-	ctx, s, r := fixtureRun(t, func(l *analysis.RunLimits) { l.Maximum.Calls = 1 })
+func (f fixtureRenewal) AuthorizeRunRenewal(_ context.Context, i orchestration.Identity, c analysis.RunRenewalCheck) (analysis.RenewalDecision, error) {
+	if i.Delegation != "fixture-proof" || i.PrincipalID != c.Scope.Principal || c.Action != "renew-budget" || c.Contract != "ouf.analysis.authority-check.v1" {
+		return analysis.RenewalDecision{}, orchestration.ErrUnauthorized
+	}
+	hash, err := c.Hash()
+	if err != nil {
+		return analysis.RenewalDecision{}, err
+	}
+	d := analysis.RenewalDecision{RequestHash: hash, DecisionRef: uuid.NewString(), GrantRef: "fixture-grant", ValidUntil: f.now.Add(time.Minute)}
+	if f.verify != nil {
+		f.verify(&d)
+	}
+	return d, nil
+}
+
+func renewalCommand(r analysis.RunRecord) (orchestration.Identity, analysis.RunRenewal) {
+	actor := orchestration.Identity{Issuer: r.Issuer, ServicePrincipalID: r.Scope.Service, TenantID: r.Scope.Tenant, PrincipalID: r.Scope.Principal, ActorType: "HUMAN", Delegation: "fixture-proof"}
+	return actor, analysis.RunRenewal{AnalysisID: r.ID(), IncidentID: analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}),
+		ProposalVersion: 1, ProposalHash: analysis.Digest("fixture-proposal"), ExpectedSeq: r.Seq,
+		Increment: analysis.RunCost{Calls: 1}, Seconds: 60, ExpiresAt: r.Mandate.Expires, Reason: "fixture"}
+}
+
+func TestRunExhaustionAndConcurrentHumanSession(t *testing.T) { // MCP-50U-08, MCP-55A-01, MCP-55A-02
+	ctx, s, r := fixtureRun(t, func(l *analysis.RunLimits) { l.Maximum.Calls = 4 })
+	now := r.NotBefore.Add(time.Second)
+	s.analysisClock = func() time.Time { return now }
+	// Four preview attempts under the original budget, with a settled
+	// receipt for each. The last preview advances to published search.
+	for n := 0; n < 3; n++ {
+		w, c := claimFixture(t, ctx, s, r)
+		if err := s.FinishRunWork(ctx, c, w.Worker, nil, RunReceipt{Code: "ANALYSIS_BACKOFF", RetryAfter: now.Add(time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Second)
+		verifyPausedRun(t, ctx, s, r)
+	}
 	m, err := manifest.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -271,24 +301,78 @@ func TestRunExhaustionAndConcurrentHumanSession(t *testing.T) { // MCP-50U-08
 	if err != nil || r.State != "BLOCKED" {
 		t.Fatal(r, err)
 	}
-	grant := analysis.RunRenewal{AnalysisID: r.ID(), IncidentID: analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}),
-		ExpectedSeq: r.Seq, Maximum: r.Limits.Maximum, Seconds: 60, Reason: "fixture"}
-	actor := orchestration.Identity{Issuer: r.Issuer, ServicePrincipalID: r.Scope.Service, TenantID: r.Scope.Tenant, PrincipalID: r.Scope.Principal, ActorType: "HUMAN", Delegation: "fixture-proof"}
+	actor, grant := renewalCommand(r)
+	// Both approvals have read the same exhausted version before either
+	// can enter the local transaction.
+	approved := make(chan struct{}, 2)
+	release := make(chan struct{})
+	authority := fixtureRenewal{now, func(*analysis.RenewalDecision) {
+		approved <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}}
 	results := make(chan error, 2)
 	for n := 0; n < 2; n++ {
-		go func() { results <- s.RenewRunBudget(ctx, actor, grant, fixtureRenewal{}) }()
+		go func() { results <- s.RenewRunBudget(ctx, actor, grant, authority) }()
 	}
+	for n := 0; n < 2; n++ {
+		select {
+		case <-approved:
+		case err := <-results:
+			close(release)
+			t.Fatal("failed before authorization", err)
+		case <-ctx.Done():
+			close(release)
+			t.Fatal(ctx.Err())
+		}
+	}
+	close(release)
 	a, b := <-results, <-results
-	if !((a == nil && errors.Is(b, analysis.ErrFenced)) || (b == nil && errors.Is(a, analysis.ErrFenced))) {
+	if !((a == nil && errors.Is(b, analysis.ErrRenewalUsed)) || (b == nil && errors.Is(a, analysis.ErrRenewalUsed))) {
 		t.Fatal(a, b)
 	}
+	var compatible bool
+	err = s.pool.QueryRow(ctx, `select r.seq=s.expected_seq+1 and r.state='RUNNING' and r.fence=s.first_fence
+		and s.first_fence=4 and (s.maximum->>'Calls')::bigint=1 and (s.maximum->>'Attempts')::bigint>0
+		from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_budget_session s using(analysis_id) where r.analysis_id=$1`, r.ID()).Scan(&compatible)
+	if err != nil || !compatible {
+		t.Fatal("CAS, fence or predecessor allowance", err)
+	}
 	verifyPausedRun(t, ctx, s, r)
-	_, _ = claimFixture(t, ctx, s, r)
+	w, c = claimFixture(t, ctx, s, r)
+	if err = s.FinishRunWork(ctx, c, w.Worker, nil, RunReceipt{Code: "ANALYSIS_BACKOFF", RetryAfter: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	verifyPausedRun(t, ctx, s, r)
+	r, err = s.ReadRun(ctx, r.Scope, r.Issuer, r.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ReserveRunWork(ctx, r, w); !errors.Is(err, analysis.ErrRunExhausted) {
+		t.Fatal("sixth call", err)
+	}
+	replica, err := Open(ctx, os.Getenv("MCP_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	replica.analysisClock = s.analysisClock
+	r, err = replica.ReadRun(ctx, r.Scope, r.Issuer, r.ID())
+	if err != nil || r.State != "BLOCKED" || r.Reason != "ANALYSIS_BUDGET_EXHAUSTED" {
+		t.Fatal(r.State, r.Reason, err)
+	}
+	grant.ExpectedSeq = r.Seq
+	if err = replica.RenewRunBudget(ctx, actor, grant, fixtureRenewal{now: now}); !errors.Is(err, analysis.ErrRenewalUsed) {
+		t.Fatal("reopened right", err)
+	}
 	var sessions, incidents, charged int
 	err = s.pool.QueryRow(ctx, `select (select count(*) from ouf_mcp.analysis_run_budget_session where analysis_id=$1),
-		(select count(*) from ouf_mcp.analysis_run_incident where analysis_id=$1),
+		(select count(*) from ouf_mcp.analysis_run_incident where analysis_id=$1 and state='OPEN'),
 		(select sum(calls) from ouf_mcp.analysis_run_attempt where analysis_id=$1)`, r.ID()).Scan(&sessions, &incidents, &charged)
-	if err != nil || sessions != 1 || incidents != 1 || charged != 2 {
+	if err != nil || sessions != 1 || incidents != 1 || charged != 5 {
 		t.Fatal(sessions, incidents, charged, err)
 	}
 }

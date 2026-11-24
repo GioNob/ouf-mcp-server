@@ -112,6 +112,28 @@ La lease di verifica dura al massimo `ProofSeconds` (1–30 s) e termina comunqu
 
 La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding HUMAN di esercizio e la qualifica con gli owner reali restano aperti. Per il controllo del mandato in pausa e la retention si applica l’addendum 50v seguente.
 
+### Rinnovo del budget di piano · D-091 / 55a
+
+Il profilo iniziale del piano fissa due campi opzionali di `OUF_ANALYSIS_RUN_LIMITS`. I profili creati prima della 020 usano i default. Un valore esplicito deve essere un intero.
+
+| Campo | Default | Intervallo e unità |
+|---|---:|---|
+| `RenewalPercent` | 25 | 1–25 per cento del tetto iniziale di ciascuna dimensione |
+| `RenewalSeconds` | 3600 | 1–3600 secondi per sessione di rinnovo |
+
+Per ogni voce di `increment` il massimo è `floor(initialMaximum × RenewalPercent / 100)`. Sono ammessi zeri in singole dimensioni e almeno una voce deve crescere. La prenotazione verifica `totalMaximum = initialMaximum + increment` su `Calls, Attempts, Objects, Bytes, Millis`, addebitando anche la spesa precedente alla fence di rinnovo. La sessione termina alla prima fra la fine della durata approvata, `expiresAt` della proposta, la scadenza del mandato e `started + LifetimeSeconds` del piano. La deadline del poll conserva il valore originario.
+
+La transazione confronta `expectedSeq`, consuma il diritto per `(analysisId, incidentId)` e registra sessione e ripresa insieme. Un secondo esaurimento riapre lo stesso incidente. Un’ulteriore approvazione autorizzata riceve `ANALYSIS_RENEWAL_USED`. Il verificatore attesta la decisione del titolare per `renew-budget`. Il ledger conserva `requestHash, decisionRef, grantRef` e i riferimenti alla proposta. Prima del dispatch riparte il controllo del mandato.
+
+La migrazione additiva 020 riconosce il primo rinnovo già presente nella 019 e conserva anche le eventuali sessioni successive. Il predecessore esatto è `563acd3e506230e205eeb0ae9a858d52bbaf6ac8`. Per il ritorno si usa il suo profilo di configurazione e la procedura di arresto del dispatch descritta sopra. Il predecessore può leggere nelle colonne originarie la fence e il residuo spendibile, limitato al massimo di sessione che la 019 sa rappresentare. Le sue scritture di prima sessione consumano il diritto anche sulla 020.
+
+| PET PostgreSQL | Verifica |
+|---|---|
+| `MCP-55A-01` | Due approvazioni della stessa sequenza, una sola sessione e un solo avanzamento |
+| `MCP-55A-02` | Esaurimento dopo la ripresa, lettura da un nuovo pool, storico 019 e unicità attraverso la migrazione |
+| `MCP-55A-03` | Arrotondamento per difetto in cinque dimensioni, incremento minimo positivo, durata, scadenze e override D-065 |
+| `MCP-55A-04` | Pressione, revoca durante l’approvazione, prenotazione owner incerta, prova o sequenza invalida |
+
 I PET `MCP-50U-01`–`16` coprono file e hash, configurazione, deadline, alias, claim concorrenti, lease, fixture SDK a 18 colonne, crash, rinnovo HUMAN, autenticazione del listener, ritorno 017→018→50t→candidato, pausa/revoca, disattivazione, ripresa, schemi e retry finiti di issue. Le fixture usano riferimenti sintetici. La fixture SDK misura separatamente il percorso pubblico e le chiamate interne; il PET del listener verifica mTLS su loopback.
 
 ### Addendum T2 del task-50v · D-058, D-065, D-082

@@ -37,11 +37,18 @@ func (c RunCost) Fits(limit RunCost) bool {
 		c.Millis >= 0 && c.Millis <= limit.Millis
 }
 
+func (c RunCost) Add(d RunCost) RunCost {
+	return RunCost{c.Calls + d.Calls, c.Attempts + d.Attempts, c.Objects + d.Objects, c.Bytes + d.Bytes, c.Millis + d.Millis}
+}
+
 type RunLimits struct {
 	OwnerDedupQualified                                                                     bool
 	Maximum                                                                                 RunCost
 	Shared                                                                                  RunSharedLimits
 	ProofSeconds, WaitSeconds, LifetimeSeconds, ActivePlans, ProviderSlots, PreviewPageSize int
+
+	RenewalPercent int `json:",omitempty"`
+	RenewalSeconds int `json:",omitempty"`
 }
 
 type RunSharedLimits struct {
@@ -65,6 +72,7 @@ func (l RunSharedLimits) Valid() bool {
 func (l RunLimits) Valid() bool {
 	return l.ProofSeconds >= 1 && l.ProofSeconds <= 30 && l.Shared.Valid() && l.PreviewPageSize >= 1 && l.PreviewPageSize <= 128 && (RunCost{1, 1, 1, 1, 1}).Fits(l.Maximum) && l.Maximum.Fits(RunCost{1000000, 1000000, 100000000, 1 << 40, 86400000}) &&
 		l.WaitSeconds >= 1 && l.WaitSeconds <= 3600 && l.LifetimeSeconds >= 1 && l.LifetimeSeconds <= 86400 &&
+		l.RenewalPercent >= 0 && l.RenewalPercent <= maxRenewalPercent && l.RenewalSeconds >= 0 && l.RenewalSeconds <= maxRenewalSeconds &&
 		l.ActivePlans >= 1 && l.ActivePlans <= 128 && l.ProviderSlots >= 1 && l.ProviderSlots <= 128
 }
 
@@ -150,6 +158,7 @@ type RunRecord struct {
 	Started, Deadline, BudgetEnd, NotBefore time.Time
 	State, Reason, MandateState             string
 	Seq                                     int64
+	Fence                                   int64 `json:"-"`
 }
 
 // Gateway hashes sorted ASCII object keys, UTF-8 strings and decimal

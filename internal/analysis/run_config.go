@@ -48,7 +48,19 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 	}
 	if limits, ok := os.LookupEnv("OUF_ANALYSIS_RUN_LIMITS"); ok {
 		var fields map[string]json.RawMessage
-		if !ValidEvidenceJSON([]byte(limits)) || json.Unmarshal([]byte(limits), &fields) != nil || len(fields) != 9 {
+		if !ValidEvidenceJSON([]byte(limits)) || json.Unmarshal([]byte(limits), &fields) != nil {
+			return cfg, ErrInvalid
+		}
+		for _, k := range []string{"RenewalPercent", "RenewalSeconds"} {
+			if raw, ok := fields[k]; ok {
+				var n int
+				if json.Unmarshal(raw, &n) != nil || n < 1 {
+					return cfg, ErrInvalid
+				}
+				delete(fields, k)
+			}
+		}
+		if len(fields) != 9 {
 			return cfg, ErrInvalid
 		}
 		for _, k := range []string{"Maximum", "OwnerDedupQualified", "Shared", "ProofSeconds", "WaitSeconds", "LifetimeSeconds", "ActivePlans", "ProviderSlots", "PreviewPageSize"} {
@@ -65,6 +77,13 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 		var l RunLimits
 		if json.Unmarshal([]byte(limits), &l) != nil || !l.Valid() {
 			return cfg, ErrInvalid
+		}
+		// Keep an explicit default equivalent to a pre-020 persisted profile.
+		if l.RenewalPercent == maxRenewalPercent {
+			l.RenewalPercent = 0
+		}
+		if l.RenewalSeconds == maxRenewalSeconds {
+			l.RenewalSeconds = 0
 		}
 		cfg.Limits = l
 	}

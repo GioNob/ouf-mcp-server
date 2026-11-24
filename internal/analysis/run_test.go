@@ -60,3 +60,54 @@ func TestRunDisabledAndClosedConfiguration(t *testing.T) { // MCP-50U-02
 		t.Fatal(err)
 	}
 }
+
+func TestRenewalInstallationLimits(t *testing.T) { // MCP-55A-03
+	t.Setenv("OUF_ANALYSIS_RUN_ENABLED", "false")
+	base, err := RunConfiguration(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OUF_ANALYSIS_RUN_ENABLED", "true")
+	t.Setenv("OUF_ANALYSIS_WORKLOAD", "fixture")
+	t.Setenv("OUF_ANALYSIS_MANIFEST_FILE", "../manifest/capabilities.json")
+	m, err := manifest.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(base.Limits)
+	var fields map[string]any
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	configure := func() (RunInstallation, error) {
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("OUF_ANALYSIS_RUN_LIMITS", string(raw))
+		return RunConfiguration(m)
+	}
+	for _, field := range []string{"RenewalPercent", "RenewalSeconds"} {
+		for _, bad := range []any{nil, -1, 0, 1.5, "1", 3601} {
+			fields[field] = bad
+			if _, err = configure(); err != ErrInvalid {
+				t.Fatal(field, bad, err)
+			}
+		}
+		delete(fields, field)
+	}
+	fields["RenewalPercent"] = 26
+	if _, err = configure(); err != ErrInvalid {
+		t.Fatal("percentage above D-091", err)
+	}
+	fields["RenewalPercent"], fields["RenewalSeconds"] = 25, 3600
+	cfg, err := configure()
+	if err != nil || cfg.Limits != base.Limits || cfg.Limits.RenewalDuration() != 3600 {
+		t.Fatal("pre-020 profile compatibility", err)
+	}
+	fields["RenewalPercent"], fields["RenewalSeconds"] = 10, 90
+	cfg, err = configure()
+	if err != nil || cfg.Limits.RenewalDuration() != 90 || cfg.Limits.RenewalCeiling().Calls != base.Limits.Maximum.Calls/10 {
+		t.Fatal("installation ceiling", err)
+	}
+}
