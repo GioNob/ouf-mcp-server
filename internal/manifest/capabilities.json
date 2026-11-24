@@ -1,5 +1,5 @@
 {
-  "version": "1.18.0-analysis-run-v2",
+  "version": "1.19.0-analysis-renewal-v1",
   "nextErrors": [
     {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
@@ -7594,6 +7594,140 @@
           "taskId": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    {
+      "toolName": "source.analysis.renewal.propose",
+      "nextPolicy": "analysis",
+      "capabilityId": "ouf.source.analysis.renewal.propose",
+      "purpose": "Revise a finite analysis renewal proposal after holder feedback",
+      "useWhen": [
+        "The current analysis proposal has requested changes"
+      ],
+      "doNotUseWhen": [
+        "Approving a renewal or increasing a live budget"
+      ],
+      "preferredAlternatives": [
+        "source.analysis.read"
+      ],
+      "operationalLimits": {
+        "maxItems": 16,
+        "maxCommentCharacters": 500
+      },
+      "resultSemantics": "Returns the previous and proposed budgets and a fresh review link on the same incident.",
+      "securityNotes": [
+        "The holder must confirm the revised proposal in the THS."
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "mcp",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.source.analysis.renewal.propose",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 1,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 128,
+        "hardMaxResultBytes": 1048576,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 0
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "analysisId",
+          "incidentId",
+          "proposalVersion",
+          "commandKey",
+          "requestedChanges"
+        ],
+        "properties": {
+          "analysisId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "incidentId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/-]{1,256}$"
+          },
+          "proposalVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "commandKey": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "requestedChanges": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "comment"
+              ],
+              "properties": {
+                "field": {
+                  "enum": [
+                    "Calls",
+                    "Attempts",
+                    "Objects",
+                    "Bytes",
+                    "Millis",
+                    "general"
+                  ],
+                  "type": "string"
+                },
+                "comment": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              }
+            }
+          },
+          "increment": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "Calls",
+              "Attempts",
+              "Objects",
+              "Bytes",
+              "Millis"
+            ],
+            "properties": {
+              "Calls": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "Attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "Objects": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "Bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "Millis": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
           }
         }
       }

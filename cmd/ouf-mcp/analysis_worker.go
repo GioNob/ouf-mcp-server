@@ -89,7 +89,29 @@ func serveAnalysisReservations(ctx context.Context, dsn string) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/internal/analysis/v1/reservations/check", analysis.ReservationHandler(store, identity))
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+	channel, err := analysis.RenewalConfiguration()
+	if err != nil {
+		return err
+	}
+	var authority analysis.RunRenewalAuthority
+	if channel.Configured() {
+		var source httpclient.TokenSource
+		if os.Getenv("MCP_OIDC_TOKEN_ENDPOINT") != "" {
+			source, err = httpclient.NewRenewalTokenSource(os.Getenv("MCP_OIDC_TOKEN_ENDPOINT"), os.Getenv("MCP_OIDC_CLIENT_ID"), os.Getenv("MCP_OIDC_CLIENT_SECRET_FILE"))
+		} else {
+			source, err = workloadTokenSource()
+		}
+		if err == nil {
+			authority, err = httpclient.NewGatewayWithTokenSource(channel.CheckEndpoint, source)
+		}
+		if err != nil {
+			authority = nil
+		}
+	}
+	handler := analysis.RenewalHandler(store, authority, channel, identity, time.Now)
+	mux.Handle("/internal/analysis/v1/renewals/read", handler)
+	mux.Handle("/internal/analysis/v1/renewals/decide", handler)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 30 * time.Second, // renewals/decide waits for the nested Gateway renewal-check (hop timeout <= 30 s).
 		IdleTimeout: 15 * time.Second, MaxHeaderBytes: 8192, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}}
 	stop := context.AfterFunc(ctx, func() { _ = srv.Close() })
 	defer stop()

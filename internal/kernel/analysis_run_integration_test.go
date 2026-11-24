@@ -3,8 +3,10 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -82,7 +84,8 @@ func (g *fixtureMandates) MandateCall(ctx context.Context, action string, raw js
 	return reply, err
 }
 
-func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
+func runRailFixture(t *testing.T) (context.Context, *postgres.Store, *mcp.ClientSession, analysisworker.Worker, *fixtureMandates, *publishedPETOwner) {
+	t.Helper()
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("MCP_TEST_DATABASE_URL required")
@@ -92,7 +95,7 @@ func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(db.Close)
 	if err = postgres.Migrate(ctx, db.Pool()); err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +133,12 @@ func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
 	gateway := &fixtureMandates{owner: owner, store: db, manifest: cfg.Manifest, workload: cfg.Workload}
 	svc := &orchestration.Service{Auth: analysisSDKAuth{}, Admission: publishedPETStore{db}, Gateway: owner, AnalysisMandates: gateway, RequireDelegation: true, FingerprintKey: make([]byte, 32)}
 	session := revisionSession(t, svc, "ouf.managed-source.preview ouf.semantic.search ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates")
+	worker := analysisworker.Worker{Store: db, Manifest: m, Gateway: gateway, ID: uuid.NewString(), Installation: cfg}
+	return ctx, db, session, worker, gateway, owner
+}
+
+func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
+	ctx, db, session, worker, gateway, owner := runRailFixture(t)
 	calls := 0
 	call := func(name string, args nextstep.Object) nextstep.Object {
 		t.Helper()
@@ -148,7 +157,7 @@ func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
 	if next["action"] != "POLL" {
 		t.Fatal(next)
 	}
-	worker := analysisworker.Worker{Store: db, Manifest: m, Gateway: gateway, ID: uuid.NewString(), Installation: cfg}
+
 	// Four preview pages, one batch and three owner calls per residual.
 	limit := time.Now().Add(3 * time.Minute)
 	for {
@@ -171,7 +180,7 @@ func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
 		time.Sleep(time.Millisecond)
 	}
 	var internalCalls int
-	if err = db.Pool().QueryRow(ctx, "select count(*) from ouf_mcp.analysis_run_attempt where analysis_id=$1", out["analysisId"]).Scan(&internalCalls); err != nil || internalCalls != 4+1+3*15 {
+	if err := db.Pool().QueryRow(ctx, "select count(*) from ouf_mcp.analysis_run_attempt where analysis_id=$1", out["analysisId"]).Scan(&internalCalls); err != nil || internalCalls != 4+1+3*15 {
 		t.Fatal(internalCalls, err)
 	}
 	out = call(next["tool"].(string), next["arguments"].(nextstep.Object))
@@ -186,4 +195,115 @@ func TestRun18StartPollSummary(t *testing.T) { // MCP-50U-06
 		t.Fatal(out, calls)
 	}
 	t.Logf("chatbot SDK calls = %d (1 start + 1 STATUS + 1 SUMMARY)", calls)
+}
+
+type railRenewalAuthority struct{}
+
+func (railRenewalAuthority) AuthorizeRunRenewal(_ context.Context, _ orchestration.Identity, c analysis.RunRenewalCheck) (analysis.RenewalDecision, error) {
+	hash, err := c.Hash()
+	return analysis.RenewalDecision{RequestHash: hash, DecisionRef: uuid.NewString(), GrantRef: "fixture", ValidUntil: time.Now().Add(time.Minute)}, err
+}
+
+func TestRenewalNextAgainstLiveCatalog(t *testing.T) { // MCP-55B-01, PET-mcp-057/163
+	t.Setenv("OUF_ANALYSIS_RENEWAL_REVIEW_BASE", "https://ths.invalid/trusted-human/analysis-renewal/")
+	t.Setenv("OUF_ANALYSIS_RENEWAL_CHECK_ENDPOINT", "https://gateway.invalid"+analysis.RenewalCheckPath)
+	t.Setenv("OUF_ANALYSIS_RENEWAL_ISSUER", "issuer")
+	t.Setenv("OUF_ANALYSIS_RENEWAL_AUDIENCE", "gateway")
+	t.Setenv("OUF_ANALYSIS_RENEWAL_THS_CLIENT", "ths")
+	ctx, db, session, _, gateway, _ := runRailFixture(t)
+	call := func(tool string, args nextstep.Object) nextstep.Object {
+		t.Helper()
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil || result.IsError {
+			t.Fatal(tool, result, err)
+		}
+		return ownerObject(result)
+	}
+	follow := func(next nextstep.Object) nextstep.Object {
+		t.Helper()
+		return call(next["tool"].(string), next["arguments"].(nextstep.Object))
+	}
+	start := call("source.analysis.plan", nextstep.Object{"mode": "ALL_COLUMNS", "assetId": uuid.NewString(), "profileId": uuid.NewString(), "commandKey": uuid.NewString()})
+	id := start["analysisId"].(string)
+	scope := analysis.Scope{Service: "ouf-chatgpt", Principal: "user-a", Tenant: "tenant-a"}
+	run := func() analysis.RunRecord {
+		t.Helper()
+		r, err := db.ReadRun(ctx, scope, "issuer", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	exhaust := func() {
+		t.Helper()
+		if _, err := db.Pool().Exec(ctx, "update ouf_mcp.analysis_run set budget_end=clock_timestamp() where analysis_id=$1", id); err != nil {
+			t.Fatal(err)
+		}
+		r := run()
+		w, err := db.NextRunWork(ctx, r, uuid.NewString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.ReserveRunWork(ctx, r, w); !errors.Is(err, analysis.ErrRunExhausted) {
+			t.Fatal(err)
+		}
+	}
+	i := orchestration.Identity{Issuer: "issuer", PrincipalID: scope.Principal, TenantID: scope.Tenant, ServicePrincipalID: gateway.workload, ActorType: "HUMAN", Delegation: "fixture"}
+	decide := func(action string) {
+		t.Helper()
+		p, err := db.CurrentRenewal(ctx, run())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := analysis.RenewalCommand{ReviewRef: p.ReviewRef, Version: p.Version, Hash: p.Hash, ExpectedSeq: strconv.FormatInt(p.ExpectedSeq, 10), Key: uuid.NewString(), Decision: action, Items: []analysis.RenewalItem{}}
+		if action == "CHANGES_REQUESTED" {
+			c.Items = []analysis.RenewalItem{{Field: "general", Comment: "Rivedere i limiti"}}
+		}
+		if _, err = db.DecideRenewal(ctx, i, c, railRenewalAuthority{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait := func(status nextstep.Object) nextstep.Object {
+		t.Helper()
+		n := status["next"].(nextstep.Object)
+		if n["action"] != "BLOCKED" || n["actor"] != "HUMAN_THS" || n["reasonCode"] != "ANALYSIS_BUDGET_EXHAUSTED" {
+			t.Fatal(n)
+		}
+		alts := n["alternatives"].([]any)
+		a := alts[0].(nextstep.Object)
+		if a["action"] != "WAIT_FOR_HUMAN" || a["tool"] != "ouf.wait" {
+			t.Fatal(a)
+		}
+		return a
+	}
+	exhaust()
+	status := follow(start["next"].(nextstep.Object))
+	pending := wait(status)
+	decide("CHANGES_REQUESTED")
+	changed := follow(pending)
+	revise := changed["next"].(nextstep.Object)
+	if revise["tool"] != analysis.RenewalTool {
+		t.Fatal(revise)
+	}
+	version := follow(revise)
+	if fmt.Sprint(version["proposalVersion"]) != "2" {
+		t.Fatal(version)
+	}
+	status = follow(version["next"].(nextstep.Object))
+	pending = wait(status)
+	decide("APPROVE")
+	approved := follow(pending)
+	poll := approved["next"].(nextstep.Object)
+	if poll["action"] != "POLL" || poll["reasonCode"] != "ANALYSIS_RUNNING" {
+		t.Fatal(poll)
+	}
+	exhaust()
+	status = follow(poll)
+	pending = wait(status)
+	decide("CLOSE_PARTIAL")
+	closed := follow(pending)
+	summary := follow(closed["next"].(nextstep.Object))
+	if summary["state"] != "BLOCKED" || summary["items"] == nil {
+		t.Fatal(summary)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,13 +14,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func exhaustRun(ctx context.Context, tx pgx.Tx, r analysis.RunRecord) error {
-	_, err := tx.Exec(ctx, "update ouf_mcp.analysis_run set state='BLOCKED',reason='ANALYSIS_BUDGET_EXHAUSTED',seq=seq+1 where analysis_id=$1", r.ID())
+func (s *Store) exhaustRun(ctx context.Context, tx pgx.Tx, r analysis.RunRecord) error {
+	now, err := s.runClock(ctx, tx)
+	if err != nil {
+		return err
+	}
+	err = tx.QueryRow(ctx, "update ouf_mcp.analysis_run set state='BLOCKED',reason='ANALYSIS_BUDGET_EXHAUSTED',seq=seq+1 where analysis_id=$1 returning seq", r.ID()).Scan(&r.Seq)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_run_incident(analysis_id,incident_id,state)
 		values($1,$2,'OPEN') on conflict(analysis_id) do update set state='OPEN'`, r.ID(), analysis.Digest([]string{analysis.RunBudgetProfile, r.ID()}))
+	if err != nil || r.Mandate.ID == "" {
+		return err
+	}
+	r.State, r.Reason = "BLOCKED", analysis.ErrRunExhausted.Error()
+	_, err = ensureProposal(ctx, tx, r, now)
+	if errors.Is(err, analysis.ErrScope) {
+		return nil
+	}
 	return err
 }
 
@@ -143,6 +156,18 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if err != nil {
 		return err
 	}
+	if err = s.renewRunBudgetTx(ctx, tx, r, current, check, decision); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Both the THS command and legacy caller use the 55a admission and consumption gates.
+func (s *Store) renewRunBudgetTx(ctx context.Context, tx pgx.Tx, r, current analysis.RunRecord, check analysis.RunRenewalCheck, decision analysis.RenewalDecision) error {
+	want := check.RunRenewal
+	if want.Increment == (analysis.RunCost{}) || !want.Increment.Fits(current.Limits.RenewalCeiling()) || want.Seconds < 1 || want.Seconds > current.Limits.RenewalDuration() {
+		return analysis.ErrInvalid
+	}
 	now, err := s.runClock(ctx, tx)
 	if err != nil {
 		return err
@@ -170,7 +195,8 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 		return analysis.ErrFenced
 	}
 	if current.NotBefore.After(now) {
-		return analysis.ErrRunPressure
+		seconds := int64((current.NotBefore.Sub(now) + time.Second - 1) / time.Second)
+		return &analysis.RenewalBackoff{Cause: analysis.ErrRunPressure, RetryAfter: strconv.FormatInt(seconds, 10)}
 	}
 	var busy bool
 	err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_run_attempt where analysis_id=$1 and (proof_until>$2 or (finished_at is null and superseded_at is null)))
@@ -206,7 +232,7 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if err = insertRenewalSession(ctx, tx, current, want, decision, now, end); err != nil {
 		return err
 	}
-	tag, err = tx.Exec(ctx, `update ouf_mcp.analysis_run set budget_end=$4,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,
+	tag, err = tx.Exec(ctx, `update ouf_mcp.analysis_run set budget_end=$4,poll_seq=null,poll_after=null,status_due=$3,status_valid_until=null,status_token=null,status_failures=0,
 		seq=seq+1,state='RUNNING',reason='ANALYSIS_RUNNING',not_before=$3 where analysis_id=$1 and seq=$2`, r.ID(), want.ExpectedSeq, now, end)
 	if err != nil {
 		return err
@@ -227,7 +253,7 @@ func (s *Store) RenewRunBudget(ctx context.Context, actor orchestration.Identity
 	if !end.After(now) {
 		return analysis.ErrRunExhausted
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func insertRenewalSession(ctx context.Context, tx pgx.Tx, r analysis.RunRecord, want analysis.RunRenewal, decision analysis.RenewalDecision, now, end time.Time) error {

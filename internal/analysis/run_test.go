@@ -25,7 +25,11 @@ func TestRunGatewayFileAndArguments(t *testing.T) { // MCP-50U-01
 			t.Fatal("gateway file digest", sum, err)
 		}
 	}
-	modified := bytes.Replace(raw, []byte("analysis-run-v2"), []byte("analysis-run-v3"), 1)
+	// Independent of the current manifest version string.
+	modified := bytes.Replace(raw, []byte(`"version": "`), []byte(`"version": "drift-`), 1)
+	if bytes.Equal(modified, raw) {
+		t.Fatal("fixture did not modify the manifest")
+	}
 	if _, err = FileManifestChecksum(m, modified); err == nil {
 		t.Fatal("accepted drift")
 	}

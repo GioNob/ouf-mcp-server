@@ -13,6 +13,7 @@ import (
 )
 
 type RunInstallation struct {
+	Renewal            RenewalChannel
 	Enabled            bool
 	Manifest, Workload string
 	Limits             RunLimits
@@ -30,6 +31,10 @@ func RunConfiguration(m *manifest.Snapshot) (RunInstallation, error) {
 		Shared:  RunSharedLimits{TenantBytes: 1 << 30, SourceBytes: 128 << 20, TenantQueue: 32, SourceQueue: 4, TenantSlots: 4, SourceSlots: 1, DependencySlots: 4, TenantPerMinute: 120, SourcePerMinute: 30, DependencyPerMinute: 120},
 		Maximum: RunCost{Calls: 4096, Attempts: 4096, Objects: 409600, Bytes: 64 << 20, Millis: 3600000}}}
 	var err error
+	cfg.Renewal, err = RenewalConfiguration()
+	if err != nil {
+		return cfg, err
+	}
 	cfg.StatusInterval, _, err = RunMaintenanceConfiguration()
 	if err != nil {
 		return cfg, err

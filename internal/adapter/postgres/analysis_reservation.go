@@ -73,13 +73,7 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 		return check, analysis.ErrMandateExpired
 	}
 	if !now.Add(duration).Before(r.BudgetEnd) {
-		if err = exhaustRun(ctx, tx, r); err != nil {
-			return check, err
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return check, err
-		}
-		return check, analysis.ErrRunExhausted
+		return check, s.finishExhaustedReservation(ctx, tx, r, now)
 	}
 	var paused bool
 	if err = tx.QueryRow(ctx, "select status_due is not null and (status_valid_until is null or status_valid_until<=$2) from ouf_mcp.analysis_run where analysis_id=$1", r.ID(), now).Scan(&paused); err != nil {
@@ -215,13 +209,7 @@ func (s *Store) ReserveRunWork(ctx context.Context, expected analysis.RunRecord,
 	maximum := work.Maximum
 	total := spent.Add(maximum)
 	if !total.Fits(sessionMaximum) || now.Add(duration).After(r.BudgetEnd) {
-		if err = exhaustRun(ctx, tx, r); err != nil {
-			return check, err
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return check, err
-		}
-		return check, analysis.ErrRunExhausted
+		return check, s.finishExhaustedReservation(ctx, tx, r, now)
 	}
 	if attemptCount >= analysis.MaxRetryAttempts {
 		if err := quarantineRunWork(ctx, tx, r, item, "ANALYSIS_BUDGET_EXHAUSTED", now); err != nil {

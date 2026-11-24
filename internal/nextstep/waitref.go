@@ -81,6 +81,9 @@ func Resource(obs Object) string {
 // Exact selectors remain in the signed read arguments. A conditional receipt
 // may omit them; an owner returning a conflicting selector cannot advance it.
 func (r WaitRef) MatchesResource(obs Object) bool {
+	if r.Read == "source.analysis.read" && (obs == nil || obs["analysisId"] != r.Args["analysisId"]) {
+		return false
+	}
 	if obs == nil {
 		return false
 	}

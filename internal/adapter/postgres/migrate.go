@@ -21,6 +21,7 @@ var migrationFiles embed.FS
 
 var runMigrationChecksum = migrationChecksum("migrations/018_analysis_run.sql")
 var hardeningMigrationChecksum = migrationChecksum("migrations/019_analysis_run_hardening.sql")
+var proposalMigrationChecksum = migrationChecksum("migrations/021_analysis_renewal_proposal.sql")
 var renewalMigrationChecksum = migrationChecksum("migrations/020_analysis_renewal_once.sql")
 
 func migrationChecksum(path string) string {

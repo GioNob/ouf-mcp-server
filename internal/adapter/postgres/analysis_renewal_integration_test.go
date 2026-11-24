@@ -22,7 +22,7 @@ func exhaustFixture(t *testing.T, ctx context.Context, s *Store, r analysis.RunR
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if err = exhaustRun(ctx, tx, r); err != nil {
+	if err = s.exhaustRun(ctx, tx, r); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(ctx); err != nil {

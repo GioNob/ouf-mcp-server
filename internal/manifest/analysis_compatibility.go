@@ -14,7 +14,7 @@ var compatibleAnalysis = sync.OnceValue(func() map[string][]string {
 	result := make(map[string][]string)
 	for _, state := range []string{"ACTIVE", "INACTIVE", "ABSENT"} {
 		m, err := Load()
-		if err != nil || m.Version != "1.18.0-analysis-run-v2" {
+		if err != nil || m.Version != "1.19.0-analysis-renewal-v1" {
 			return result
 		}
 		for index, c := range m.Capabilities {
@@ -28,6 +28,14 @@ var compatibleAnalysis = sync.OnceValue(func() map[string][]string {
 			}
 		}
 		current, _ := m.Checksum()
+		for index, c := range m.Capabilities {
+			if c.ToolName == "source.analysis.renewal.propose" {
+				m.Capabilities = append(m.Capabilities[:index], m.Capabilities[index+1:]...)
+				break
+			}
+		}
+		m.Version = "1.18.0-analysis-run-v2"
+		run, _ := m.Checksum()
 		for index, c := range m.Capabilities {
 			if c.ToolName == "source.analysis.plan" {
 				var schema struct{ OneOf []json.RawMessage }
@@ -48,7 +56,7 @@ var compatibleAnalysis = sync.OnceValue(func() map[string][]string {
 		}
 		m.Version = predecessorVersion
 		t0, _ := m.Checksum()
-		result[current] = []string{t1, t0}
+		result[current] = []string{run, t1, t0}
 	}
 	return result
 })

@@ -30,3 +30,11 @@ Per i lavori di macchina il client segue `POLL` e la cadenza minima dell’owner
 Ogni errore espone lo stesso `next` nel testo JSON e in `structuredContent`. Il limite serializzato comprende entrambe le copie. Quando il risultato supera il limite, `TOOL_RESULT_LIMIT` indica il passo di verifica in entrambi i canali. Per esempio, `source.onboarding.create` ammette 2 MiB di argomenti e 64 KiB di risultato.
 
 Il PET `TestNextOnlyCSVToObjects` usa una fixture di emissione e staging conforme al 52a e le osservazioni del giro del 23 novembre per il rifiuto di ammissione, il primo compito e la discovery vuota. I passi successivi sono simulati. Ogni chiamata usa il precedente `next` e ogni decisione compone gli argomenti dalle letture percorse. Le due esecuzioni coprono il percorso ordinario e la ripresa dopo il rifiuto di ammissione della preview.
+
+### Rinnovo del budget di analisi
+
+Su `source.analysis.read` in vista `STATUS`, un incidente di piano esaurito espone `BLOCKED / ANALYSIS_BUDGET_EXHAUSTED`. Per una proposta aperta la prima alternativa è `WAIT_FOR_HUMAN`. La chat presenta `human.reviewUrl` al titolare e chiama `ouf.wait` con il riferimento firmato. L'attesa osserva lo stesso `analysisId` con la vista `STATUS`. Alla scadenza il riferimento smette di consentire la decisione e l'incidente resta aperto.
+
+Dopo `CHANGES_REQUESTED` il passo indica `source.analysis.renewal.propose` con incidente, versione, chiave e `requestedChanges`. Il tool accetta anche un `increment` esplicito con le cinque dimensioni. Senza nuovi valori conserva quelli precedenti per il confronto con il feedback originale. La nuova versione restituisce `previous`, `diff`, incremento e totale, e rimanda a `STATUS` per il collegamento corrente.
+
+L'approvazione riprende il piano con un poll di `STATUS` entro la deadline originaria. Dopo la chiusura, `STATUS` porta a `SUMMARY`. Le pagine conservano gli esiti e le motivazioni per ordinale. Per gli esiti misti la vista riporta `PARTIAL` e il passo conclusivo indica `ANALYSIS_PARTIAL`.

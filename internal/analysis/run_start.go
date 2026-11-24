@@ -48,16 +48,16 @@ func (c Coordinator) StartRun(ctx context.Context, i orchestration.Identity, cfg
 		return r, err
 	}
 	existing, err := store.ReadRun(ctx, scope, i.Issuer, id)
-	pin := existing.Profile
+	pin, sourceFile := existing.Profile, existing.SourceFile
 	if errors.Is(err, ErrScope) {
 		// A single interactive owner read binds issue to the immutable
 		// profile. Subsequent page reads are mediated by the mandate.
-		pin, err = c.runProfile(ctx, i, asset, profile)
+		pin, sourceFile, err = c.runProfile(ctx, i, asset, profile)
 	}
 	if err != nil {
 		return r, err
 	}
-	spec := RunSpec{Onboarding: c.Onboarding, Scope: scope, Issuer: i.Issuer, Workload: cfg.Workload, CommandKey: key, Manifest: cfg.Manifest, Policy: policy, Profile: pin, Limits: cfg.Limits}
+	spec := RunSpec{ProposalSeconds: cfg.Renewal.ProposalSeconds, SourceFile: sourceFile, Onboarding: c.Onboarding, Scope: scope, Issuer: i.Issuer, Workload: cfg.Workload, CommandKey: key, Manifest: cfg.Manifest, Policy: policy, Profile: pin, Limits: cfg.Limits}
 	r, err = store.BeginRun(ctx, spec)
 	if err != nil {
 		return r, err
@@ -146,14 +146,14 @@ func RunRetryAt(now time.Time, attempt int, header string) time.Time {
 	return when
 }
 
-func (c Coordinator) runProfile(ctx context.Context, i orchestration.Identity, asset, profile string) (Profile, error) {
+func (c Coordinator) runProfile(ctx context.Context, i orchestration.Identity, asset, profile string) (Profile, string, error) {
 	cap, ok := Find(c.Manifest, "source.file.preview")
 	if !ok || cap.PublicationState != "ACTIVE" {
-		return Profile{}, ErrUnavailable
+		return Profile{}, "", ErrUnavailable
 	}
 	sum, err := c.Manifest.Checksum()
 	if err != nil {
-		return Profile{}, err
+		return Profile{}, "", err
 	}
 	raw, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": 0, "limit": 1})
 	reply, err := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: "READ",
@@ -161,14 +161,20 @@ func (c Coordinator) runProfile(ctx context.Context, i orchestration.Identity, a
 		Window: orchestration.AdmissionWindow, Timeout: 3 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold,
 		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
 	if err != nil {
-		return Profile{}, err
+		return Profile{}, "", err
 	}
 	if reply.Problem != nil && reply.Problem.Status == 403 {
-		return Profile{}, orchestration.ErrUnauthorized
+		return Profile{}, "", orchestration.ErrUnauthorized
 	}
 	if reply.Problem != nil || reply.Replay {
-		return Profile{}, ErrUnavailable
+		return Profile{}, "", ErrUnavailable
 	}
 	p, _, err := previewPage(reply.Body, asset, profile, Profile{}, 0, 1)
-	return p, err
+	var metadata struct {
+		FileName string `json:"fileName"`
+	}
+	if err == nil {
+		_ = json.Unmarshal(reply.Body, &metadata)
+	}
+	return p, sourceBasename(metadata.FileName), err
 }

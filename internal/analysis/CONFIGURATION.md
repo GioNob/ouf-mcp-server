@@ -177,3 +177,24 @@ Distribuire questo file SQL insieme al candidato. La transazione verifica la pre
 **Incidenti di dipendenza.** La vista protetta `analysis_dependency_counts` espone episodio, scope opaco, dipendenza, causa e conteggi distinti di piani, coppie piano–intento e coppie piano–ordinale. Lo scope include issuer, workload, servizio e tenant. Per il rate limit comprende anche il soggetto, perché il codice owner da solo non dimostra una quota condivisa fra soggetti. La correlazione usa i codici espliciti di indisponibilità dell’autorità Gateway e di indisponibilità o rate limit del lotto Semantic. La sola pressione locale non identifica un guasto condiviso. Per la preview il gruppo semantico deve ancora essere identificato. Le osservazioni ripetute conservano gli stessi conteggi. L’episodio si chiude dopo riscontri positivi su tutti gli ordinali interessati. Il dettaglio del lavoro in quarantena resta nell’archivio protetto. La vista degli incidenti espone riferimenti e conteggi.
 
 **PET e ritorno.** `MCP-50V-01` verifica il client fittizio. `02–03` coprono osservatori concorrenti, esiti terminali, indisponibilità e deadline. `04–06` coprono indipendenza, quarantena e correlazione fra piani. `07` verifica i TTL e gli snapshot referenziati. `08` estende la prova D-080 in `scripts/predecessor_return/run.sh` con `PREDECESSOR=fbeb46eeb9e9499a544e34220505b1c2a711581e` e immagini locali esatte. `09` verifica i limiti d’installazione. `MCP-50V-10` verifica la seconda installazione amministrativa, il proprietario, i privilegi e la pulizia effettiva come ruolo di manutenzione. Il ciclo D-080 controlla anche i privilegi del ruolo applicativo di runtime. Per il ritorno si fermano worker, dispatch e job di pulizia secondo la procedura 50u. Lo schema 019 e gli archivi restano installati. Il predecessore legge e scrive lo schema 018 con i propri gate.
+
+### Rinnovo tramite THS (021)
+
+Il processo `analysis-reservations` serve anche le due POST `/internal/analysis/v1/renewals/read` e `/internal/analysis/v1/renewals/decide`. Usa la CA e il SAN URI Gateway già richiesti dal listener TLS. Il Gateway attesta i byte inoltrati su quel canale. MCP controlla emittente, destinatario, client, soggetto, tenant, scopo, scadenza e SHA-256 del corpo. La chiave HMAC resta al Gateway, che verifica nuovamente la firma su `renewal-check`.
+
+| Parametro | Valore ammesso |
+|---|---|
+| `OUF_ANALYSIS_RENEWAL_REVIEW_BASE` | URL HTTPS della scheda, con percorso esatto `/trusted-human/analysis-renewal/` e slash finale. |
+| `OUF_ANALYSIS_RENEWAL_CHECK_ENDPOINT` | URL HTTPS completo con percorso `/internal/analysis/v1/mandates/renewal-check`. Entrambi gli URL escludono credenziali, query e frammenti. |
+| `OUF_ANALYSIS_RENEWAL_ISSUER`, `OUF_ANALYSIS_RENEWAL_AUDIENCE` | Valori esatti di `iss` e `aud` della delega. |
+| `OUF_ANALYSIS_WORKLOAD`, `OUF_ANALYSIS_RENEWAL_THS_CLIENT` | Client distinti per il servizio MCP e la THS, identici ai valori configurati nel Gateway. |
+| `OUF_ANALYSIS_RENEWAL_BODY_BYTES` | Limite del corpo sulle rotte MCP, da 1 a 131072 byte, default 131072. |
+| `OUF_ANALYSIS_RENEWAL_PROPOSAL_SECONDS` | Intero opzionale da 1 a 3600, default 3600. Ogni scadenza è limitata anche dal mandato e dalla durata assoluta del piano. `RenewalSeconds` regola la durata della sessione concessa. |
+
+Configurare gli stessi parametri di canale nel processo MCP e nel listener. Con un profilo incompleto le rotte restituiscono `503 ANALYSIS_AUTHORITY_UNAVAILABLE`. Il client riusa le credenziali SERVICE di installazione. Il flusso client credentials richiede lo scope `ouf.analysis.mandate.renewal-check` con una propria cache. Un bearer statico, se configurato, deve già possedere questo scope. La verifica IAM corrente appartiene al Gateway.
+
+La 021 aggiunge lo storico delle proposte e delle ricevute. Un incidente aperto dal predecessore può materializzare la propria prima proposta alla lettura autorizzata dello stato. Il materiale di revisione conserva basename e numero di colonne quando la preview owner espone `fileName`. Per i profili privi di questo metadato usa il numero di colonne. Un esaurimento precedente all'emissione del mandato o con tutte le dimensioni di incremento a zero mantiene l'incidente aperto.
+
+Il rinnovo acquisisce fuori transazione la prova legata al comando. Al rientro ricontrolla ricevuta, versione, mandato, fence, budget e scadenza. Le tre decisioni persistono la prova e la ricevuta con i loro effetti. La chiusura conserva la quarantena per intento e le prenotazioni da riconciliare. Lo store controlla la scadenza a ogni accesso. Un turno libero del worker di controllo materializza anche la scadenza di una proposta senza richieste THS.
+
+Le prove `MCP-55B-01…05` coprono il catalogo, il canale Gateway, revisione, replay, concorrenza, esiti indipendenti e quarantena. Richiamano `PET-mcp-057` e `PET-mcp-163`. Per le prove PostgreSQL impostare `MCP_TEST_DATABASE_URL` su un database di test dedicato.

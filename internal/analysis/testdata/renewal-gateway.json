@@ -1,0 +1,118 @@
+{
+  "read": {
+    "proposalVersion": 2,
+    "reason": "ANALYSIS_BUDGET_EXHAUSTED",
+    "remainingOrdinals": [
+      4,
+      7,
+      9
+    ],
+    "initialMaximum": {
+      "Calls": 12,
+      "Attempts": 12,
+      "Objects": 12,
+      "Bytes": 12,
+      "Millis": 12
+    },
+    "consumed": {
+      "Calls": 11,
+      "Attempts": 11,
+      "Objects": 11,
+      "Bytes": 11,
+      "Millis": 11
+    },
+    "increment": {
+      "Calls": 2,
+      "Attempts": 2,
+      "Objects": 2,
+      "Bytes": 2,
+      "Millis": 2
+    },
+    "totalMaximum": {
+      "Calls": 14,
+      "Attempts": 14,
+      "Objects": 14,
+      "Bytes": 14,
+      "Millis": 14
+    },
+    "expiresAt": "2030-01-01T11:00:00Z",
+    "contract": "ouf.analysis.renewal.v1",
+    "reviewRef": "0123456789abcdefghij_-",
+    "analysisId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "incidentId": "incident-1",
+    "mandateId": "22222222-2222-4222-8222-222222222222",
+    "expectedSeq": "8",
+    "generation": "1",
+    "proposalHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "previous": {
+      "proposalVersion": 1,
+      "reason": "ANALYSIS_BUDGET_EXHAUSTED",
+      "remainingOrdinals": [
+        4,
+        7,
+        9
+      ],
+      "initialMaximum": {
+        "Calls": 12,
+        "Attempts": 12,
+        "Objects": 12,
+        "Bytes": 12,
+        "Millis": 12
+      },
+      "consumed": {
+        "Calls": 11,
+        "Attempts": 11,
+        "Objects": 11,
+        "Bytes": 11,
+        "Millis": 11
+      },
+      "increment": {
+        "Calls": 3,
+        "Attempts": 3,
+        "Objects": 3,
+        "Bytes": 3,
+        "Millis": 3
+      },
+      "totalMaximum": {
+        "Calls": 15,
+        "Attempts": 15,
+        "Objects": 15,
+        "Bytes": 15,
+        "Millis": 15
+      },
+      "expiresAt": "2030-01-01T11:00:00Z"
+    },
+    "requestedChanges": [
+      {
+        "field": "Calls",
+        "comment": "Meno chiamate < 8 · 🌱"
+      }
+    ],
+    "proposalState": "OPEN",
+    "planLabel": "esempio.csv · 18 colonne"
+  },
+  "command": {
+    "reviewRef": "0123456789abcdefghij_-",
+    "proposalVersion": 1,
+    "proposalHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "expectedSeq": "7",
+    "decision": "CHANGES_REQUESTED",
+    "commandKey": "11111111-1111-4111-8111-111111111111",
+    "items": [
+      {
+        "field": "Calls",
+        "comment": "Meno chiamate < 8 · 🌱"
+      }
+    ]
+  },
+  "checkWire": "{\"analysisId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"commandKey\":\"11111111-1111-4111-8111-111111111111\",\"decision\":\"CHANGES_REQUESTED\",\"expectedSeq\":\"7\",\"generation\":\"1\",\"incidentId\":\"incident-1\",\"items\":[{\"comment\":\"Meno chiamate < 8 · 🌱\",\"field\":\"Calls\"}],\"mandateId\":\"22222222-2222-4222-8222-222222222222\",\"proposalHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"proposalVersion\":1,\"reviewRef\":\"0123456789abcdefghij_-\"}",
+  "checkResponse": {
+    "requestHash": "47cc2b58a72ed2c7add4f72e814b974da629fd475ab2840643f7af4162ccfe1e",
+    "decisionRef": "iam-decision",
+    "grantRef": "grant1",
+    "validUntil": 1017
+  },
+  "readProof": "eyJhY3IiOiJpbnRlcmFjdGl2ZSIsImFjdG9yIjoiSFVNQU4iLCJhdWQiOiJnYXRld2F5IiwiY2xpZW50IjoidGhzIiwiZXhwIjoxMDIwLCJpYXQiOjEwMDAsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmludmFsaWQiLCJwcmluY2lwYWwiOiJob2xkZXIiLCJwdXJwb3NlIjoiYW5hbHlzaXMtcmVuZXdhbC1yZWFkIiwicmVxdWVzdEhhc2giOiIxMjY1MDE5MzE0Njk2NzAyYjI0ZGYzMmRlZTI3MTRhYjQ3NWQ2MDFkYTFkNDYwZmQ0ZDA3ZjYwOGRmYmUxNjNhIiwic2NvcGUiOiJvdWYuYW5hbHlzaXMucmVuZXdhbC5yZWFkIiwidGVuYW50IjoidGVuYW50IiwidiI6MSwid29ya2xvYWQiOiJ3b3JrZXIifQ.Cuw1aqhr-EipB7ixGhiUQFWSMLKHnK2sJvTveaOwh1Y",
+  "decideProof": "eyJhY3IiOiJpbnRlcmFjdGl2ZSIsImFjdG9yIjoiSFVNQU4iLCJhdWQiOiJnYXRld2F5IiwiY2xpZW50IjoidGhzIiwiZXhwIjoxMDIwLCJpYXQiOjEwMDAsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmludmFsaWQiLCJwcmluY2lwYWwiOiJob2xkZXIiLCJwdXJwb3NlIjoiYW5hbHlzaXMtcmVuZXdhbC1kZWNpZGUiLCJyZXF1ZXN0SGFzaCI6IjI2OGJmODkzYzJiNjY0MjY2NDViODhjODIzN2M5NTU0YjIxNjlhNDMxZWNjNTY2MzQ2MTkxYjU4NjE2ZTQwYmEiLCJzY29wZSI6Im91Zi5hbmFseXNpcy5yZW5ld2FsLmRlY2lkZSIsInRlbmFudCI6InRlbmFudCIsInYiOjEsIndvcmtsb2FkIjoid29ya2VyIn0.CZsNgZlZMiIYlEW2ok3C-kOjXePk0OejCsgjHSSZarM",
+  "commandWire": "{\"commandKey\":\"11111111-1111-4111-8111-111111111111\",\"decision\":\"CHANGES_REQUESTED\",\"expectedSeq\":\"7\",\"items\":[{\"comment\":\"Meno chiamate < 8 · 🌱\",\"field\":\"Calls\"}],\"proposalHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"proposalVersion\":1,\"reviewRef\":\"0123456789abcdefghij_-\"}"
+}
