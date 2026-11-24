@@ -1,5 +1,5 @@
 {
-  "version": "1.17.0-published-batch-v1",
+  "version": "1.17.1-history-limit-v1",
   "nextErrors": [
     {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "draftAssetRef": "@draftAssetRef", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
@@ -657,7 +657,7 @@
         "ouf.operations.incidents"
       ],
       "operationalLimits": {
-        "maxLimit": 200
+        "maxLimit": 100
       },
       "resultSemantics": "Bounded persisted run history for authorized sources",
       "securityNotes": [
@@ -673,7 +673,7 @@
       "baseCostEnvelope": {
         "hardMaxToolCalls": 1,
         "hardMaxGraphCalls": 0,
-        "hardMaxDistinctObjects": 200,
+        "hardMaxDistinctObjects": 100,
         "hardMaxResultBytes": 524288,
         "hardMaxElapsedMs": 3000
       },
@@ -699,7 +699,7 @@
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 200
+            "maximum": 100
           }
         }
       }
