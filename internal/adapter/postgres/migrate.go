@@ -19,6 +19,14 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+var runMigrationChecksum = func() string {
+	b, err := migrationFiles.ReadFile("migrations/018_analysis_run.sql")
+	if err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(b))
+}()
+
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {

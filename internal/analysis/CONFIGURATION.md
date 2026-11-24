@@ -64,3 +64,52 @@ La colonna additiva `analysis_column.published_first` e il relativo indice danno
 | MCP-50T-07 | Errori A.3, compatibilità, riapertura della connessione e scadenza del budget |
 | MCP-50T-08 | Path HTTP, busta effettiva e soglia di trasporto |
 | MCP-50T-09 | Migrazione 016 → 017, esecuzione del piano ea4033e e ritorno del predecessore |
+
+## Piano server T2 · analysis-run-v2
+
+Predecessore `9be4dd80e1e7c6a0d1b3f86eda8fb02c4909fc91`, migrazione additiva 018. I tre processi sono il server MCP, `analysis-worker` e `analysis-reservations`. Usano lo stesso PostgreSQL. Il listener delle prenotazioni ha un proprio pool e un proprio endpoint HTTPS. Lo start richiede la delega HUMAN corrente. Il worker usa la credenziale di workload già configurata per il Gateway.
+
+| Parametro di installazione | Uso |
+|---|---|
+| `OUF_ANALYSIS_RUN_ENABLED` | Booleano stretto. Assente o `false` conserva la preview T1 e produce `ANALYSIS_EXECUTOR_DISABLED` per uno start T2 esplicito. `true` carica il profilo e il manifest. |
+| `OUF_ANALYSIS_MANIFEST_FILE` | File UTF-8 immutabile, distribuito byte per byte anche come `manifestFile` al Gateway. Il contenuto JSON deve coincidere con il catalogo compilato. Il mandato usa SHA-256 del file effettivo, inclusi terminatori di riga. |
+| `OUF_ANALYSIS_WORKLOAD` | Identità del client di servizio verificata dal Gateway al dispatch. È separata dall'identità del client interattivo memorizzata nello scope. |
+| `OUF_ANALYSIS_RUN_LIMITS` | Oggetto JSON completo del profilo seguente. L'installazione conserva gli stessi parametri sulle repliche. Un cambio incompatibile ferma il piano per riconciliazione. |
+| `OUF_ANALYSIS_RESERVATION_LISTEN` | Bind privato del comando `analysis-reservations`. Il Gateway invia POST a `/internal/analysis/v1/reservations/check`. |
+| `OUF_ANALYSIS_RESERVATION_CERT_FILE`, `OUF_ANALYSIS_RESERVATION_KEY_FILE` | Identità TLS server del listener privato. |
+| `OUF_ANALYSIS_GATEWAY_CA_FILE`, `OUF_ANALYSIS_GATEWAY_CLIENT_URI` | Trust store dedicato e URI SAN esatto del certificato client Gateway. Il listener richiede mTLS e TLS 1.3. |
+
+Default del profilo:
+
+```json
+{
+  "OwnerDedupQualified": false,
+  "ProofSeconds": 5,
+  "WaitSeconds": 3600,
+  "LifetimeSeconds": 86400,
+  "PreviewPageSize": 64,
+  "ActivePlans": 1,
+  "ProviderSlots": 1,
+  "Maximum": {"Calls":4096,"Attempts":4096,"Objects":409600,"Bytes":67108864,"Millis":3600000},
+  "Shared": {
+    "TenantQueue":32,"SourceQueue":4,"TenantSlots":4,"SourceSlots":1,"DependencySlots":4,
+    "TenantPerMinute":120,"SourcePerMinute":30,"DependencyPerMinute":120,
+    "TenantBytes":1073741824,"SourceBytes":134217728
+  }
+}
+```
+
+`OwnerDedupQualified` registra la decisione d'installazione dopo la qualificazione owner. Il worker richiede entrambi i flag. Il Gateway mantiene il proprio gate indipendente. Il deploy attiva i processi dopo le prove D-090. Per il ritorno, fermare i worker, chiudere il dispatch Gateway e attendere scadenza delle prove concesse e riconciliazione degli effetti in volo.
+
+La lease di verifica dura al massimo `ProofSeconds` (1–30 s) e termina comunque entro la scadenza del tentativo, del mandato e del budget. Il tetto per incidente è 128 tentativi per operazione e intento in una sessione finita. Chiamate e tentativi sono unità intere, byte e millisecondi contano sul piano. Le frequenze condivise usano una finestra mobile di 60 secondi. Il calcolo dei byte condivisi conserva le riserve incerte e addebita anche payload già ridotti a evidenza. Lo scope sorgente usa il riferimento immutabile all'asset. I pool di dipendenza sono Onboarding e Semantic. Le lease dei provider remoti dietro Semantic richiedono la verifica owner.
+
+| Archivio PostgreSQL, schema `ouf_mcp` | Contenuto protetto |
+|---|---|
+| `analysis_run`, `analysis_run_command` | Scope, profilo e policy fissati, configurazione, mandato, prima chiave e alias, attesa, fence, coda e checkpoint. |
+| `analysis_run_attempt`, `analysis_run_request` | Prenotazione, hash, ordinali, worker, prova concessa, limiti e consuntivo, riferimenti di decisione e relazione job–intento. Le prenotazioni con effetto incerto mantengono il massimo originario. |
+| `analysis_run_outcome`, `analysis_run_snapshot`, `analysis_run_read` | Versioni degli esiti per ordinale, contatori e audit delle pagine. `STATUS` legge dati locali. |
+| `analysis_run_incident`, `analysis_run_budget_session` | Incidente stabile, versione attesa, attore HUMAN, motivo, riferimento alla decisione, limiti e storia delle sessioni. Il punto di confine fra sessioni è una fence. |
+
+La procedura di rinnovo richiede un adattatore di autorità corrente per la decisione esatta. Questo candidato fornisce la transazione e l'interfaccia Go. Il binding di esercizio e il trasporto della revoca verso un MCP in pausa richiedono integrazione con gli owner. Restano da qualificare archiviazione e capacità fisica delle tabelle e degli indici. La migrazione non espurga la storia.
+
+I PET `MCP-50U-01`–`16` coprono file e hash, configurazione, deadline, alias, claim concorrenti, lease, fixture SDK a 18 colonne, crash, rinnovo HUMAN, autenticazione del listener, ritorno 017→018→50t→candidato, pausa/revoca, disattivazione, ripresa, schemi e retry finiti di issue. Le fixture usano riferimenti sintetici. La fixture SDK misura separatamente il percorso pubblico e le chiamate interne; il PET del listener verifica mTLS su loopback.

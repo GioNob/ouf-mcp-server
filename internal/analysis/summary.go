@@ -286,6 +286,7 @@ type Hint struct {
 	Revision                                                    int64
 }
 type Summary struct {
+	Run                 *RunRecord
 	Visibility          string
 	Seq                 int64
 	Counts              Counts

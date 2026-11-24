@@ -24,7 +24,12 @@ var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
 var ErrIdempotencyOutcomeUnknown = orchestration.ErrIdempotencyOutcomeUnknown
 var ErrGroupLocked = errors.New("equivalence group locked by uncertain attempt")
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// A fixture may advance the reservation clock without editing evidence.
+	// Live processes always use the database clock.
+	analysisClock func() time.Time
+}
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
@@ -50,8 +55,14 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close()              { s.pool.Close() }
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) Ready(ctx context.Context) error {
-	var version int
-	return s.pool.QueryRow(ctx, "select max(version) from ouf_mcp.schema_migration").Scan(&version)
+	var installed string
+	if err := s.pool.QueryRow(ctx, "select checksum from ouf_mcp.schema_migration where version=18").Scan(&installed); err != nil {
+		return err
+	}
+	if installed != runMigrationChecksum {
+		return errors.New("analysis migration checksum mismatch")
+	}
+	return nil
 }
 
 func (s *Store) EnsureManifest(ctx context.Context, checksum, version, schemaVersion string, payload []byte) error {

@@ -85,6 +85,20 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 			cap := s.tools["source.analysis.read"].capability
 			obs := ownerObject(wait)
 			next := s.engine(ctx).Evaluate(cap, s.manifest.NextPolicies[cap.NextPolicy], input, obs, true)
+			if runs, ok := c.Store.(analysis.RunStore); ok && view == "STATUS" {
+				r, e := runs.ReadRun(ctx, scope, i.Issuer, id)
+				if e == nil && r.State == "RUNNING" {
+					if e = c.CheckPublishedScope(ctx, i, r.Policy); e != nil {
+						return summaryFailure(e, id)
+					}
+					var window *orchestration.WindowBudgetExhaustedError
+					if errors.As(err, &window) && window.BudgetWindowEnd().After(r.NotBefore) {
+						r.NotBefore = window.BudgetWindowEnd()
+					}
+					r.Reason = "ANALYSIS_BACKOFF"
+					next = nextstep.RunNext(r, now, s.waits.interval)
+				}
+			}
 			return workflowError(nextstep.Object{"code": obs["code"], "next": next})
 		}
 		return summaryFailure(err, id)
@@ -106,12 +120,40 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		}
 	}()
 	page := view == "SUMMARY"
-	result, err := store.ReadSummary(ctx, scope, id, checksum, pos, page)
+	var result analysis.Summary
+	runStore, hasRun := c.Store.(interface {
+		RunSummary(context.Context, analysis.Scope, string, string, analysis.Position, bool) (analysis.Summary, error)
+		AuditRunSummary(context.Context, analysis.RunRecord, string, int, int) error
+		ClaimRunPoll(context.Context, analysis.RunRecord, time.Duration) (time.Time, bool, error)
+	})
+	if hasRun {
+		result, err = runStore.RunSummary(ctx, scope, i.Issuer, id, pos, page)
+	}
+	if !hasRun || errors.Is(err, analysis.ErrScope) {
+		result, err = store.ReadSummary(ctx, scope, id, checksum, pos, page)
+	}
 	if err != nil {
 		return summaryFailure(err, id)
 	}
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
 		return summaryFailure(err, id)
+	}
+	if !page && result.Run != nil && result.Run.State == "RUNNING" {
+		at, allowed, err := runStore.ClaimRunPoll(ctx, *result.Run, s.waits.interval)
+		if err != nil {
+			return summaryFailure(err, id)
+		}
+		if !allowed {
+			r := *result.Run
+			if at.After(r.NotBefore) {
+				r.NotBefore = at
+			}
+			r.Reason = "ANALYSIS_BACKOFF"
+			next := nextstep.RunNext(r, time.Now(), s.waits.interval)
+			out := workflowError(nextstep.Object{"code": "ANALYSIS_BACKOFF", "next": next})
+			out.Meta = mcp.Meta{"ouf/httpStatus": 429}
+			return out
+		}
 	}
 	if page && pos.Last < 0 {
 		pos.Snapshot = uuid.New()
@@ -128,7 +170,12 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 	if page && pos.Last < 0 && last+1 < result.Counts.Total {
 		frozen = &result.Hint
 	}
-	if err = store.AuditSummary(ctx, scope, id, decision, result.Seq, first, last, pos.Snapshot, frozen); err != nil {
+	if result.Run != nil {
+		err = runStore.AuditRunSummary(ctx, *result.Run, decision, first, last)
+	} else {
+		err = store.AuditSummary(ctx, scope, id, decision, result.Seq, first, last, pos.Snapshot, frozen)
+	}
+	if err != nil {
 		return summaryFailure(err, id)
 	}
 	return out
@@ -158,6 +205,13 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 			}
 		}
 		body["next"] = engine.SummaryNext(id, view, cursor, result)
+		if r := result.Run; r != nil && cursor == "" && r.State == "RUNNING" {
+			now := time.Now()
+			body["next"] = nextstep.RunNext(*r, now, s.waits.interval)
+			if !now.Before(r.Deadline) {
+				body["state"] = "BLOCKED"
+			}
+		}
 		wire, err := json.Marshal(body)
 		if err != nil {
 			return nil, 0, err

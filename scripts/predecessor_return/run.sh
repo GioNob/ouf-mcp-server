@@ -37,7 +37,14 @@ migrate() {
 schema() { sql -c 'select max(version) from ouf_mcp.schema_migration'; }
 start() {
   local image=$1 phase=$2
-  docker run "${shared[@]}" -d --name "$app" \
+  local run_env=()
+  if [[ "$phase" == issuing* ]]; then
+    run_env=(-v "$dir/../../internal/manifest/capabilities.json:/fixture-manifest.json:ro"
+      -e OUF_ANALYSIS_RUN_ENABLED=true -e OUF_ANALYSIS_WORKLOAD=fixture-mcp
+      -e 'OUF_ANALYSIS_RUN_LIMITS={"OwnerDedupQualified":true,"ProofSeconds":5,"WaitSeconds":60,"LifetimeSeconds":3600,"ActivePlans":1,"ProviderSlots":1,"PreviewPageSize":1,"Maximum":{"Calls":8,"Attempts":8,"Objects":256,"Bytes":4194304,"Millis":60000},"Shared":{"TenantBytes":16777216,"SourceBytes":8388608,"TenantQueue":2,"SourceQueue":2,"TenantSlots":2,"SourceSlots":1,"DependencySlots":2,"TenantPerMinute":8,"SourcePerMinute":8,"DependencyPerMinute":8}}'
+      -e OUF_ANALYSIS_MANIFEST_FILE=/fixture-manifest.json)
+  fi
+  docker run "${shared[@]}" "${run_env[@]}" -d --name "$app" \
     -e 'MCP_DATABASE_URL=postgres://mcp_app@127.0.0.1/mcp_test?sslmode=disable' \
     -e MCP_AUTHORIZATION_BUNDLE_ENDPOINT=http://127.0.0.1:8081/bundle \
     -e MCP_GATEWAY_ENDPOINT=http://127.0.0.1:8081/execute \
@@ -103,8 +110,12 @@ fi
 if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
   [[ "$before" == 16 && "$after" == 17 ]]
 fi
+base50t=9be4dd80e1e7c6a0d1b3f86eda8fb02c4909fc91
+if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
+  [[ "$before" == 17 && "$after" == 18 ]]
+fi
 start "$NEW_IMAGE" candidate
-if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
+if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 || "${PREDECESSOR:-}" == "$base50t" ]]; then
   # MCP-50T-09: candidate must execute the exact ea4033e plan before return.
   probe execute-predecessor
 else
@@ -114,10 +125,34 @@ probe seed candidate
 new_witness=$(witness candidate)
 stop
 
+# MCP-50U-10. Capture a real candidate checkpoint between admission and issue.
+# The synthetic execute origin uses HTTP. The mandate client requires HTTPS,
+# so issue fails before transmission and no worker runs in this probe.
+run_witness() {
+  sql -c "select r.analysis_id,r.state,c.command_key,r.seq,r.fence,r.issue_attempts,r.deadline,md5(r.checkpoint::text),
+    (select count(*) from ouf_mcp.analysis_run_attempt where analysis_id=r.analysis_id)
+    from ouf_mcp.analysis_run r join ouf_mcp.analysis_run_command c using(analysis_id)
+    where r.state='BLOCKED' and r.reason='ANALYSIS_AUTHORITY_UNAVAILABLE' and r.mandate is null"
+}
+if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
+  start "$NEW_IMAGE" issuing
+  probe issue-checkpoint
+  checkpoint=$(run_witness)
+  [[ -n "$checkpoint" && "$checkpoint" != *$'\n'* ]]
+  stop
+fi
+
 start "$OLD_IMAGE" predecessor-return
 probe return
 [[ "$(witness predecessor)" == "$old_witness" ]]
 [[ "$(witness candidate)" == "$new_witness" ]]
 witness return >/dev/null
+if [[ "${PREDECESSOR:-}" == "$base50t" ]]; then
+  [[ "$(run_witness)" == "$checkpoint" ]]
+  stop
+  start "$NEW_IMAGE" issuing-resume
+  probe issue-checkpoint
+  [[ "$(run_witness)" == "$checkpoint" ]]
+fi
 echo "PASS predecessor-return (schema $before -> $after): reads, writes and deduplicated retries" \
   | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
