@@ -143,7 +143,9 @@ def verify_return():
                      work=[{"tool": "semantic.search", "arguments": {"q": "seconda"}, "columns": [0]}])
     assert extension["revision"] == original["revision"] + 1
     assert extension["analysisId"] == original["analysisId"]
-    assert tool("source.analysis.read", analysisId=original["analysisId"])["tasks"] == extension["tasks"]
+    returned = tool("source.analysis.read", analysisId=original["analysisId"])
+    assert returned["tasks"] == extension["tasks"]
+    Path("/tmp/return.json").write_text(json.dumps({"view": returned}))
     receipt = discovery("return")
     assert receipt["status"] == "PENDING"
     replay("return", receipt["requestId"])
@@ -176,6 +178,9 @@ if __name__ == "__main__":
             Path("/tmp/predecessor.json").write_text(json.dumps(saved))
         case ["read-predecessor"]:
             verify_analysis("predecessor", "candidate", own=False)
+        case ["resume-after-retention"]:
+            verify_analysis("candidate", "candidate", own=True)
+            verify_analysis("return", "candidate", own=False)
         case ["return"]:
             verify_return()
         case _:

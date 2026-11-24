@@ -117,7 +117,12 @@ if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
   # MCP-50V-10: ordinary readiness precedes the separately authorized purge.
   purge='ouf_mcp.purge_analysis_run_history(text,timestamptz,timestamptz,timestamptz)'
   [[ "$(sql -c "select to_regprocedure('$purge') is null")" == t ]]
-  sql < "$dir/../../internal/adapter/postgres/maintenance/019_analysis_run_retention.sql"
+fi
+if [[ "$after" == 19 ]]; then
+  source "$dir/retention_019.sh"
+  retention_smoke
+fi
+if [[ "${PREDECESSOR:-}" == "$base50u" ]]; then
   [[ "$(sql -c "select has_function_privilege('ouf_mcp_maintenance_role','$purge','EXECUTE')
     and not has_function_privilege('mcp_app','$purge','EXECUTE')
     and not exists(select 1 from pg_class where oid in ('ouf_mcp.analysis_run_read'::regclass,
@@ -195,6 +200,18 @@ if [[ "${PREDECESSOR:-}" == "$base50t" || "${PREDECESSOR:-}" == "$base50u" ]]; t
     probe issue-checkpoint return
     [[ "$(hardening_witness)" == "$returned_witness" ]]
   fi
+fi
+# MCP-55I-03: the pinned predecessor has just read, written and replayed
+# commands on the expanded database. Resume on the same candidate image.
+if [[ "$after" == 19 ]]; then
+  if [[ "${PREDECESSOR:-}" != "$base50u" && "${PREDECESSOR:-}" != "$base50t" ]]; then
+    stop
+    start "$NEW_IMAGE" candidate-resume
+  fi
+  [[ "$(retention_remaining)" == $'f|2|3|2|0\nt|258|259|258|1' ]]
+  retention_record "$(retention_batch -e OUF_ANALYSIS_RETENTION_BATCH=1)" 1
+  [[ "$(retention_remaining)" == $'f|1|2|1|0\nt|258|259|258|1' ]]
+  probe resume-after-retention
 fi
 echo "PASS predecessor-return (schema $before -> $after): reads, writes and deduplicated retries" \
   | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
