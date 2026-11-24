@@ -171,21 +171,29 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	var existingID uuid.UUID
 	var existingHash string
 	err = tx.QueryRow(ctx, `select attempt_id,request_hash from ouf_mcp.idempotency_claim where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner=$4 and capability_id=$5 and operation_class=$6 and idempotency_key=$7 for update`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey).Scan(&existingID, &existingHash)
+	if errors.Is(err, pgx.ErrNoRows) && in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND" {
+		existingID, existingHash, err = existingDiscoveryClaim(ctx, tx, in)
+	}
 	if err == nil {
 		if existingHash != in.RequestHash {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyConflict
 		}
 		var state string
-		if err = tx.QueryRow(ctx, `select state from ouf_mcp.tool_attempt where attempt_id=$1`, existingID).Scan(&state); err != nil {
+		var resultID *uuid.UUID
+		if err = tx.QueryRow(ctx, `select state,replay_result_id from ouf_mcp.tool_attempt where attempt_id=$1`, existingID).Scan(&state, &resultID); err != nil {
 			return orchestration.AdmissionDecision{}, err
 		}
 		if state == "UNKNOWN" || state == "UNRESOLVED" {
+			// Keep a proven legacy alias even when the outcome is uncertain.
+			if err := tx.Commit(ctx); err != nil {
+				return orchestration.AdmissionDecision{}, err
+			}
 			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
 		}
 		if in.Reprocessing != nil {
 			return s.reserveSemanticReprocessing(ctx, tx, in, existingID)
 		}
-		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true}, tx.Commit(ctx)
+		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true, AttemptState: state, ResultID: resultID}, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return orchestration.AdmissionDecision{}, err
@@ -216,16 +224,17 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	callBudgetExceeded := reservedCalls+consumedCalls+in.Maximum.ToolCalls > windowMaximum.ToolCalls
 	byteBudgetExceeded := reservedBytes+consumedBytes+in.Maximum.ResultBytes > windowMaximum.ResultBytes
 	if callBudgetExceeded || byteBudgetExceeded || objectBudgetExceeded {
-		if in.BudgetProfile == orchestration.SemanticReadBudgetProfile {
-			dimension := "DISTINCT_OBJECTS"
-			if callBudgetExceeded {
-				dimension = "TOOL_CALLS"
-			} else if byteBudgetExceeded {
-				dimension = "RESULT_BYTES"
-			}
-			return orchestration.AdmissionDecision{}, orchestration.NewSemanticReadBudgetExhaustedError(ErrBudgetExhausted, dimension, now, windowEnd)
+		dimension := "DISTINCT_OBJECTS"
+		if callBudgetExceeded {
+			dimension = "TOOL_CALLS"
+		} else if byteBudgetExceeded {
+			dimension = "RESULT_BYTES"
 		}
-		return orchestration.AdmissionDecision{}, &orchestration.WindowBudgetExhaustedError{Cause: ErrBudgetExhausted, WindowEnd: windowEnd}
+		code := "ADMISSION_WINDOW_BUDGET_EXHAUSTED"
+		if in.BudgetProfile == orchestration.SemanticReadBudgetProfile {
+			code = "SEMANTIC_READ_WINDOW_BUDGET_EXHAUSTED"
+		}
+		return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(ErrBudgetExhausted, code, dimension, now, windowEnd)
 	}
 	groupID := uuid.New()
 	err = tx.QueryRow(ctx, `insert into ouf_mcp.retry_equivalence_group(equivalence_group_id,budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) values($1,$2,$3,$4,$5) on conflict(budget_window_id,capability_id,fingerprint_version,semantic_fingerprint) do update set semantic_fingerprint=excluded.semantic_fingerprint returning equivalence_group_id`, groupID, windowID, in.CapabilityID, in.FingerprintVersion, in.SemanticFingerprint).Scan(&groupID)
@@ -242,8 +251,7 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
 	if blocked || attempts >= in.RetryThreshold {
-		_, _ = tx.Exec(ctx, `update ouf_mcp.retry_guard set blocked=true where equivalence_group_id=$1`, groupID)
-		return orchestration.AdmissionDecision{}, orchestration.ErrToolSelectionStall
+		return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(orchestration.ErrToolSelectionStall, "TOOL_SELECTION_STALL", "EQUIVALENT_ATTEMPTS", now, windowEnd)
 	}
 	if in.AttemptID == uuid.Nil {
 		in.AttemptID = uuid.New()
@@ -252,7 +260,8 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID)
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim(service_principal_id,principal_id,tenant_id,owner,capability_id,operation_class,idempotency_key,request_hash,attempt_id,discovery_owner_key)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9,case when $5='ouf.semantic.discovery' and $6='COMMAND' then $7 end)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID)
 	if err == nil {
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion)
 	}
@@ -298,7 +307,7 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',actual_tool_calls=$2,actual_result_bytes=$3,actual_distinct_objects=$4,reconciled_at=transaction_timestamp() where attempt_id=$1`, id, actual.ToolCalls, actual.ResultBytes, actual.DistinctObjects)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID)
+		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),replay_result_id=$4,lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID, outcome.ResultID)
 	}
 	if err != nil {
 		return err

@@ -92,6 +92,7 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 		"alter table ouf_mcp.schema_migration owner to " + applicationRole,
 		"alter table ouf_mcp.audit_event owner to " + applicationRole,
 		"alter table ouf_mcp.tool_attempt owner to " + applicationRole,
+		"alter table ouf_mcp.idempotency_claim owner to " + applicationRole,
 		"alter table ouf_mcp.security_incident owner to " + applicationRole,
 		"alter sequence ouf_mcp.audit_event_sequence_id_seq owner to " + applicationRole,
 		"do $r$ begin if not exists(select 1 from pg_roles where rolname='ouf_mcp_operational_audit_owner') then create role ouf_mcp_operational_audit_owner nologin; end if; end $r$",
@@ -165,8 +166,12 @@ func TestDeployedLineageUpgrade(t *testing.T) {
 	if err = Migrate(ctx, appPool); err != nil {
 		t.Fatalf("ordinary analysis migration: %v", err)
 	}
-	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != 14 {
-		t.Fatalf("analysis migration count %d: %v", count, err)
+	files, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, "select count(*) from ouf_mcp.schema_migration").Scan(&count); err != nil || count != len(files) {
+		t.Fatalf("ordinary migration count %d: %v", count, err)
 	}
 	if err = pool.QueryRow(ctx, "select to_regclass('ouf_mcp.profile_analysis') is not null").Scan(&analysisTable); err != nil || !analysisTable {
 		t.Fatalf("analysis tables missing after ordinary upgrade: %v", err)

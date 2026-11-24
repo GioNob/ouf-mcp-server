@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,7 @@ type publicationDenyAuth struct{ calls atomic.Int32 }
 
 func (a *publicationDenyAuth) Authorize(context.Context, orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
 	a.calls.Add(1)
-	return orchestration.AuthorizationDecision{Allowed: false, DecisionRef: "fixture-denied"}, nil
+	return orchestration.AuthorizationDecision{Allowed: false, DecisionRef: "private-fixture", DecisionCode: "NO_APPLICABLE_GRANT", BundleVersion: 17}, nil
 }
 
 type publicationStore struct {
@@ -100,6 +101,13 @@ func TestPublishedAnalysisDiscoveryDenyBeforeOwnerOrStore(t *testing.T) {
 				result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
 				if err != nil || !result.IsError {
 					t.Fatalf("%s did not fail closed: %v %v", tool, result, err)
+				}
+				if governed {
+					raw := result.Content[0].(*mcp.TextContent).Text
+					var denial acquisitionDenial
+					if json.Unmarshal([]byte(raw), &denial) != nil || denial.ReasonCode != "NO_APPLICABLE_GRANT" || denial.EvaluatedPolicyVersion != 17 || strings.Contains(raw, "private-fixture") {
+						t.Fatal("policy denial lost or disclosed private data", tool, raw)
+					}
 				}
 			}
 			if governed && auth.calls.Load() != 6 {

@@ -3,6 +3,8 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -19,7 +21,7 @@ func registerAnalysisTool(server *mcp.Server, c manifest.Capability, snapshot *m
 	mcp.AddTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.ToolName == "source.analysis.read"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
-			return errorResult("UNAUTHENTICATED", false), nil, nil
+			return actorOrDelegationDenial(i, ok), nil, nil
 		}
 		store, ok := service.Admission.(analysis.Store)
 		if !ok {
@@ -62,11 +64,30 @@ func registerAnalysisTool(server *mcp.Server, c manifest.Capability, snapshot *m
 			if json.Unmarshal(raw, &args) != nil {
 				return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 			}
-			out, err = coordinator.Step(ctx, i.Identity, args.AnalysisID, args.TaskID)
+			var task analysis.Task
+			task, err = coordinator.Step(ctx, i.Identity, args.AnalysisID, args.TaskID)
+			out = task
+			if task.State == "WAITING" && task.Code == "ADMISSION_WINDOW_WAIT" {
+				out = struct {
+					analysis.Task
+					WindowEndsAt      time.Time `json:"windowEndsAt"`
+					RetryAfterSeconds int64     `json:"retryAfterSeconds"`
+				}{task, task.NotBefore, max(0, int64((time.Until(task.NotBefore)+time.Second-1)/time.Second))}
+			}
 		default:
 			return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 		}
 		if err != nil {
+			if errors.Is(err, orchestration.ErrUnauthorized) {
+				return governedCallErrorResult(err), nil, nil
+			}
+			var denied *analysis.OwnerDenial
+			if errors.As(err, &denied) {
+				return ownerDenialResult(&orchestration.Problem{Status: 403, Code: denied.ReasonCode}), nil, nil
+			}
+			if wait := windowAdmissionErrorResult(err); wait != nil {
+				return wait, nil, nil
+			}
 			return errorResult(analysis.SafeError(err), false), nil, nil
 		}
 		body, err := json.Marshal(out)
