@@ -116,13 +116,14 @@ func TestSummaryMappingDecisions(t *testing.T) {
 	const reason = "MAPPING_DECISION_REQUIRED"
 	options := []Object{
 		alternative("source.analysis.read", Object{"analysisId": id}, reason, "Scegli il mapping con le evidenze già lette"),
+		alternative(proposalRead, Object{"analysisId": id, "reviewContextRef": id}, reason, "Controlla le proposte semantiche già preparate per questo file"),
 		alternative("semantic.discovery.candidates", Object{"analysisId": id, "requestId": ref, "includeState": true}, reason, "Consulta i candidati della richiesta indicata"),
 		alternative("source.file.preview", Object{"assetId": ref, "profileId": ref}, reason, "Verifica il significato delle colonne sui valori del file"),
 	}
 	check(options, "pubblicato: 0", "Con candidati: 7", "Senza candidati: 11", "ogni colonna", "requestId", "coppia letta", "semantic.propose", "provenienza", "pubblicati")
 	s.Counts = analysis.Counts{Total: 18, Matched: 7, Zero: 11}
 	s.Hint.RequestID = ""
-	check([]Object{options[0], options[2]}, "pubblicato: 7", "Con candidati: 0", "Senza candidati: 11", "semantic.propose", "motiva")
+	check([]Object{options[0], options[1], options[3]}, "pubblicato: 7", "Con candidati: 0", "Senza candidati: 11", "semantic.propose", "motiva")
 	e.Valid = func(tool string, args Object) bool { return tool == "source.analysis.read" && schemaValid(tool, args) }
 	s.Hint.RequestID = ref
 	check(options[:1])

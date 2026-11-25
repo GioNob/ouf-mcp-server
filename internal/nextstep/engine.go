@@ -27,6 +27,7 @@ const Contract = "ouf.next-step.v1"
 const DefaultWaitMaxSeconds = 3600
 
 type Engine struct {
+	WaitRead            bool // Evaluating the result of a signed internal wait read.
 	PublishedLanguages  []string
 	WaitMaxSeconds      int
 	PollIntervalSeconds int
@@ -271,6 +272,8 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 					value = ref
 				}
 			}
+		case "#batchItem":
+			value = batchItem(obs, input)
 		case "#true":
 			value = true
 		case "#uuid":
@@ -556,6 +559,18 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		return Block("READ_ORIGINAL_RECEIPT", policy.Read, "Consulta la ricevuta del comando originale.")
 	}
+	if batchTool(c.ToolName) {
+		if IsReviewBatch(obs) {
+			return e.reviewBatch(c.ToolName, input, obs)
+		}
+		if input["reviewBatchId"] != nil || input["reviewContextRef"] != nil || input["batchAction"] != nil ||
+			(obs["reviewBatchId"] != nil && obs["items"] != nil) {
+			if c.ToolName == proposalRead && obs["changed"] == false && input["expectedVersion"] != nil {
+				return e.batchUnchanged(input)
+			}
+			return unknownBatch()
+		}
+	}
 	for path, allowed := range policy.Vocabulary {
 		if path == "activationProgress.readiness_phase" && obs["allowedActions"] != nil {
 			continue
@@ -723,6 +738,9 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		code = "OWNER_REQUEST_FAILED"
 	}
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
+	if next := e.reviewBatchFailure(c.ToolName, code, args, obs); next != nil {
+		return next
+	}
 	if next := e.draftFailure(c.ToolName, code, status, args, obs); next != nil {
 		return next
 	}

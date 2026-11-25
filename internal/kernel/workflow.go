@@ -276,7 +276,8 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 }
 
 func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
-	return nextstep.Engine{PublishedLanguages: s.publishedLanguages, WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
+	waitRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
+	return nextstep.Engine{WaitRead: waitRead, PublishedLanguages: s.publishedLanguages, WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
 		t, ok := s.tools[r.Tool]
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
@@ -403,6 +404,23 @@ func hasPagedValues(obs nextstep.Object) bool {
 func (s *workflowServer) boundedResult(result *mcp.CallToolResult, t registeredTool) *mcp.CallToolResult {
 	if body, err := json.Marshal(result); err == nil && len(body) <= t.limit {
 		return result
+	}
+	if !result.IsError {
+		structured, _ := result.StructuredContent.(nextstep.Object)
+		var batch nextstep.Object
+		switch t.capability.ToolName {
+		case "semantic.approval.request", "semantic.proposal.read":
+			batch = structured
+		case "ouf.wait":
+			batch, _ = structured["observation"].(nextstep.Object)
+		}
+		if nextstep.IsReviewBatch(batch) {
+			compact := *result
+			compact.Content = []mcp.Content{&mcp.TextContent{Text: nextstep.ReviewBatchText}}
+			if wire, err := json.Marshal(&compact); err == nil && len(wire) <= t.limit {
+				return &compact
+			}
+		}
 	}
 	const message = "Consulta la risorsa con una lettura circoscritta."
 	read := s.manifest.NextPolicies[t.capability.NextPolicy].Read

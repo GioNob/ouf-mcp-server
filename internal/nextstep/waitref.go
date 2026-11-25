@@ -84,7 +84,7 @@ func (r WaitRef) MatchesResource(obs Object) bool {
 	if obs == nil {
 		return false
 	}
-	for _, field := range []string{"handoffId", "sourceId", "onboardingVersionId", "commandKey", "proposalId"} {
+	for _, field := range []string{"handoffId", "sourceId", "onboardingVersionId", "commandKey", "proposalId", "reviewBatchId"} {
 		if expected, bound := r.Args[field]; bound {
 			if current, present := obs[field]; present {
 				s, ok := current.(string)

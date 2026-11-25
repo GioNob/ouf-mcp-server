@@ -62,6 +62,7 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			}
 		}
 		add("source.analysis.read", Object{"analysisId": id}, "Scegli il mapping con le evidenze già lette")
+		add(proposalRead, Object{"analysisId": id, "reviewContextRef": id}, "Controlla le proposte semantiche già preparate per questo file")
 		if h.RequestID != "" {
 			add("semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}, "Consulta i candidati della richiesta indicata")
 		}
