@@ -168,7 +168,7 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	switch in.CapabilityID {
 	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
-	case "ouf.operations.summary", "ouf.operations.incidents",
+	case "ouf.operations.summary", "ouf.operations.incidents", "ouf.operations.explain",
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
@@ -190,8 +190,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/status"
 	case "ouf.semantic.discovery.candidates":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/candidates"
-	case "urban.object.search":
-		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
+	case "urban.object.search", "urban.object.related_search":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.managed-source.file.profile":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
