@@ -176,7 +176,7 @@ func batchTask(list []Intent, limit int, columns map[string][]int, responseBytes
 
 // The caller supplies a verified, contiguous profile. Work overrides are
 // scoped to named ordinals. Unmentioned columns use the plan's defaults.
-func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, headers []string, work []Work, visibility string, envelopeBytes int) (Plan, error) {
+func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, headers []string, work []Work, visibility string, envelopeBytes int, epoch ...string) (Plan, error) {
 	if len(headers) != profile.ColumnCount || !profile.Valid() || !scope.Valid() || visibility == "" {
 		return Plan{}, ErrInvalid
 	}
@@ -192,7 +192,10 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{ID: AnalysisID(scope, profile), Scope: scope, Profile: profile, Manifest: checksum, Headers: slices.Clone(headers), Visibility: visibility, Seed: Digest(work)}
+	p := Plan{ID: AnalysisID(scope, profile, epoch...), Scope: scope, Profile: profile, Manifest: checksum, Headers: slices.Clone(headers), Visibility: visibility, Seed: Digest(work)}
+	if len(epoch) != 0 {
+		p.Epoch = epoch[0]
+	}
 	var ordered []Intent
 	columns := map[string][]int{}
 	overrides, err := intentOverrides(work, len(headers))
@@ -259,7 +262,7 @@ func ResidualTask(planID string, i Intent, columns []int, maxBytes int64, fallba
 		code = "PUBLISHED_BATCH_UNAVAILABLE"
 	}
 	args, _ := json.Marshal(map[string]any{"intent": i.Text, "preferredLanguages": i.Languages, "requestedArtifactType": i.Type, "idempotencyKey": "analysis:" + key})
-	t := Task{ID: Digest([]any{"semantic.discovery.request", key}), Work: Work{Tool: "semantic.discovery.request", Arguments: args, Columns: columns}, State: "READY", Code: code, MaxBytes: maxBytes, MaxTimeMS: 3000, MaxObjects: 100, OwnerKey: "analysis:" + key}
+	t := Task{ID: Digest([]any{"semantic.discovery.request", key}), Work: Work{Tool: "semantic.discovery.request", Arguments: args, Columns: columns}, State: "READY", Code: code, MaxBytes: maxBytes, MaxTimeMS: 3000, MaxObjects: 100, OwnerIntent: i.ID, OwnerKey: "analysis:" + key}
 	if i.Type == "DATATYPE" {
 		t.State, t.Code = "HELD", "DISCOVERY_TYPE_UNSUPPORTED"
 	}
@@ -297,12 +300,15 @@ func intentOverrides(work []Work, width int) (map[int]Intent, error) {
 
 // Preserve v1 discovery inputs (including their wider intent and type
 // ranges). Contextual T1 inputs still need distinct persisted owner keys.
-func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expected int64, work []Work) (Plan, error) {
+func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expected int64, work []Work, epoch ...string) (Plan, error) {
 	checksum, err := m.Checksum()
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{ID: AnalysisID(scope, profile), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected}
+	p := Plan{ID: AnalysisID(scope, profile, epoch...), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected}
+	if len(epoch) != 0 {
+		p.Epoch = epoch[0]
+	}
 	var legacy, contextual []Work
 	for _, w := range work {
 		var i Intent
@@ -330,7 +336,7 @@ func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expec
 		p.Tasks = append(p.Tasks, ResidualTask(p.ID, i, []int{n}, MaxResultBytes, true))
 	}
 	if len(legacy) > 0 {
-		v, err := Build(scope, profile, m, expected, legacy)
+		v, err := Build(scope, profile, m, expected, legacy, epoch...)
 		if err != nil {
 			return Plan{}, err
 		}

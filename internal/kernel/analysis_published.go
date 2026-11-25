@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"errors"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -30,6 +31,9 @@ func (s *workflowServer) publishedNext(ctx context.Context, tool string, args, o
 		return original
 	}
 	summary, ok, err := s.publishedHint(ctx, id, "", false)
+	if errors.Is(err, analysis.ErrEpochChanged) {
+		return s.engine(ctx).ReplanNext(id, analysis.ErrEpochChanged.Error())
+	}
 	if err != nil {
 		return nextstep.ManualBlock(analysis.SafeError(err), "Verifica lo scope corrente del piano.", "OPERATOR")
 	}
@@ -64,10 +68,13 @@ func (s *workflowServer) publishedHint(ctx context.Context, id, request string, 
 	storeForPlan, _ := s.analysisService.Admission.(analysis.Store)
 	c := analysis.Coordinator{Store: storeForPlan, Service: s.analysisService, Manifest: s.manifest}
 	if _, _, err = c.SummaryAccess(ctx, i.Identity); err == nil {
+		if err = c.CheckEpoch(ctx, i.Identity, summary.Epoch); err != nil {
+			return summary, true, err
+		}
 		if step {
 			err = c.CheckStepScope(ctx, i.Identity, id, checksum, summary.Visibility)
 		} else {
-			err = c.CheckPublishedScope(ctx, i.Identity, summary.Visibility)
+			err = c.ScopeError(ctx, i.Identity, id, checksum, c.CheckPublishedScope(ctx, i.Identity, summary.Visibility))
 		}
 	}
 	return summary, true, err

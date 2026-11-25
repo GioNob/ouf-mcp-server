@@ -6,13 +6,15 @@ import (
 	"errors"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	manifestpkg "github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/jackc/pgx/v5"
 )
 
 func publishedMetadata(ctx context.Context, tx pgx.Tx, v *analysis.View) error {
-	return tx.QueryRow(ctx, `select coalesce(p.seed_digest::text,''),coalesce(p.visibility_digest::text,''),coalesce(p.compatibility_reason,'')
+	return tx.QueryRow(ctx, `select coalesce(p.seed_digest::text,''),coalesce(p.visibility_digest::text,''),coalesce(p.compatibility_reason,''),coalesce(p.stop_reason,''),
+		coalesce((select profile->>'policyEpoch' from ouf_mcp.profile_analysis where analysis_id=$1),'')
 		from (values (1)) dummy(n) left join ouf_mcp.analysis_published_plan p on p.analysis_id=$1`, v.ID).
-		Scan(&v.Seed, &v.Visibility, &v.Compatibility)
+		Scan(&v.Seed, &v.Visibility, &v.Compatibility, &v.StopReason, &v.Epoch)
 }
 
 func (s *Store) StopPublished(ctx context.Context, scope analysis.Scope, id, manifest, visibility string) error {
@@ -54,8 +56,20 @@ type publishedProjection struct {
 	Next    string           `json:"next_tool"`
 }
 
+// Published root batches partition the columns. Once a batch finishes, any
+// still dormant descendant in its columns can be discarded. A reproduced
+// split will generate its own children from its fresh result.
+func discardAwaitingChildren(ctx context.Context, tx pgx.Tx, id string, columns []int) error {
+	_, err := tx.Exec(ctx, `delete from ouf_mcp.profile_analysis_task where analysis_id=$1
+		and task->>'awaitParent'='true' and ($2::int[] is null or to_jsonb($2::int[]) @> (task->'columns'))`, id, columns)
+	return err
+}
+
 func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f analysis.Finish) error {
 	if f.StopScope {
+		if err := discardAwaitingChildren(ctx, tx, id, nil); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `update ouf_mcp.analysis_published_plan set stop_reason=$2 where analysis_id=$1`, id, t.Code)
 		if err != nil {
 			return err
@@ -104,7 +118,7 @@ func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f
 	if len(children) > 0 {
 		for index := range children {
 			child := &children[index]
-			child.Visibility = t.Visibility
+			child.Visibility, child.Epoch = t.Visibility, t.Epoch
 			if child.State == "HELD" {
 				project(child.Columns, analysis.Outcome{State: "BLOCKED", Reason: child.Code}, "")
 			}
@@ -114,8 +128,10 @@ func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f
 			return err
 		}
 		_, err = tx.Exec(ctx, `with added as (
-		  insert into ouf_mcp.profile_analysis_task(analysis_id,task_id,task)
+		  insert into ouf_mcp.profile_analysis_task as existing(analysis_id,task_id,task)
 		  select $1,child->>'taskId',child from jsonb_array_elements($2::jsonb) with ordinality as v(child,n) order by n
+		  on conflict (analysis_id,task_id) do update set task=excluded.task
+		  where existing.task->>'awaitParent'='true'
 		  returning task_id,task
 		), assignments as (
 		  select task_id,n::int as ordinal,(task->>'tool'=$4) as published_first from added cross join lateral jsonb_array_elements_text(task->'columns') cols(n)
@@ -128,6 +144,9 @@ func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f
 		if _, err = tx.Exec(ctx, `update ouf_mcp.profile_analysis set revision=revision+1 where analysis_id=$1`, id); err != nil {
 			return err
 		}
+	}
+	if err := discardAwaitingChildren(ctx, tx, id, t.Columns); err != nil {
+		return err
 	}
 	if len(projections) == 0 {
 		return nil
@@ -147,15 +166,15 @@ func (s *Store) PublishedHint(ctx context.Context, scope analysis.Scope, id, man
 	var out analysis.Summary
 	var bound bool
 	err := s.pool.QueryRow(ctx, `select m.visibility_digest,h.total,h.pending,h.blocked,h.matched,h.ready,h.zero_count,h.stopped,
-	coalesce(c.next_tool,''),coalesce(c.task_id,''),coalesce(c.request_id::text,''),m.stop_reason,
+	coalesce(c.next_tool,''),coalesce(c.task_id,''),coalesce(c.request_id::text,''),m.stop_reason,coalesce(p.profile->>'policyEpoch',''),
 	($6='' or exists(select from ouf_mcp.analysis_column where analysis_id=p.analysis_id and request_id=nullif($6,'')::uuid))
 	from ouf_mcp.analysis_published_plan m join ouf_mcp.profile_analysis p using(analysis_id)
 	cross join lateral (select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id order by seq desc limit 1) h
 	left join lateral (select next_tool,task_id,request_id from ouf_mcp.analysis_column
 	where analysis_id=p.analysis_id and next_tool<>'' order by published_first desc,ordinal limit 1) c on true
-	where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, manifest, request).Scan(&out.Visibility, &out.Counts.Total, &out.Counts.Pending, &out.Counts.Blocked,
-		&out.Counts.Matched, &out.Counts.Ready, &out.Counts.Zero, &out.Stopped, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Reason, &bound)
+	where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[])`,
+		id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), request).Scan(&out.Visibility, &out.Counts.Total, &out.Counts.Pending, &out.Counts.Blocked,
+		&out.Counts.Matched, &out.Counts.Ready, &out.Counts.Zero, &out.Stopped, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Reason, &out.Epoch, &bound)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, false, nil
 	}

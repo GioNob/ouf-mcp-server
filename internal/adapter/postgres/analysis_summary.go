@@ -8,6 +8,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	manifestpkg "github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -117,7 +118,7 @@ func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, n
 		return savePublished(ctx, tx, id, t, analysis.Finish{})
 	}
 	if t.State == "HELD" {
-		if t.Code == "OWNER_AUTHORIZATION_DENIED" || t.Code == "OWNER_REQUEST_REJECTED" || t.Code == "RETRY_BUDGET_EXHAUSTED" || t.Code == "AUTHORIZATION_DENIED" {
+		if orchestration.SafeDenialReason(t.Code, "") != "" || t.Code == "OWNER_AUTHORIZATION_DENIED" || t.Code == "OWNER_REQUEST_REJECTED" || t.Code == "RETRY_BUDGET_EXHAUSTED" || t.Code == "AUTHORIZATION_DENIED" {
 			return projectOutcome(ctx, tx, id, t.Columns, "", analysis.Outcome{State: "BLOCKED", Reason: t.Code}, "")
 		}
 		return projectOutcome(ctx, tx, id, t.Columns, "", analysis.Outcome{State: "PENDING"}, "")
@@ -227,7 +228,16 @@ func projectDiscovery(ctx context.Context, tx pgx.Tx, id, tool, request string, 
 	return projectOutcome(ctx, tx, id, nil, request, o, next)
 }
 
-const summaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome
+const summaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome` + summaryVersionsSQL
+
+const deniedSummaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome
+	|| case when v.outcome->>'state'='BLOCKED' then jsonb_strip_nulls(jsonb_build_object('policyVersion',
+	coalesce((select t.task->'policyVersion' from ouf_mcp.analysis_column c join ouf_mcp.profile_analysis_task t using(analysis_id,task_id)
+	where c.analysis_id=$1 and c.ordinal=n and t.task->>'code'=v.outcome->>'reasonCode'),
+	(select t.task->'policyVersion' from ouf_mcp.analysis_published_plan p join ouf_mcp.profile_analysis_task t using(analysis_id)
+	where p.analysis_id=$1 and p.stop_reason=v.outcome->>'reasonCode' and t.task->>'code'=p.stop_reason order by t.ordinal limit 1)))) else '{}'::jsonb end` + summaryVersionsSQL
+
+const summaryVersionsSQL = `
 	from generate_series($2::int+1,least($3::int-1,$2::int+$4::int)) n
 	cross join lateral (select seq,outcome from ouf_mcp.analysis_column_version
 	where analysis_id=$1 and ordinal=n and seq<=$5 order by seq desc limit 1) v order by n`
@@ -267,12 +277,12 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	defer tx.Rollback(ctx)
 	c := &out.Counts
 	err = scanSummaryRow(ctx, tx, &out, `select h.seq,h.total,h.matched,h.ready,h.zero_count,h.blocked,h.pending,h.onboarding,h.stopped,
-		case when h.integrity_hold then 'ANALYSIS_PROFILE_CHANGED' else '' end,
-		p.profile->>'assetId',p.profile->>'profileId',p.revision,coalesce(pub.visibility_digest::text,'')
+		case when h.integrity_hold then 'ANALYSIS_PROFILE_CHANGED' else coalesce(pub.stop_reason,'') end,
+		p.profile->>'assetId',p.profile->>'profileId',p.revision,coalesce(pub.visibility_digest::text,''),coalesce(p.profile->>'policyEpoch','')
 		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_published_plan pub using(analysis_id) cross join lateral
 		(select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id and seq <= $6 order by seq desc limit 1) h
-		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum in ($5,nullif($7,'')::char(64))`,
-		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifest, pos.Seq, manifestpkg.AnalysisPredecessor(manifest)}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility)
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[])`,
+		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), pos.Seq}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility, &out.Epoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, analysis.ErrScope
 	}
@@ -298,7 +308,7 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 			return out, analysis.ErrProfile
 		}
 		out.Hint.Header = header
-	} else if out.Stopped {
+	} else if out.Stopped || out.Hint.Reason != "" {
 		if out.Hint.Reason == "" {
 			out.Hint.Reason = "OUTCOME_REQUIRES_RECONCILIATION"
 		}
@@ -314,7 +324,11 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		return out, err
 	}
 	if page {
-		rows, err := tx.Query(ctx, summaryPageSQL, id, pos.Last, c.Total, pos.Limit, out.Seq)
+		query := summaryPageSQL
+		if c.Blocked > 0 {
+			query = deniedSummaryPageSQL
+		}
+		rows, err := tx.Query(ctx, query, id, pos.Last, c.Total, pos.Limit, out.Seq)
 		if err != nil {
 			return out, err
 		}

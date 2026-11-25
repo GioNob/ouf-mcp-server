@@ -4,13 +4,15 @@ package manifest
 
 //go:generate go run generate_analysis_compatibility.go
 
-// Only the three approved batch installation states may resume an ea4033e plan.
-func AnalysisPredecessor(current string) string {
+// Accept the matching predecessor publication state and its approved legacy plan.
+func AnalysisManifests(current string) []string {
 	switch current {
-	case "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa",
-		"42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f",
-		"e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab":
-		return "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"
+	case "72dfa9eb2d9096d40b865a66145e24b3c5090eb4f369576da0a7b3ecc72ff6f0":
+		return []string{current, "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa", "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"}
+	case "3db02a3707b990bf69655d092f23a454c71e0f826a5709bc534a16cb172eb252":
+		return []string{current, "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f", "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"}
+	case "bcc1edf5c92866e8b0e287f4741b2e4e2165b1f203fde90891ca765d8c47c458":
+		return []string{current, "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab", "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"}
 	}
-	return ""
+	return []string{current}
 }

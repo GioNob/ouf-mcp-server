@@ -6,6 +6,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/google/uuid"
 )
 
 func TestSummaryNextAtWorkflowBoundaries(t *testing.T) {
@@ -60,5 +61,35 @@ func TestSummaryNextAtWorkflowBoundaries(t *testing.T) {
 	s.Stopped = true
 	if n := e.SummaryNext(id, "STATUS", "", s); n["tool"] != "source.analysis.read" {
 		t.Fatal(n)
+	}
+}
+
+func TestPolicyDenialSummary(t *testing.T) {
+	for _, tc := range []struct{ code, actor string }{
+		{"NO_APPLICABLE_GRANT", "HUMAN_THS"},
+		{analysis.ErrEpochChanged.Error(), "HUMAN_THS"},
+		{"OWNER_AUTHORIZATION_DENIED", "HUMAN_THS"},
+		{"SEM_READ_RECEIPT_INVALID", "OPERATOR"},
+		{"SEM_DISCOVERY_RECEIPT_INVALID", "OPERATOR"},
+	} {
+		s := analysis.Summary{Counts: analysis.Counts{Total: 4, Blocked: 4}, Hint: analysis.Hint{Reason: tc.code}}
+		next := (Engine{}).SummaryNext(strings.Repeat("a", 64), "SUMMARY", "", s)
+		if next["reasonCode"] != tc.code || next["actor"] != tc.actor || next["action"] != "BLOCKED" {
+			t.Fatal(next)
+		}
+		alts := next["alternatives"].([]Object)
+		if tc.actor == "HUMAN_THS" {
+			if len(alts) != 3 || alts[0]["action"] != "WAIT_FOR_HUMAN" || alts[1]["arguments"].(Object)["view"] != "ROLES" || alts[2]["tool"] != "source.analysis.plan" {
+				t.Fatal(alts)
+			}
+			args := alts[2]["arguments"].(Object)
+			key, err := uuid.Parse(args["commandKey"].(string))
+			if args["replanOf"] != strings.Repeat("a", 64) || len(args) != 2 || err != nil || key.Version() != 4 {
+				t.Fatal(args)
+			}
+		}
+		if tc.actor == "OPERATOR" && (len(alts) != 1 || alts[0]["tool"] != nil) {
+			t.Fatal(alts)
+		}
 	}
 }

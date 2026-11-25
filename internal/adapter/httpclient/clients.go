@@ -285,13 +285,29 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		if replacingAsset && res.StatusCode == http.StatusServiceUnavailable {
 			p.Code = "SOURCE_REVIEW_READ_REQUIRED"
 		} else {
-			_ = json.Unmarshal(payload, &p)
+			p = decodeOwnerProblem(payload, res.StatusCode)
 		}
 		p.RetryAfter = res.Header.Get("Retry-After")
 		p.Status = res.StatusCode
 		out.Problem = &p
 	}
 	return out, nil
+}
+
+func decodeOwnerProblem(payload []byte, status int) orchestration.Problem {
+	var p orchestration.Problem
+	var problem struct {
+		*orchestration.Problem
+		Version json.RawMessage `json:"policyVersion"`
+	}
+	problem.Problem = &p
+	if err := json.Unmarshal(payload, &problem); err == nil && status == http.StatusForbidden {
+		var version *int64
+		if json.Unmarshal(problem.Version, &version) == nil && version != nil && *version >= 0 {
+			p.PolicyVersion = version
+		}
+	}
+	return p
 }
 
 func governed(raw string) (*url.URL, error) {

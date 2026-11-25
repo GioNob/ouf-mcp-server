@@ -58,10 +58,26 @@ func (c Coordinator) CheckPublishedScope(ctx context.Context, i orchestration.Id
 	return nil
 }
 
+// An owned predecessor plan may have no epoch tag. Only a checked historical
+// batch decision can distinguish an epoch change from other visibility drift.
+func (c Coordinator) ScopeError(ctx context.Context, i orchestration.Identity, id, manifest string, err error) error {
+	if !errors.Is(err, ErrScope) || c.Store == nil {
+		return err
+	}
+	view, readErr := c.Store.ReadAnalysis(ctx, IdentityScope(i), id, manifest, 0, 1)
+	if readErr != nil {
+		return readErr
+	}
+	if epochErr := c.CheckEpoch(ctx, i, view.Epoch); epochErr != nil {
+		return epochErr
+	}
+	return err
+}
+
 // A current denial while attempting a public step stops workers in the
 // enrolled plan, including workers that previously obtained a task fence.
 func (c Coordinator) CheckStepScope(ctx context.Context, i orchestration.Identity, id, manifest, visibility string) error {
-	err := c.CheckPublishedScope(ctx, i, visibility)
+	err := c.ScopeError(ctx, i, id, manifest, c.CheckPublishedScope(ctx, i, visibility))
 	if visibility != "" && errors.Is(err, orchestration.ErrUnauthorized) {
 		if s, ok := c.Store.(ScopeStopStore); ok {
 			if e := s.StopPublished(ctx, IdentityScope(i), id, manifest, visibility); e != nil {
@@ -95,6 +111,9 @@ func (c Coordinator) batchFinish(task Task, id string, r orchestration.Result, c
 		if errors.Is(callErr, orchestration.ErrUnauthorized) {
 			f.StopScope = true
 		}
+		if errors.Is(callErr, ErrEpochChanged) {
+			f.Code, f.StopScope = ErrEpochChanged.Error(), true
+		}
 		if errors.Is(callErr, ErrScope) {
 			f.Code = "ANALYSIS_SCOPE_CHANGED"
 			f.StopScope = true
@@ -117,7 +136,7 @@ func (c Coordinator) batchFinish(task Task, id string, r orchestration.Result, c
 	}
 	switch {
 	case p.Status == 403:
-		f.StopScope = true
+		f.StopScope = f.State == "HELD" && f.Code != "RETRY_BUDGET_EXHAUSTED"
 	case p.Status == 502 && p.Code == InvalidOwner:
 		f.Code = InvalidOwner
 	case p.Status == 413 || p.Status == 422:

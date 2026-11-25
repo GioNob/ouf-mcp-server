@@ -149,7 +149,11 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		if err := json.Unmarshal(c.BaseCostEnvelope, &budget); err != nil {
 			t.Fatal(err)
 		}
-		s.tools[c.ToolName] = registeredTool{capability: c, input: resolved, limit: budget.HardMaxResultBytes}
+		decision, err := nextstep.DecisionSchema(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.tools[c.ToolName] = registeredTool{capability: c, input: resolved, decision: decision, limit: budget.HardMaxResultBytes}
 	}
 	for _, c := range snapshot.ToolEligible() {
 		if c.ToolName == "source.file.upload" {
@@ -174,7 +178,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	next := railObject{"action": "CALL_TOOL", "tool": "source.file.upload", "arguments": railObject{}}
 	check := func(tool string, input railObject, result *mcp.CallToolResult) {
 		t.Helper()
-		next = checkNext(t, contract, result)
+		next = checkNext(t, contract, s.validateNext(tool, result))
 		if next["actor"] == "OPERATOR" {
 			t.Fatalf("%s stopped: %v", tool, next)
 		}

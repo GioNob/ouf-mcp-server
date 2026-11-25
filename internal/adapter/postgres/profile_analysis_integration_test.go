@@ -145,9 +145,15 @@ func TestProfileAnalysisFencingAndSharedColumnWork(t *testing.T) {
 	}
 }
 
-type analysisAuth struct{ deny bool }
+type analysisAuth struct {
+	deny    bool
+	version int64
+}
 
-func (a *analysisAuth) Authorize(context.Context, orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+func (a *analysisAuth) Authorize(_ context.Context, r orchestration.AuthorizationRequest) (orchestration.AuthorizationDecision, error) {
+	if a.version != 0 {
+		return orchestration.AuthorizationDecision{Allowed: !a.deny, BundleID: "test", BundleVersion: a.version, DecisionRef: fmt.Sprintf("test:%d:%s", a.version, r.CapabilityID)}, nil
+	}
 	return orchestration.AuthorizationDecision{Allowed: !a.deny, DecisionRef: "analysis-fixture"}, nil
 }
 

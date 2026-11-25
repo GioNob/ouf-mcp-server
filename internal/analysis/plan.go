@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ const MaxRetryAttempts = 128
 
 var ErrInvalid = errors.New("ANALYSIS_INPUT_INVALID")
 var ErrScope = errors.New("ANALYSIS_NOT_FOUND_OR_SCOPE_CHANGED")
+var ErrPolicyUnchanged = errors.New("POLICY_UNCHANGED")
+var ErrEpochChanged = errors.New("ANALYSIS_POLICY_EPOCH_CHANGED")
+var ErrNotFound = errors.New("ANALYSIS_NOT_FOUND")
+var ErrReplanState = errors.New("ANALYSIS_REPLAN_NOT_ALLOWED")
+var ErrKeyReuse = errors.New("IDEMPOTENCY_KEY_REUSE")
 var ErrConflict = errors.New("ANALYSIS_REVISION_CONFLICT")
 var ErrCapacity = errors.New("ANALYSIS_CAPACITY_HELD")
 var ErrUnavailable = errors.New("ANALYSIS_CAPABILITY_INACTIVE")
@@ -66,13 +72,17 @@ type Work struct {
 type Task struct {
 	Compatibility string `json:"compatibilityReason,omitempty"`
 	// Internal plan metadata is omitted from legacy task projections.
-	Groups     map[string][]int `json:"intentOrdinals,omitempty"`
-	OwnerKey   string           `json:"ownerKey,omitempty"`
-	Visibility string           `json:"visibilityDigest,omitempty"`
-	ID         string           `json:"taskId"`
+	AwaitParent bool             `json:"awaitParent,omitempty"`
+	Epoch       string           `json:"policyEpoch,omitempty"`
+	OwnerIntent string           `json:"ownerIntent,omitempty"`
+	Groups      map[string][]int `json:"intentOrdinals,omitempty"`
+	OwnerKey    string           `json:"ownerKey,omitempty"`
+	Visibility  string           `json:"visibilityDigest,omitempty"`
+	ID          string           `json:"taskId"`
 	Work
 	State          string          `json:"state"`
 	Code           string          `json:"code,omitempty"`
+	PolicyVersion  *int64          `json:"policyVersion,omitempty"`
 	Attempts       int             `json:"attempts"`
 	Calls          int64           `json:"calls"`
 	ResultBytes    int64           `json:"resultBytes"`
@@ -102,6 +112,8 @@ type Budget struct {
 	Held                 int   `json:"heldTasks"`
 }
 type View struct {
+	Epoch         string  `json:"-"`
+	StopReason    string  `json:"-"`
 	Visibility    string  `json:"-"`
 	Seed          string  `json:"-"`
 	Compatibility string  `json:"compatibilityReason,omitempty"`
@@ -117,7 +129,9 @@ type View struct {
 	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
 type Plan struct {
-	Visibility, Seed string
+	Epoch, Visibility, Seed   string
+	CommandKey, CommandDigest string
+	Replan                    bool
 	// Headers are owner-verified in ordinal order, only during initial planning.
 	Headers          []string
 	Onboarding       bool
@@ -129,6 +143,7 @@ type Plan struct {
 	Tasks            []Task
 }
 type Finish struct {
+	PolicyVersion          *int64
 	Children               []Task
 	StopScope              bool
 	State, Code, AttemptID string
@@ -155,7 +170,10 @@ func Digest(v any) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
-func AnalysisID(s Scope, p Profile) string {
+func AnalysisID(s Scope, p Profile, epoch ...string) string {
+	if len(epoch) != 0 && epoch[0] != "" {
+		return Digest([]any{ProfileVersion, s, p.AssetID, p.ProfileID, epoch[0]})
+	}
 	// Manifest/conversation/correlation never create a fresh logical analysis.
 	return Digest([]any{ProfileVersion, s, p.AssetID, p.ProfileID})
 }
@@ -174,7 +192,7 @@ func Find(snapshot *manifest.Snapshot, tool string) (manifest.Capability, bool) 
 	}
 	return manifest.Capability{}, false
 }
-func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected int64, work []Work) (Plan, error) {
+func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected int64, work []Work, epoch ...string) (Plan, error) {
 	if !scope.Valid() || !profile.Valid() || expected < 0 || len(work) < 1 || len(work) > MaxPlanBatch {
 		return Plan{}, ErrInvalid
 	}
@@ -182,7 +200,14 @@ func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected i
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{ID: AnalysisID(scope, profile), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected}
+	p := Plan{ID: AnalysisID(scope, profile, epoch...), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected}
+	if len(epoch) != 0 {
+		p.Epoch = epoch[0]
+	}
+	return buildWork(p, snapshot, work)
+}
+
+func buildWork(p Plan, snapshot *manifest.Snapshot, work []Work) (Plan, error) {
 	unique := map[string]int{}
 	for _, w := range work {
 		c, ok := Find(snapshot, w.Tool)
@@ -209,7 +234,12 @@ func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected i
 			if _, exists := value["idempotencyKey"]; exists {
 				return Plan{}, ErrInvalid
 			}
-			value["idempotencyKey"] = "analysis:" + Digest([]any{p.ID, w.Tool, value})
+			intent := value
+			if p.Epoch != "" {
+				intent = maps.Clone(value)
+				delete(intent, "analysisId")
+			}
+			value["idempotencyKey"] = "analysis:" + Digest([]any{p.ID, w.Tool, intent})
 		}
 		var schema jsonschema.Schema
 		if json.Unmarshal(c.InputSchema, &schema) != nil {
@@ -227,7 +257,7 @@ func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected i
 		sort.Ints(w.Columns)
 		columns := w.Columns[:0]
 		for _, n := range w.Columns {
-			if n < 0 || n >= profile.ColumnCount {
+			if n < 0 || n >= p.Profile.ColumnCount {
 				return Plan{}, ErrInvalid
 			}
 			if len(columns) == 0 || columns[len(columns)-1] != n {
@@ -308,7 +338,7 @@ func ValidateID(id string) error {
 	return nil
 }
 func SafeError(err error) string {
-	for _, e := range []error{ErrInvalid, ErrScope, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
+	for _, e := range []error{ErrInvalid, ErrScope, ErrEpochChanged, ErrNotFound, ErrReplanState, ErrKeyReuse, ErrPolicyUnchanged, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()
 		}
