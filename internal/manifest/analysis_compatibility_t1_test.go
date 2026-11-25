@@ -44,5 +44,10 @@ func TestT1DeployedAnalysesStayResumable(t *testing.T) {
 		if !slices.Contains(AnalysisPredecessors(current), t1) {
 			t.Fatalf("%s: T1 deployed manifest %s is not an accepted predecessor of %s", state, t1, current)
 		}
+		// MCP-58N-01: everything the T1 resumes stays resumable, including the
+		// ea4033e analyses that the T1 generator accepted in this state.
+		if !slices.Contains(AnalysisPredecessors(current), "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24") {
+			t.Fatalf("%s: ea4033e manifest accepted by the T1 is not accepted by %s", state, current)
+		}
 	}
 }

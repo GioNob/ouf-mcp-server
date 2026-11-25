@@ -39,7 +39,7 @@ jobs:
                   "$PREDECESSOR_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
                   "$PREDECESSOR_ZIP_SHA256" =~ ^[0-9a-f]{64}$ &&
                   "$PREDECESSOR_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::D-080 requires the MCP_PREDECESSOR_* pins, including MCP_PREDECESSOR_IMAGE_ID from image-id.txt."
+            echo "::error::D-080 requires the predecessor pins of this workflow, including the image ID from image-id.txt."
             exit 1
           fi
           artifact="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$PREDECESSOR_ARTIFACT_ID"
