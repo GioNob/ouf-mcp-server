@@ -381,7 +381,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 			if inputSchema.Properties["analysisId"] != nil {
 				delete(input, "analysisId")
 			}
-			if key, ok := input["commandKey"].(string); ok && c.ToolName == "source.file.profile" {
+			if key, ok := input["commandKey"].(string); ok && (c.ToolName == "source.file.profile" || c.ToolName == "authorization.permissions.propose") {
 				if identity, present := ctx.Value(identityKey{}).(requestIdentity); present {
 					identity.IdempotencyKey = key
 					ctx = context.WithValue(ctx, identityKey{}, identity)
@@ -605,6 +605,15 @@ type readerDiagnostic struct {
 
 // Each Onboarding refusal has its own public diagnostic. Never include the
 // owner's free-form problem detail, even on an internal review failure.
+func permissionApplicationRejection(problem *orchestration.Problem) bool {
+	switch problem.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return problem.Status == http.StatusBadRequest || problem.Status == http.StatusUnprocessableEntity ||
+		(problem.Status >= 400 && problem.Status < 500 && (strings.HasPrefix(problem.Code, "AUTH_") || strings.HasPrefix(problem.Code, "ONB_")))
+}
+
 func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.CallToolResult {
 	out := map[string]any{"code": p.Code, "Status": p.Status}
 	var fields struct {
@@ -613,6 +622,37 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 		SemanticRef     string `json:"semanticRef"`
 	}
 	switch {
+	case tool == "authorization.permissions.propose" && permissionApplicationRejection(p):
+		var rejection struct {
+			ProposalID   string
+			State        string
+			Status       json.RawMessage
+			ApprovalPath string
+			ReviewURL    string
+			ExpiresAt    string
+			Violations   []struct {
+				Role                     string `json:"role,omitempty"`
+				GrantID                  string `json:"grantId,omitempty"`
+				CapabilityID             string `json:"capabilityId,omitempty"`
+				Field                    string `json:"field,omitempty"`
+				MissingResourceAttribute string `json:"missingResourceAttribute,omitempty"`
+			} `json:"violations"`
+		}
+		out["applicationRejection"] = true
+		if json.Unmarshal(body, &rejection) == nil {
+			if rejection.ProposalID != "" {
+				out["proposalId"] = rejection.ProposalID
+				state := rejection.State
+				if state == "" {
+					_ = json.Unmarshal(rejection.Status, &state)
+				}
+				out["state"], out["approvalPath"] = state, rejection.ApprovalPath
+				out["reviewUrl"], out["expiresAt"] = rejection.ReviewURL, rejection.ExpiresAt
+			}
+			if p.Code == "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE" && rejection.Violations != nil {
+				out["violations"] = rejection.Violations
+			}
+		}
 	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_EXECUTION_PROPOSAL_REQUIRED":
 		if json.Unmarshal(body, &fields) != nil {
 			return errorResult("OWNER_PROBLEM_INVALID", false)

@@ -1,6 +1,8 @@
 {
-  "version": "1.17.0-published-batch-v1",
+  "version": "1.17.2-analysis-replan-v1",
   "nextErrors": [
+    {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-", "code": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"}, "action": "BLOCKED", "reason": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE", "actor": "AGENT", "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta."}]},
+    {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-"}, "action": "BLOCKED", "reason": "$code", "actor": "AGENT", "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave."}]},
     {"when": {"code": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare"}, "action": "BLOCKED", "reason": "ONB_EXECUTION_PROPOSAL_REQUIRED", "tool": "source.onboarding.review.prepare", "args": {"analysisId": "@analysisId", "draftAssetRef": "@draftAssetRef", "sourceId": "sourceId|@sourceId", "onboardingVersionId": "onboardingVersionId|@onboardingVersionId", "expectedVersion": "@expectedVersion", "commandKey": "#decisionKey"}, "message": "Completa executionProposal nelle sezioni {missingSections}. In semantic.get leggi semanticId, semanticVersion, revisionId e publicationSetId per i binding, usa quel publicationSetId per semanticPublicationSetRef, segui lo schema del tool per risoluzione e materializzazione UDP e ricava i limiti dai metadati della preview.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create"}, "action": "BLOCKED", "reason": "ONB_SEMANTIC_REF_FORM_INVALID", "tool": "source.onboarding.create", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi semanticRefs alla posizione indicata da index usando semanticId@semanticVersion da semantic.get. Conserva gli altri argomenti e usa la nuova commandKey.", "actor": "AGENT"},
     {"when": {"code": "ONB_SEMANTIC_REF_VERSION_MISMATCH", "tool": "source.onboarding.review.prepare"}, "action": "CALL_TOOL", "reason": "ONB_SEMANTIC_REF_VERSION_MISMATCH", "tool": "source.onboarding.read", "args": {"analysisId": "@analysisId", "sourceId": "@sourceId", "onboardingVersionId": "@onboardingVersionId"}},
@@ -216,7 +218,7 @@
       "read": "authorization.proposal.read",
       "rules": [
         {"when": {"state|status": "PENDING|PENDING_REVIEW"}, "action": "WAIT_FOR_HUMAN", "reason": "GRANT_REVIEW", "tool": "authorization.proposal.read", "args": {"proposalId": "proposalId|@proposalId"}, "decision": "GRANT_PERMISSION"},
-        {"when": {"state|status": "APPROVED|PUBLISHED|REJECTED|EXPIRED"}, "action": "BLOCKED", "reason": "CHECK_GRANTS", "tool": "authorization.permissions.read", "message": "Verifica i permessi effettivi prima di riprendere."}
+        {"when": {"state|status": "APPROVED|PUBLISHED|REJECTED|EXPIRED"}, "action": "BLOCKED", "reason": "CHECK_GRANTS", "tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Verifica i permessi effettivi prima di riprendere."}
       ]
     },
     "urban.object.related_search": {
@@ -1549,6 +1551,7 @@
           "reason"
         ],
         "properties": {
+          "commandKey": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
           "operation": {
             "enum": [
               "UPSERT",
@@ -1992,6 +1995,7 @@
               "grantId"
             ],
             "properties": {
+              "commandKey": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
               "operation": {
                 "enum": [
                   "UPSERT",
@@ -2439,6 +2443,7 @@
               "roleCatalogue"
             ],
             "properties": {
+              "commandKey": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
               "operation": {
                 "enum": [
                   "UPSERT",
@@ -6929,13 +6934,12 @@
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "assetId",
-          "profileId",
-          "expectedRevision",
-          "work"
+        "oneOf": [
+          {"required": ["assetId", "profileId", "expectedRevision", "work"], "not": {"required": ["replanOf"]}},
+          {"required": ["replanOf", "commandKey"], "maxProperties": 2}
         ],
         "properties": {
+          "replanOf": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "commandKey": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
           "assetId": {
             "type": "string",
@@ -7139,6 +7143,7 @@
                   "state": {
                     "const": "BLOCKED"
                   },
+                  "policyVersion": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
                   "reasonCode": {
                     "type": "string",
                     "pattern": "^[A-Z][A-Z0-9_]{2,79}$"

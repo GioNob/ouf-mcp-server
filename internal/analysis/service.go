@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 type Coordinator struct {
+	CommandKey      string
 	Store           Store
 	Service         *orchestration.Service
 	Manifest        *manifest.Snapshot
@@ -27,23 +29,28 @@ func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, ca
 	return err
 }
 func (c Coordinator) authorization(ctx context.Context, i orchestration.Identity, cap manifest.Capability) (string, error) {
+	d, err := c.decision(ctx, i, cap)
+	return d.DecisionRef, err
+}
+
+func (c Coordinator) decision(ctx context.Context, i orchestration.Identity, cap manifest.Capability) (orchestration.AuthorizationDecision, error) {
 	if i.Delegation == "" {
-		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
+		return orchestration.AuthorizationDecision{}, &orchestration.AuthorizationDeniedError{ReasonCode: "DELEGATION_REQUIRED"}
 	}
 	if i.ActorType != "HUMAN" {
-		return "", &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
+		return orchestration.AuthorizationDecision{}, &orchestration.AuthorizationDeniedError{ReasonCode: "ACTOR_NOT_ALLOWED"}
 	}
 	if !IdentityScope(i).Valid() {
-		return "", orchestration.ErrUnauthorized
+		return orchestration.AuthorizationDecision{}, orchestration.ErrUnauthorized
 	}
 	d, e := c.Service.Auth.Authorize(ctx, orchestration.AuthorizationRequest{Identity: i, Resource: orchestration.ResourceContext{ResourceType: "capability", TenantID: i.TenantID}, CapabilityID: cap.RequiredAuthorization, Owner: cap.Owner, OperationClass: cap.OperationClass})
 	if e != nil {
-		return "", e
+		return orchestration.AuthorizationDecision{}, e
 	}
 	if !d.Allowed || d.DecisionRef == "" {
-		return "", &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
+		return orchestration.AuthorizationDecision{}, &orchestration.AuthorizationDeniedError{ReasonCode: d.DecisionCode, PolicyVersion: d.BundleVersion, CapabilityID: cap.RequiredAuthorization}
 	}
-	return d.DecisionRef, nil
+	return d, nil
 }
 func (c Coordinator) check(ctx context.Context, i orchestration.Identity) (string, error) {
 	preview, ok := Find(c.Manifest, "source.file.preview")
@@ -55,8 +62,45 @@ func (c Coordinator) check(ctx context.Context, i orchestration.Identity) (strin
 	}
 	return c.Manifest.Checksum()
 }
+func decisionEpoch(d orchestration.AuthorizationDecision) string {
+	if d.BundleID == "" && d.BundleVersion == 0 {
+		return ""
+	}
+	return Digest([]any{d.BundleID, d.BundleVersion})
+}
+
+func (c Coordinator) Epoch(ctx context.Context, i orchestration.Identity) (string, error) {
+	preview, ok := Find(c.Manifest, "source.file.preview")
+	if !ok || preview.PublicationState != "ACTIVE" {
+		return "", ErrUnavailable
+	}
+	d, err := c.decision(ctx, i, preview)
+	return decisionEpoch(d), err
+}
+
+func (c Coordinator) CheckEpoch(ctx context.Context, i orchestration.Identity, stored string) error {
+	if stored == "" {
+		return nil
+	}
+	current, err := c.Epoch(ctx, i)
+	if err == nil && current != stored {
+		return ErrEpochChanged
+	}
+	return err
+}
+
+// PlanEpochError identifies the owned analysis recorded by a successful plan command.
+type PlanEpochError struct{ AnalysisID string }
+
+func (e *PlanEpochError) Error() string { return ErrEpochChanged.Error() }
+func (e *PlanEpochError) Unwrap() error { return ErrEpochChanged }
+
 func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, profile string, expected int64, work []Work) (View, error) {
-	checksum, e := c.check(ctx, i)
+	epoch, e := c.Epoch(ctx, i)
+	if e != nil {
+		return View{}, e
+	}
+	checksum, e := c.Manifest.Checksum()
 	if e != nil {
 		return View{}, e
 	}
@@ -68,8 +112,55 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	// Otherwise eight batches for 1024 columns repeat the same preview query and
 	// hit its equivalent-query guard even though they describe different work.
 	scope := IdentityScope(i)
-	logicalID := AnalysisID(scope, Profile{AssetID: asset, ProfileID: profile})
+	pin := Profile{AssetID: asset, ProfileID: profile}
+	logicalID := AnalysisID(scope, pin, epoch)
+	checkReceipt := func(v View) (View, error) {
+		err := c.CheckPublishedScope(ctx, i, v.Visibility)
+		if (err == nil || errors.Is(err, ErrScope)) && v.Epoch != "" && v.Epoch != epoch {
+			return View{}, &PlanEpochError{AnalysisID: v.ID}
+		}
+		return v, err
+	}
+	var intent string
+	if c.CommandKey != "" {
+		intent = Digest([]any{asset, profile, expected, work})
+		if receipts, ok := c.Store.(interface {
+			LookupPlanCommand(context.Context, Scope, string, string, string) (View, bool, error)
+		}); ok {
+			view, found, err := receipts.LookupPlanCommand(ctx, scope, checksum, c.CommandKey, intent)
+			if err != nil {
+				return view, err
+			}
+			if found {
+				return checkReceipt(view)
+			}
+		}
+	}
+	save := func(p Plan) (View, error) {
+		p.CommandKey, p.CommandDigest = c.CommandKey, intent
+		v, err := c.Store.PlanAnalysis(ctx, p)
+		if err == nil && c.CommandKey != "" && v.ID != p.ID {
+			// A concurrent command may have recorded its receipt after lookup.
+			return checkReceipt(v)
+		}
+		return v, err
+	}
 	retained, readErr := c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 1)
+	if errors.Is(readErr, ErrScope) && epoch != "" {
+		legacyID := AnalysisID(scope, pin)
+		old, err := c.Store.ReadAnalysis(ctx, scope, legacyID, checksum, 0, 1)
+		if err != nil && !errors.Is(err, ErrScope) {
+			return View{}, err
+		}
+		if err == nil && old.Visibility != "" {
+			err = c.CheckPublishedScope(ctx, i, old.Visibility)
+			if err == nil {
+				retained, logicalID, readErr = old, legacyID, nil
+			} else if !errors.Is(err, ErrScope) {
+				return View{}, err
+			}
+		}
+	}
 	if readErr == nil {
 		if retained.Seed != "" {
 			if err := c.CheckPublishedScope(ctx, i, retained.Visibility); err != nil {
@@ -78,17 +169,27 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 			if expected != 0 || retained.Seed != Digest(work) {
 				return View{}, ErrConflict
 			}
+			if c.CommandKey != "" {
+				p := Plan{ID: logicalID, Scope: scope, Profile: retained.Profile, Manifest: checksum, Seed: retained.Seed, Visibility: retained.Visibility, Epoch: epoch}
+				if logicalID == AnalysisID(scope, pin) {
+					p.Epoch = ""
+				}
+				return save(p)
+			}
+			if PermissionHold(retained.StopReason) {
+				return View{}, ErrPolicyUnchanged
+			}
 			return c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 128)
 		}
 		build := Build
 		if cap, ok := Find(c.Manifest, BatchTool); onlyDiscovery(work) && (!ok || cap.PublicationState == "INACTIVE") {
 			build = buildWithoutBatch
 		}
-		plan, buildErr := build(scope, retained.Profile, c.Manifest, expected, work)
+		plan, buildErr := build(scope, retained.Profile, c.Manifest, expected, work, epoch)
 		if buildErr != nil {
 			return View{}, buildErr
 		}
-		return c.Store.PlanAnalysis(ctx, plan)
+		return save(plan)
 	}
 	if !errors.Is(readErr, ErrScope) || expected != 0 {
 		return View{}, readErr
@@ -108,7 +209,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	var headers []string
 	checkpoints, durable := c.Store.(PreviewStore)
 	if durable {
-		profilePin, headers, e = checkpoints.PreviewProgress(ctx, scope, logicalID, checksum)
+		profilePin, headers, e = checkpoints.PreviewProgress(ctx, scope, logicalID, checksum, epoch)
 		if e != nil {
 			return View{}, e
 		}
@@ -121,7 +222,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 			return View{}, e
 		}
 		if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-			return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID}
+			return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID, PolicyVersion: r.Problem.PolicyVersion}
 		}
 		if r.Problem != nil && (r.Problem.Status == 503 || r.Problem.Status == 429) {
 			return View{}, ErrUnavailable
@@ -135,7 +236,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		}
 		profilePin = page
 		if durable {
-			if e = checkpoints.SavePreviewPage(ctx, scope, logicalID, checksum, page, offset, names); e != nil {
+			if e = checkpoints.SavePreviewPage(ctx, scope, logicalID, checksum, page, offset, names, epoch); e != nil {
 				return View{}, e
 			}
 		}
@@ -143,7 +244,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	}
 	batch, available := Find(c.Manifest, BatchTool)
 	if onlyDiscovery(work) && available && batch.PublicationState == "ACTIVE" {
-		visibility, decision, err := c.publishedScope(ctx, i, batch)
+		decision, err := c.decision(ctx, i, batch)
 		if err != nil {
 			return View{}, err
 		}
@@ -151,12 +252,15 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		if err != nil {
 			return View{}, err
 		}
-		p, err := BuildPublished(scope, profilePin, c.Manifest, headers, work, visibility, envelopeSize(i, batch, decision, limits.ResponseBytes))
+		if decisionEpoch(decision) != epoch {
+			return View{}, ErrEpochChanged
+		}
+		p, err := BuildPublished(scope, profilePin, c.Manifest, headers, work, visibilityDigest(i, decision), envelopeSize(i, batch, decision.DecisionRef, limits.ResponseBytes), epoch)
 		if err != nil {
 			return View{}, err
 		}
 		p.Onboarding = c.Onboarding
-		return c.Store.PlanAnalysis(ctx, p)
+		return save(p)
 	}
 	if onlyDiscovery(work) && available && batch.PublicationState == "REVOKED" {
 		return View{}, ErrUnavailable
@@ -165,12 +269,12 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	if onlyDiscovery(work) {
 		build = buildWithoutBatch
 	}
-	plan, e := build(IdentityScope(i), profilePin, c.Manifest, expected, work)
+	plan, e := build(IdentityScope(i), profilePin, c.Manifest, expected, work, epoch)
 	if e != nil {
 		return View{}, e
 	}
 	plan.Headers, plan.Onboarding = headers, c.Onboarding
-	return c.Store.PlanAnalysis(ctx, plan)
+	return save(plan)
 }
 func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id string, offset, limit int) (View, error) {
 	checksum, e := c.check(ctx, i)
@@ -180,6 +284,11 @@ func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id stri
 	v, err := c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
 	if err == nil {
 		err = c.CheckPublishedScope(ctx, i, v.Visibility)
+		if errors.Is(err, ErrScope) && errors.Is(c.CheckEpoch(ctx, i, v.Epoch), ErrEpochChanged) {
+			// ReadAnalysis projects metadata only. Evidence and execution
+			// remain subject to their original visibility fence.
+			err = nil
+		}
 	}
 	return v, err
 }
@@ -202,6 +311,9 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	}
 	// A previously saved result is historical evidence. Even its reread requires
 	// current authorization for the underlying semantic capability.
+	if e = c.CheckEpoch(ctx, i, metadata.Epoch); e != nil {
+		return Task{}, e
+	}
 	if e = c.CheckStepScope(ctx, i, id, checksum, metadata.Visibility); e != nil {
 		return Task{}, e
 	}
@@ -222,7 +334,17 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	if task.OwnerKey != "" {
 		dispatchKey = task.OwnerKey
 	}
-	var checkDecision func(orchestration.AuthorizationDecision) error
+	var bundleVersion int64
+	checkDecision := func(d orchestration.AuthorizationDecision) error {
+		bundleVersion = d.BundleVersion
+		if task.Epoch != "" && task.Epoch != decisionEpoch(d) {
+			return ErrEpochChanged
+		}
+		if task.Tool == BatchTool && visibilityDigest(i, d) != task.Visibility {
+			return ErrScope
+		}
+		return nil
+	}
 	var maxRequest int
 	if task.Tool == BatchTool {
 		l, err := PublishedLimits(cap)
@@ -230,12 +352,6 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 			return Task{}, err
 		}
 		maxRequest = l.RequestBytes
-		checkDecision = func(d orchestration.AuthorizationDecision) error {
-			if visibilityDigest(i, d) != task.Visibility {
-				return ErrScope
-			}
-			return nil
-		}
 	}
 	r, callErr := c.Service.Call(ctx, orchestration.Invocation{
 		Identity: i, CapabilityID: cap.CapabilityID, Owner: cap.Owner, OperationClass: cap.OperationClass,
@@ -259,6 +375,9 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		f.WindowWait = true
 		f.ElapsedMS = 0
 	} else if callErr != nil {
+		if errors.Is(callErr, ErrEpochChanged) {
+			f.Code = ErrEpochChanged.Error()
+		}
 		if errors.Is(callErr, orchestration.ErrUnauthorized) {
 			f.Code = "AUTHORIZATION_DENIED"
 		}
@@ -268,9 +387,10 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		f.Calls = 1
 		f.Code = "OWNER_REQUEST_REJECTED"
 		if r.Problem.Status == http.StatusForbidden {
-			f.Code = "OWNER_AUTHORIZATION_DENIED"
+			f.Code = orchestration.SafeDenialReason(r.Problem.Code, "OWNER_AUTHORIZATION_DENIED")
+			f.PolicyVersion = r.Problem.PolicyVersion
 		}
-		if cap.OperationClass == "READ" && (r.Problem.Status == 429 || r.Problem.Status == 503) {
+		if cap.OperationClass == "READ" && (r.Problem.Status == 429 || r.Problem.Status == 503 || transientPolicyDenial(r.Problem, bundleVersion)) {
 			delay := []time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(task.Attempts-1, 4)]
 			delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
 			f.NotBefore = time.Now().Add(delay)
@@ -298,16 +418,41 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	finished, err := c.Store.FinishAnalysisTask(finishCtx, scope, id, taskID, task.Fence, f)
-	if err == nil && errors.Is(callErr, orchestration.ErrUnauthorized) {
+	if err == nil && (errors.Is(callErr, orchestration.ErrUnauthorized) || errors.Is(callErr, ErrEpochChanged)) {
 		return finished, callErr
 	}
-	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-		return finished, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: cap.RequiredAuthorization}
+	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden && f.State == "HELD" && f.Code != "RETRY_BUDGET_EXHAUSTED" {
+		return finished, &OwnerDenial{ReasonCode: f.Code, CapabilityID: cap.RequiredAuthorization, PolicyVersion: f.PolicyVersion}
 	}
 	return finished, err
 }
 
-type OwnerDenial struct{ ReasonCode, CapabilityID string }
+func PermissionReasons() []string {
+	return []string{"NO_APPLICABLE_GRANT", "CAPABILITY_NOT_DECLARED", "SCOPE_MISSING", "ACTOR_NOT_ALLOWED", "EXPLICIT_DENY", "OWNER_AUTHORIZATION_DENIED"}
+}
+
+func PermissionHold(code string) bool {
+	return slices.Contains(PermissionReasons(), code)
+}
+
+func transientPolicyDenial(p *orchestration.Problem, version int64) bool {
+	if p.Status != http.StatusForbidden {
+		return false
+	}
+	switch p.Code {
+	case "STALE_POLICY_BUNDLE", "NO_POLICY_BUNDLE":
+		return true
+	case "ACTOR_NOT_ALLOWED", "CAPABILITY_NOT_DECLARED", "DATA_LABEL_REQUIRED", "EXPLICIT_DENY", "HUMAN_REQUIRED",
+		"NO_APPLICABLE_GRANT", "SCOPE_MISSING", "TENANT_MISMATCH", "SEM_READ_POLICY_DENIED", "SEM_DISCOVERY_POLICY_DENIED":
+		return p.PolicyVersion != nil && *p.PolicyVersion >= 0 && *p.PolicyVersion < version
+	}
+	return false
+}
+
+type OwnerDenial struct {
+	ReasonCode, CapabilityID string
+	PolicyVersion            *int64
+}
 
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 

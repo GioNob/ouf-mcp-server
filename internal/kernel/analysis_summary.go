@@ -22,6 +22,9 @@ func summaryFailure(err error, id string) *mcp.CallToolResult {
 		code = "ANALYSIS_STORE_UNAVAILABLE"
 	}
 	next := nextstep.ManualBlock(code, "Verifica il riferimento e le condizioni di lettura dell’analisi.", "OPERATOR")
+	if errors.Is(err, analysis.ErrEpochChanged) {
+		next = (nextstep.Engine{}).ReplanNext(id, code)
+	}
 	if errors.Is(err, analysis.ErrExpired) {
 		next = nextstep.Object{"contract": nextstep.Contract, "action": "CALL_TOOL", "reasonCode": code,
 			"tool": "source.analysis.read", "arguments": nextstep.Object{"analysisId": id, "view": "SUMMARY"},
@@ -44,7 +47,7 @@ func summaryFailure(err error, id string) *mcp.CallToolResult {
 		status = 400
 	case errors.Is(err, analysis.ErrScope):
 		status = 404
-	case errors.Is(err, analysis.ErrProfile), errors.Is(err, analysis.ErrConflict):
+	case errors.Is(err, analysis.ErrProfile), errors.Is(err, analysis.ErrConflict), errors.Is(err, analysis.ErrEpochChanged):
 		status = 409
 	case errors.Is(err, analysis.ErrExpired):
 		status = 410
@@ -111,7 +114,7 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		return summaryFailure(err, id)
 	}
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
-		return summaryFailure(err, id)
+		return summaryFailure(c.ScopeError(ctx, i, id, checksum, err), id)
 	}
 	if page && pos.Last < 0 {
 		pos.Snapshot = uuid.New()

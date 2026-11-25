@@ -45,7 +45,8 @@ func SafeDenialReason(code, fallback string) string {
 	switch code {
 	case "DELEGATION_REQUIRED", "TENANT_MISMATCH", "CAPABILITY_NOT_DECLARED",
 		"ACTOR_NOT_ALLOWED", "SCOPE_MISSING", "DATA_LABEL_REQUIRED", "HUMAN_REQUIRED",
-		"EXPLICIT_DENY", "NO_APPLICABLE_GRANT":
+		"EXPLICIT_DENY", "NO_APPLICABLE_GRANT", "SEM_READ_RECEIPT_INVALID", "SEM_DISCOVERY_RECEIPT_INVALID",
+		"SEM_READ_POLICY_DENIED", "SEM_DISCOVERY_POLICY_DENIED", "STALE_POLICY_BUNDLE", "NO_POLICY_BUNDLE":
 		return code
 	}
 	return fallback
@@ -161,6 +162,7 @@ type Problem struct {
 	Type, Title, Code, Detail string
 	Status                    int
 	RetryAfter                string
+	PolicyVersion             *int64 `json:"policyVersion,omitempty"`
 }
 type GatewayResponse struct {
 	Status           int

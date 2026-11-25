@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) PreviewProgress(ctx context.Context, scope analysis.Scope, id, manifest string) (analysis.Profile, []string, error) {
+func (s *Store) PreviewProgress(ctx context.Context, scope analysis.Scope, id, manifest string, epoch ...string) (analysis.Profile, []string, error) {
 	var profile analysis.Profile
 	var raw []byte
 	var headers []string
@@ -20,14 +20,14 @@ func (s *Store) PreviewProgress(ctx context.Context, scope analysis.Scope, id, m
 	if errors.Is(err, pgx.ErrNoRows) {
 		return profile, nil, nil
 	}
-	if err == nil && (json.Unmarshal(raw, &profile) != nil || !profile.Valid() || analysis.AnalysisID(scope, profile) != id || len(headers) > profile.ColumnCount) {
+	if err == nil && (json.Unmarshal(raw, &profile) != nil || !profile.Valid() || analysis.AnalysisID(scope, profile, epoch...) != id || len(headers) > profile.ColumnCount) {
 		err = analysis.ErrProfile
 	}
 	return profile, headers, err
 }
 
-func (s *Store) SavePreviewPage(ctx context.Context, scope analysis.Scope, id, manifest string, profile analysis.Profile, offset int, page []string) error {
-	if !scope.Valid() || !profile.Valid() || analysis.AnalysisID(scope, profile) != id ||
+func (s *Store) SavePreviewPage(ctx context.Context, scope analysis.Scope, id, manifest string, profile analysis.Profile, offset int, page []string, epoch ...string) error {
+	if !scope.Valid() || !profile.Valid() || analysis.AnalysisID(scope, profile, epoch...) != id ||
 		offset < 0 || len(page) == 0 || len(page) > 128 || offset+len(page) > profile.ColumnCount {
 		return analysis.ErrProfile
 	}
@@ -49,7 +49,7 @@ func (s *Store) SavePreviewPage(ctx context.Context, scope analysis.Scope, id, m
 		return err
 	}
 	// Another planner can commit this same verified prefix first.
-	p, headers, err := s.PreviewProgress(ctx, scope, id, manifest)
+	p, headers, err := s.PreviewProgress(ctx, scope, id, manifest, epoch...)
 	if err != nil {
 		return err
 	}

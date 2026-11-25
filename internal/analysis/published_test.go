@@ -199,3 +199,23 @@ func TestPublishedPackingCountLimit(t *testing.T) { // MCP-50T-03
 		}
 	}
 }
+
+// Different client inputs can materialize identical tasks. The seed hash
+// verifies a candidate input but cannot supply a missing original.
+func TestPublishedTasksLoseOriginalOverrideGrouping(t *testing.T) {
+	scope, p, m := fixture(t, 2)
+	args := json.RawMessage(`{"intent":"name","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)
+	grouped := []Work{{Tool: "semantic.discovery.request", Arguments: args, Columns: []int{0, 1}}}
+	separate := []Work{{Tool: grouped[0].Tool, Arguments: args, Columns: []int{0}}, {Tool: grouped[0].Tool, Arguments: args, Columns: []int{1}}}
+	build := func(work []Work) Plan {
+		plan, err := BuildPublished(scope, p, m, []string{"name", "name"}, work, "test", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	a, b := build(grouped), build(separate)
+	if a.Seed == b.Seed || Digest(a.Tasks) != Digest(b.Tasks) {
+		t.Fatal("expected different seeds and identical stored tasks")
+	}
+}

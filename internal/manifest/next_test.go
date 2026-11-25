@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
@@ -14,6 +16,7 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
+		"source.analysis.plan":              {"(assetId, expectedRevision, profileId, work)", "(commandKey, replanOf)"},
 		"source.analysis.read":              {"(analysisId)", "(analysisId, view=STATUS)", "(analysisId, view=SUMMARY)", "(analysisId, cursor, view=SUMMARY)"},
 		"ouf.operations.incidents":          {"()", "(snapshot=true)", "(cursor)", "(coverage=true, snapshot=true)", "(coverage=true, cursor)", "(resumeFrom)"},
 		"authorization.permissions.read":    {"(view=ROLES)", "(view=CAPABILITIES)", "(subjectId)", "(externalRoleRef)"},
@@ -81,4 +84,42 @@ func TestWaitSchemaAndRuleChecksum(t *testing.T) {
 	if digest == modified {
 		t.Fatal("next policies missing from manifest checksum")
 	}
+}
+
+func TestAnalysisPlanInputFormsAreExclusive(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cap := range m.ToolEligible() {
+		if cap.ToolName != "source.analysis.plan" {
+			continue
+		}
+		var schema jsonschema.Schema
+		if err := json.Unmarshal(cap.InputSchema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		input, err := schema.Resolve(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := strings.Repeat("b", 64)
+		key := "00000000-0000-4000-8000-000000000001"
+		for _, tc := range []struct {
+			args map[string]any
+			want bool
+		}{
+			{map[string]any{"replanOf": id, "commandKey": key}, true},
+			{map[string]any{"replanOf": id}, false},
+			{map[string]any{"replanOf": id, "commandKey": "invalid"}, false},
+			{map[string]any{"replanOf": id, "commandKey": key, "assetId": key}, false},
+			{map[string]any{"replanOf": id, "commandKey": key, "expectedRevision": 0}, false},
+		} {
+			if got := input.Validate(tc.args) == nil; got != tc.want {
+				t.Fatal(tc.args, got)
+			}
+		}
+		return
+	}
+	t.Fatal("missing plan tool")
 }

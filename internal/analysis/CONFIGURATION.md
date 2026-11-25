@@ -64,3 +64,11 @@ La colonna additiva `analysis_column.published_first` e il relativo indice danno
 | MCP-50T-07 | Errori A.3, compatibilità, riapertura della connessione e scadenza del budget |
 | MCP-50T-08 | Path HTTP, busta effettiva e soglia di trasporto |
 | MCP-50T-09 | Migrazione 016 → 017, esecuzione del piano ea4033e e ritorno del predecessore |
+
+### Dinieghi delle letture Semantic
+
+`STALE_POLICY_BUNDLE` e `NO_POLICY_BUNDLE` usano il budget transitorio già previsto per le letture. Lo stesso vale per un diniego di policy con `policyVersion` inferiore alla versione della decisione MCP verificata per l’invio. Il MCP accetta la versione come intero JSON fra 0 e 2⁶³−1. Una versione assente mantiene stabile il diniego di permesso. La ricevuta invalida richiede sempre un operatore. Il checkpoint conserva tentativi e `notBefore`, rispetta `Retry-After` e termina il retry automatico con `RETRY_BUDGET_EXHAUSTED`. Questi casi usano la configurazione esistente.
+
+L’identità del piano include il digest di `BundleID` e `BundleVersion`. Ogni `replanOf` copia gli input persistiti sotto il lock della riga sorgente e crea i task e la ricevuta del comando in una transazione. Restano applicabili i limiti per task, colonne, argomenti e capacità complessiva del piano. La vista storica espone i contatori del piano originale. Per il formato precedente il server verifica l’epoca del lotto dalla decisione di ammissione registrata. I tentativi locali di ripianificazione seguono la retention ordinaria delle ricevute.
+
+Nel nuovo piano i figli derivati restano esclusi dalla vista e dal budget delle chiamate fino alla conferma del lotto padre. La transazione che registra l’esito attiva i figli prodotti dal lotto e scarta gli altri input sospesi nelle sue colonne. Ogni split confermato genera i propri figli quando termina.
