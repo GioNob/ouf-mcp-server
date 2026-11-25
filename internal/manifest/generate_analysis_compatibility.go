@@ -41,9 +41,9 @@ func states(m *manifest.Snapshot) [3]string {
 }
 
 func main() {
-	// The predecessor is the manifest in service (release/d090-t1-mcp, 1.17.0).
+	// The predecessor is the manifest in service (sprint-03/task-59c-onboarding-next, 1.18.0).
 	// Each installation state resumes the plans of the same predecessor state.
-	const predecessor = "4b395686ab1dccb80e37e63d26a8228b472d05ac"
+	const predecessor = "cefa37c8bff1d489d6186feaac2a8a461fa2f582"
 	raw, err := exec.Command("git", "show", predecessor+":internal/manifest/capabilities.json").Output()
 	if err != nil {
 		panic(err)
@@ -52,14 +52,14 @@ func main() {
 	if err := json.Unmarshal(raw, &old); err != nil {
 		panic(err)
 	}
-	if old.Version != "1.17.0-published-batch-v1" {
+	if old.Version != "1.18.0-onboarding-next-v1" {
 		panic("unexpected predecessor manifest")
 	}
 	m, err := manifest.Load()
 	if err != nil {
 		panic(err)
 	}
-	if m.Version != "1.18.0-onboarding-next-v1" {
+	if m.Version != "1.19.0-semantic-review-batch-v1" {
 		panic("unexpected current manifest")
 	}
 	current, previous := states(m), states(&old)
@@ -70,7 +70,7 @@ package manifest
 //go:generate go run generate_analysis_compatibility.go
 
 // Each approved batch installation state resumes a plan of the same state of
-// the 1.17.0 manifest in service (4b39568).
+// the 1.18.0 manifest in service (cefa37c).
 func AnalysisPredecessor(current string) string {
 	switch current {
 	case %q:

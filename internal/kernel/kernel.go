@@ -564,6 +564,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	if result.Replay {
 		return replayResult(c, args, result), nil, nil
 	}
+	if projected := reviewBatchProblem(c.ToolName, result.Problem, result.Body); projected != nil {
+		return projected, nil, nil
+	}
 	if denial := ownerDenialResult(result.Problem, c.RequiredAuthorization); denial != nil {
 		return denial, nil, nil
 	}
@@ -706,6 +709,79 @@ func projectAcquisitionLimit(body []byte, out map[string]any, code string) bool 
 		out["installationMaximum"] = *problem.InstallationMaximum
 	}
 	return true
+}
+
+var batchContextRef = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+// Decode fields independently. Neither public representation may contain raw
+// owner text, even if one of the typed fields is malformed.
+func reviewBatchProblem(tool string, p *orchestration.Problem, body []byte) *mcp.CallToolResult {
+	if p == nil || (tool != "semantic.approval.request" && tool != "semantic.proposal.read") || !strings.HasPrefix(p.Code, "SEM_REVIEW_BATCH_") {
+		return nil
+	}
+	if !onboardingReaderCode.MatchString(p.Code) {
+		return errorResult("OWNER_PROBLEM_INVALID", false)
+	}
+	out := map[string]any{"code": p.Code, "status": p.Status}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return workflowError(out)
+	}
+	readString := func(raw json.RawMessage) string {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return ""
+		}
+		return value
+	}
+	isID := func(id string) bool { return len(id) == 36 && uuid.Validate(id) == nil }
+	version := func(raw json.RawMessage) (int64, bool) {
+		var n *int64
+		if json.Unmarshal(raw, &n) != nil || n == nil || *n < 0 || *n > 1<<53-1 {
+			return 0, false
+		}
+		return *n, true
+	}
+	for _, key := range []string{"reviewBatchId", "successorBatchId", "revisionId", "validationRunId"} {
+		if id := readString(fields[key]); isID(id) {
+			out[key] = id
+		}
+	}
+	if ref := readString(fields["reviewContextRef"]); batchContextRef.MatchString(ref) {
+		out["reviewContextRef"] = ref
+	}
+	if n, ok := version(fields["expectedRowVersion"]); ok {
+		out["expectedRowVersion"] = n
+	}
+	switch typ := readString(fields["artifactType"]); typ {
+	case "CLASS", "PROPERTY", "RELATIONSHIP", "CONCEPT", "VOCABULARY", "DATATYPE", "VALUE_MAP", "ONTOLOGY":
+		out["artifactType"] = typ
+	}
+	switch state := readString(fields["state"]); state {
+	case "COLLECTING", "UNDER_REVIEW", "DECIDED", "EXPIRED", "DISCARDED", "NONE":
+		out["state"] = state
+	}
+	var rows []json.RawMessage
+	if json.Unmarshal(fields["items"], &rows) == nil && rows != nil && len(rows) <= 100 {
+		items := make([]map[string]any, 0, len(rows))
+		for _, raw := range rows {
+			var row map[string]json.RawMessage
+			if json.Unmarshal(raw, &row) != nil {
+				continue
+			}
+			id := readString(row["revisionId"])
+			n, ok := version(row["rowVersion"])
+			if !isID(id) || !ok {
+				continue
+			}
+			switch reason := readString(row["reason"]); reason {
+			case "ROW_VERSION_CHANGED", "VALIDATION_NOT_CURRENT", "NOT_DRAFT", "UNRESOLVED_DEPENDENCY":
+				items = append(items, map[string]any{"revisionId": id, "reason": reason, "rowVersion": n})
+			}
+		}
+		out["items"] = items
+	}
+	return workflowError(out)
 }
 
 // Each Onboarding refusal has its own public diagnostic. Never include the

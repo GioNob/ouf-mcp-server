@@ -73,6 +73,7 @@
         "decisionKind": {
           "enum": [
             "APPROVE_OR_REJECT",
+            "APPROVE_EACH_ROW",
             "RESUME_OR_ABORT",
             "GRANT_PERMISSION",
             "RECHECK",

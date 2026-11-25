@@ -18,6 +18,14 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		"ouf.operations.incidents":          {"()", "(snapshot=true)", "(cursor)", "(coverage=true, snapshot=true)", "(coverage=true, cursor)", "(resumeFrom)"},
 		"authorization.permissions.read":    {"(view=ROLES)", "(view=CAPABILITIES)", "(subjectId)", "(externalRoleRef)"},
 		"authorization.permissions.propose": {"(grantId, operation, reason)", "(operation=REPLACE_ROLES, reason, roleCatalogue)"},
+		"semantic.approval.request": {
+			"(commandKey, expectedRowVersion, revisionId, validationRunId)",
+			"(batchAction=ADD, commandKey, item, reviewContextRef)",
+			"(batchAction=REMOVE, commandKey, item, reviewContextRef)",
+			"(batchAction=SUBMIT, commandKey, reviewBatchId, reviewContextRef)",
+			"(batchAction=RESUBMIT, commandKey, reviewBatchId, reviewContextRef)",
+		},
+		"semantic.proposal.read": {"(commandKey)", "(reviewContextRef)", "(reviewBatchId)"},
 		"semantic.propose": {
 			"(artifactType, authorityRef, commandKey, definition, labels, localName, namespace, ownerRef, semanticId, semanticVersion)",
 			"(artifactType=ONTOLOGY, authorityRef, commandKey, labels, localName, mediaType=text/turtle, namespace, ownerRef, rdfTurtle, semanticId, semanticVersion)",

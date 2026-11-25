@@ -37,7 +37,7 @@ func isPollRead(in Invocation) bool {
 	if in.OperationClass == "COMMAND" && in.CapabilityID != "ouf.managed-source.file.upload" {
 		return false
 	}
-	var selector struct{ HandoffID, JobID, SourceID, OnboardingVersionID, ProposalID, RequestID, CommandKey string }
+	var selector struct{ HandoffID, JobID, SourceID, OnboardingVersionID, ProposalID, ReviewBatchID, RequestID, CommandKey string }
 	if json.Unmarshal(in.Arguments, &selector) != nil {
 		return false
 	}
@@ -49,7 +49,7 @@ func isPollRead(in Invocation) bool {
 	case "ouf.managed-source.onboarding.read":
 		return in.OperationClass == "READ" && selector.SourceID != "" && selector.OnboardingVersionID != ""
 	case "ouf.semantic.proposal.read":
-		return in.OperationClass == "READ" && (selector.CommandKey != "" || selector.ProposalID != "")
+		return in.OperationClass == "READ" && (selector.CommandKey != "" || selector.ProposalID != "" || selector.ReviewBatchID != "")
 	case "ouf.onboarding.ths-links.ingestion-run-recovery", "ouf.onboarding.ths-links.semantic-review":
 		return in.InternalWaitRead && in.OperationClass == "READ"
 	case "authorization.proposal.read":

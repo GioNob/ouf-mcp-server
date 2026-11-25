@@ -5,15 +5,15 @@ package manifest
 //go:generate go run generate_analysis_compatibility.go
 
 // Each approved batch installation state resumes a plan of the same state of
-// the 1.17.0 manifest in service (4b39568).
+// the 1.18.0 manifest in service (cefa37c).
 func AnalysisPredecessor(current string) string {
 	switch current {
-	case "08862439ab1b90c615bbaa8bad44e9bf4ebcdfbbdd650a8c6cc5abc60a75c984":
-		return "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"
-	case "3af54401e8228fec468659aee03591e45183c1e3d54f7ab52d973b94f442fb0e":
-		return "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f"
-	case "8b12709d6a4bcac49a53c5bb53cb8f9b668529d48a9ae61bd8da35d1bc295c45":
-		return "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab"
+	case "8fed3c1091a784e40efa18d53189599e33a2d3acdc58ba99e72be0b711b95917":
+		return "08862439ab1b90c615bbaa8bad44e9bf4ebcdfbbdd650a8c6cc5abc60a75c984"
+	case "5639045a74ab4007380712103a715b9b2939d96eb08e1ea7403d56f8a6135137":
+		return "3af54401e8228fec468659aee03591e45183c1e3d54f7ab52d973b94f442fb0e"
+	case "7d29dcde5efadd2215b2ace2f099055a16d93e5f5d6f83d9d9f85262b8fa2ccc":
+		return "8b12709d6a4bcac49a53c5bb53cb8f9b668529d48a9ae61bd8da35d1bc295c45"
 	}
 	return ""
 }
