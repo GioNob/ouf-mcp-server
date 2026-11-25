@@ -74,6 +74,7 @@
           "enum": [
             "APPROVE_OR_REJECT",
             "RESUME_OR_ABORT",
+            "REVIEW_ANALYSIS_RENEWAL",
             "GRANT_PERMISSION",
             "RECHECK",
             "CHOOSE_FILE"

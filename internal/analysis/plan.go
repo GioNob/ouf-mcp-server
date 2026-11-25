@@ -313,7 +313,7 @@ func SafeError(err error) string {
 			return e.Error()
 		}
 	}
-	for _, known := range []error{ErrProfile, ErrCursor, ErrExpired} {
+	for _, known := range []error{ErrProfile, ErrCursor, ErrExpired, ErrRenewalUsed, ErrCommandConflict, ErrRunPressure, ErrMandateExpired, ErrIssueUnavailable} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}

@@ -24,6 +24,7 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		},
 		"source.file.preview":             {"(assetId, profileId)", "(assetId, jobId)", "(view=ASSETS)", "(assetId, profileId, view=COLUMNS)", "(assetId, distinctValuesCursor, profileId, view=COLUMNS)"},
 		"source.onboarding.read":          {"(onboardingVersionId, sourceId)", "(sourceId, view=LATEST)"},
+		"source.analysis.plan":            {"(assetId, expectedRevision, profileId, work)", "(assetId, commandKey, mode=ALL_COLUMNS, profileId)"},
 		"source.onboarding.revision.read": {"(onboardingVersionId, sourceId)", "(commandKey, parentVersionId, sourceId)"},
 	}
 	for _, c := range s.ToolEligible() {

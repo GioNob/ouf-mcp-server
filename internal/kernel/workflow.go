@@ -38,6 +38,7 @@ type workflowServer struct {
 	nextSchema    *jsonschema.Resolved
 	tools         map[string]registeredTool
 	waits         *waitService
+	runConfig     analysis.RunInstallation
 	summaryLimits analysis.Limits
 	thsLinks      map[string]linkLookup
 	key           []byte
@@ -68,7 +69,11 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 		}
 		langs = policy.Languages
 	}
-	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	runConfig, err := analysis.RunConfiguration(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return &workflowServer{runConfig: runConfig, publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -169,6 +174,9 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		}
 		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
+			if name == "source.analysis.plan" && args["mode"] != nil {
+				result = runFailure("ANALYSIS_INPUT_INVALID", 400)
+			}
 			if summaryInput(name, args) {
 				inputErr := analysis.ErrInvalid
 				id, _ := args["analysisId"].(string)
@@ -178,7 +186,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 				}
 				result = summaryFailure(inputErr, id)
 			}
-		} else if (summaryInput(name, args) || name == "source.analysis.plan") && !validJCSInput(req.Params.Arguments) {
+		} else if (summaryInput(name, args) || name == "source.analysis.plan" || name == analysis.RenewalTool) && !validJCSInput(req.Params.Arguments) {
 			result = summaryFailure(analysis.ErrInvalid, "")
 		} else {
 			var err error
@@ -206,7 +214,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
 		}
-		if (name == "ouf.wait" || summaryInput(name, args)) && result.StructuredContent != nil {
+		if (name == "ouf.wait" || name == analysis.RenewalTool || summaryInput(name, args) || (name == "source.analysis.plan" && args["mode"] != nil)) && result.StructuredContent != nil {
 			result = s.boundedResult(result, t)
 		} else {
 			result = s.decorate(ctx, t, args, result)
@@ -343,6 +351,9 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	next := s.engine(ctx).Evaluate(c, p, args, obs, result.IsError)
 	if !result.IsError {
 		next = s.publishedNext(ctx, c.ToolName, args, obs, next)
+		if c.ToolName == "source.file.preview" {
+			next = s.previewRun(ctx, args, obs, next)
+		}
 	}
 	structured["next"] = next
 	if result.IsError && structured["code"] == nil {

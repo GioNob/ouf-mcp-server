@@ -48,6 +48,7 @@ func TestCanonicalManifestIsCompleteAndClosed(t *testing.T) {
 		"semantic.search",
 		"source.analysis.plan",
 		"source.analysis.read",
+		"source.analysis.renewal.propose",
 		"source.analysis.step",
 		"source.file.preview",
 		"source.file.profile",

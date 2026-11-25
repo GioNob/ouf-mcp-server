@@ -12,13 +12,17 @@ jobs:
     permissions:
       contents: read
       actions: read
+    # D-080 (sprint-03 task-58a): the T2 release line pins its exact predecessor,
+    # the T1 image in esercizio (release/d090-t1-mcp 4b39568, PR #107, CI run
+    # 45354657649, artifact 14902531587). Repository variables are not read here:
+    # they serve the other lines and must not silently change this release proof.
     env:
-      PREDECESSOR_COMMIT: ${{ vars.MCP_PREDECESSOR_COMMIT || '843d22059e03bcd58569fff9960bb46ae552b2b2' }}
-      PREDECESSOR_TESTED_COMMIT: ${{ vars.MCP_PREDECESSOR_TESTED_COMMIT || 'b3d48e541f688378a3dd2ce7e0839e4607748fac' }}
-      PREDECESSOR_RUN: ${{ vars.MCP_PREDECESSOR_RUN || '44904141061' }}
-      PREDECESSOR_ARTIFACT_ID: ${{ vars.MCP_PREDECESSOR_ARTIFACT_ID || '14707905199' }}
-      PREDECESSOR_ZIP_SHA256: ${{ vars.MCP_PREDECESSOR_ZIP_SHA256 || 'bcb6002c844e2e6e3c997f5e3bb10b79f63231ca49d3c1a66de952254b15a3ae' }}
-      PREDECESSOR_IMAGE_ID: ${{ vars.MCP_PREDECESSOR_IMAGE_ID }}
+      PREDECESSOR_COMMIT: 4b395686ab1dccb80e37e63d26a8228b472d05ac
+      PREDECESSOR_TESTED_COMMIT: 9e806976a03f763ca3fa7273ae2dddf6371433e8
+      PREDECESSOR_RUN: '45354657649'
+      PREDECESSOR_ARTIFACT_ID: '14902531587'
+      PREDECESSOR_ZIP_SHA256: 83c11f1ee3c740445fdd269ad1eec2b916067f9cdc532cdf44e715a9a52465b8
+      PREDECESSOR_IMAGE_ID: sha256:00fd805f02874a0285b275c5b7214376d2dd0936df735734466b668a2004417f
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +39,7 @@ jobs:
                   "$PREDECESSOR_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
                   "$PREDECESSOR_ZIP_SHA256" =~ ^[0-9a-f]{64}$ &&
                   "$PREDECESSOR_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::D-080 requires the MCP_PREDECESSOR_* pins, including MCP_PREDECESSOR_IMAGE_ID from image-id.txt."
+            echo "::error::D-080 requires the predecessor pins of this workflow, including the image ID from image-id.txt."
             exit 1
           fi
           artifact="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$PREDECESSOR_ARTIFACT_ID"

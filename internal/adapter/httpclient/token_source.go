@@ -31,6 +31,7 @@ type ClientCredentialsTokenSource struct {
 	endpoint   *url.URL
 	clientID   string
 	secretFile string
+	scope      string
 	client     *http.Client
 	mu         sync.Mutex
 	token      string
@@ -72,6 +73,9 @@ func (s *ClientCredentialsTokenSource) Token(ctx context.Context) (string, error
 	}
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
+	if s.scope != "" {
+		form.Set("scope", s.scope)
+	}
 	form.Set("client_id", s.clientID)
 	form.Set("client_secret", secret)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint.String(), strings.NewReader(form.Encode()))
@@ -106,4 +110,30 @@ func (s *ClientCredentialsTokenSource) Token(ctx context.Context) (string, error
 	s.token = payload.AccessToken
 	s.expiresAt = now.Add(time.Duration(payload.ExpiresIn) * time.Second)
 	return s.token, nil
+}
+
+const defaultMandateScopes = "ouf.analysis.mandate.issue ouf.analysis.mandate.dispatch ouf.analysis.mandate.revoke ouf.analysis.mandate.status"
+
+func NewMandateTokenSource(endpoint, clientID, secretFile string) (*ClientCredentialsTokenSource, error) {
+	scope, set := os.LookupEnv("OUF_ANALYSIS_MANDATE_SCOPES")
+	if !set {
+		scope = defaultMandateScopes
+	}
+	if strings.TrimSpace(scope) == "" {
+		return nil, errors.New("OUF_ANALYSIS_MANDATE_SCOPES is empty")
+	}
+	s, err := NewClientCredentialsTokenSource(endpoint, clientID, secretFile)
+	if err == nil {
+		s.scope = strings.Join(strings.Fields(scope), " ")
+	}
+	return s, err
+}
+
+// Renewal uses a separate token cache, including its service scope.
+func NewRenewalTokenSource(endpoint, clientID, secretFile string) (*ClientCredentialsTokenSource, error) {
+	s, err := NewClientCredentialsTokenSource(endpoint, clientID, secretFile)
+	if err == nil {
+		s.scope = "ouf.analysis.mandate.renewal-check"
+	}
+	return s, err
 }

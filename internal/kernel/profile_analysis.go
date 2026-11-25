@@ -29,10 +29,16 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 	addWorkflowTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
-			if summaryInput(c.ToolName, input) {
+			if summaryInput(c.ToolName, input) || c.ToolName == analysis.RenewalTool || (c.ToolName == "source.analysis.plan" && input["mode"] == "ALL_COLUMNS") {
 				return summaryFailure(orchestration.ErrUnauthorized, ""), nil, nil
 			}
 			return actorOrDelegationDenial(i, ok), nil, nil
+		}
+		if c.ToolName == "source.analysis.plan" && input["mode"] == "ALL_COLUMNS" {
+			return server.startRun(ctx, service, i.Identity, input), nil, nil
+		}
+		if c.ToolName == analysis.RenewalTool {
+			return server.reviseAnalysis(ctx, service, i.Identity, input), nil, nil
 		}
 		_, railCommand := input["commandKey"]
 		if key, supplied := input["commandKey"]; supplied {
