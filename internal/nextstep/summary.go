@@ -1,6 +1,8 @@
 package nextstep
 
 import (
+	"fmt"
+
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/google/uuid"
 )
@@ -48,19 +50,26 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			next["outcome"] = "SUCCEEDED"
 			return next
 		}
-		next := Block("MAPPING_DECISION_REQUIRED", "", "Scegli il mapping usando gli esiti delle colonne e i riferimenti verificati.")
+		const reason = "MAPPING_DECISION_REQUIRED"
+		message := fmt.Sprintf("Con termine pubblicato: %d. Con candidati: %d. Senza candidati: %d. ", s.Counts.Matched, s.Counts.Ready, s.Counts.Zero)
+		if s.Counts.Ready > 0 {
+			message += "Confronta ogni colonna informativa con i candidati del suo requestId. Se uno la rappresenta usa semantic.discovery.adopt con la coppia letta. "
+		} else {
+			message += "Scegli i termini pubblicati che rappresentano le colonne informative. "
+		}
+		message += "Se manca un termine valuta semantic.propose. Escludi solo per provenienza o assenza di termini adatti e motiva la scelta all’utente. Prepara la fonte solo a termini pubblicati."
+		next := Block(reason, "", message)
 		alts := []Object{}
-		for _, option := range []struct {
-			tool string
-			args Object
-		}{
-			{"semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}},
-			{"source.file.preview", Object{"assetId": h.AssetID, "profileId": h.ProfileID}},
-		} {
-			if e.Valid(option.tool, option.args) {
-				alts = append(alts, Object{"action": "CALL_TOOL", "tool": option.tool, "arguments": option.args, "reasonCode": "MAPPING_DECISION_REQUIRED", "userMessage": "Consulta l’evidenza per scegliere il mapping."})
+		add := func(tool string, args Object, label string) {
+			if e.Valid(tool, args) {
+				alts = append(alts, alternative(tool, args, reason, label))
 			}
 		}
+		add("source.analysis.read", Object{"analysisId": id}, "Scegli il mapping con le evidenze già lette")
+		if h.RequestID != "" {
+			add("semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}, "Consulta i candidati della richiesta indicata")
+		}
+		add("source.file.preview", Object{"assetId": h.AssetID, "profileId": h.ProfileID}, "Verifica il significato delle colonne sui valori del file")
 		next["alternatives"] = alts
 		return next
 	case "PARTIAL":

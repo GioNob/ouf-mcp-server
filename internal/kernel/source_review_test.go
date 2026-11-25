@@ -83,6 +83,18 @@ func TestSourceReviewBatchAndCandidateActions(t *testing.T) {
 	if err := json.Unmarshal([]byte(reviewExecutionJSON), &proposal); err != nil {
 		t.Fatal(err)
 	}
+	for name, limits := range map[string]any{"omitted": nil, "only-rows": map[string]any{"maxRows": 3}, "empty": map[string]any{}} {
+		t.Run(name, func(t *testing.T) {
+			execution := maps.Clone(proposal)
+			delete(execution, "limits")
+			if limits != nil {
+				execution["limits"] = limits
+			}
+			args := maps.Clone(base)
+			args["commandKey"], args["executionProposal"] = name, execution
+			check(t, args, true)
+		})
+	}
 	for _, tc := range []struct {
 		action       string
 		withProposal bool
