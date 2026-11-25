@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -150,12 +151,17 @@ func revisionService(t *testing.T, gateway *httptest.Server, admission *statusAd
 
 func revisionSession(t *testing.T, service *orchestration.Service, scope string) *mcp.ClientSession {
 	t.Helper()
+	return revisionSessionForScope(t, service, analysis.Scope{Service: "ouf-chatgpt", Principal: "user-a", Tenant: "tenant-a"}, scope)
+}
+
+func revisionSessionForScope(t *testing.T, service *orchestration.Service, identity analysis.Scope, grantedScopes string) *mcp.ClientSession {
+	t.Helper()
 	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for k, v := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Delegation": "human-proof", "X-OUF-Service-Principal": "ouf-chatgpt", "X-OUF-Principal-ID": "user-a", "X-OUF-Tenant-ID": "tenant-a", "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": scope} {
+		for k, v := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Delegation": "human-proof", "X-OUF-Service-Principal": identity.Service, "X-OUF-Principal-ID": identity.Principal, "X-OUF-Tenant-ID": identity.Tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": grantedScopes} {
 			r.Header.Set(k, v)
 		}
 		handler.ServeHTTP(w, r)
