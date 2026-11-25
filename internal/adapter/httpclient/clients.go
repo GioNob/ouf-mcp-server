@@ -168,7 +168,7 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	switch in.CapabilityID {
 	case "ouf.ingestion.status", "ouf.ingestion.history", "ouf.ingestion.acquisition.read", "urban.acquisition.read":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
-	case "ouf.operations.summary", "ouf.operations.incidents",
+	case "ouf.operations.summary", "ouf.operations.incidents", "ouf.operations.explain",
 		"ouf.ingestion.operations.summary", "ouf.ingestion.operations.incidents",
 		"ouf.gateway.operations.summary", "ouf.gateway.operations.incidents":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
@@ -190,8 +190,8 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/status"
 	case "ouf.semantic.discovery.candidates":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/semantic/discovery/candidates"
-	case "urban.object.search":
-		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/urban.object.search"
+	case "urban.object.search", "urban.object.related_search":
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + in.CapabilityID
 	case "ouf.managed-source.file.profile":
 		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/managed.file/profile"
 	case "ouf.managed-source.preview":
@@ -285,13 +285,29 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 		if replacingAsset && res.StatusCode == http.StatusServiceUnavailable {
 			p.Code = "SOURCE_REVIEW_READ_REQUIRED"
 		} else {
-			_ = json.Unmarshal(payload, &p)
+			p = decodeOwnerProblem(payload, res.StatusCode)
 		}
 		p.RetryAfter = res.Header.Get("Retry-After")
 		p.Status = res.StatusCode
 		out.Problem = &p
 	}
 	return out, nil
+}
+
+func decodeOwnerProblem(payload []byte, status int) orchestration.Problem {
+	var p orchestration.Problem
+	var problem struct {
+		*orchestration.Problem
+		Version json.RawMessage `json:"policyVersion"`
+	}
+	problem.Problem = &p
+	if err := json.Unmarshal(payload, &problem); err == nil && status == http.StatusForbidden {
+		var version *int64
+		if json.Unmarshal(problem.Version, &version) == nil && version != nil && *version >= 0 {
+			p.PolicyVersion = version
+		}
+	}
+	return p
 }
 
 func governed(raw string) (*url.URL, error) {

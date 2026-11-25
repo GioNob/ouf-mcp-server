@@ -45,6 +45,9 @@ func (o summaryOwner) Execute(_ context.Context, r orchestration.GatewayRequest,
 	return orchestration.GatewayResponse{Status: 200, Body: []byte(body)}, nil
 }
 
+// With MCP_TEST_DATABASE_URL set, repeat against the same database:
+//
+//	go test ./internal/kernel/ -run '^TestSummarySDKPostgresV1EvidenceAndRevocation$' -count=20
 func TestSummarySDKPostgresV1EvidenceAndRevocation(t *testing.T) {
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -72,8 +75,8 @@ func TestSummarySDKPostgresV1EvidenceAndRevocation(t *testing.T) {
 	owner := summaryOwner{uuid.NewString()}
 	auth := &summaryAuthority{}
 	service := &orchestration.Service{Auth: auth, RequireDelegation: true, Admission: store, Gateway: owner, FingerprintKey: make([]byte, 32)}
-	session := revisionSession(t, service, "ouf.managed-source.preview ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates")
-	scope := analysis.Scope{Service: "ouf-chatgpt", Principal: "user-a", Tenant: "tenant-a"}
+	scope := analysis.Scope{Service: "ouf-chatgpt", Principal: uuid.NewString(), Tenant: "tenant-a"}
+	session := revisionSessionForScope(t, service, scope, "ouf.managed-source.preview ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates")
 	profile := analysis.Profile{AssetID: uuid.NewString(), ProfileID: uuid.NewString(), Version: 1, SchemaHash: "sha256:" + strings.Repeat("a", 64), ColumnCount: 128}
 	columns := make([]int, profile.ColumnCount)
 	headers := make([]string, len(columns))

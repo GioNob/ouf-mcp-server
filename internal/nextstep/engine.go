@@ -398,6 +398,47 @@ func ManualBlock(reason, message, actor string) Object {
 	return s
 }
 
+// A fallback read is a concrete call. Keep only the reference used by that
+// read, even when the failed command carried a much larger input.
+func readReference(tool string, obs, input Object) Object {
+	args := Object{}
+	var fields []string
+	switch tool {
+	case "source.analysis.read":
+		fields = []string{"analysisId"}
+	case "semantic.proposal.read":
+		fields = []string{"commandKey", "analysisId"}
+	case "authorization.proposal.read":
+		fields = []string{"proposalId"}
+	}
+	for _, field := range fields {
+		if v := get(obs, input, field+"|@"+field); v != nil {
+			args[field] = v
+		}
+	}
+	return args
+}
+
+func (e Engine) blockTarget(reason, tool string, args Object, message, actor string) Object {
+	if tool == "" || e.Valid == nil || !e.Valid(tool, args) {
+		if actor == "" || actor == "AGENT" {
+			actor = "OPERATOR"
+			if tool == "authorization.proposal.read" {
+				actor = "HUMAN_THS"
+			}
+		}
+		return ManualBlock(reason, message, actor)
+	}
+	s := Block(reason, tool, message)
+	if len(args) > 0 {
+		s["alternatives"].([]Object)[0]["arguments"] = args
+	}
+	if actor != "" {
+		s["actor"] = actor
+	}
+	return s
+}
+
 // Neither a denial nor a catalogue entry supplies a user's grant interval,
 // grant ID or intended role changes. Read the complete role catalogue before
 // preparing a role proposal, preserving unrelated entries and assignments.
@@ -431,7 +472,45 @@ func ProposalSections(values []any) []string {
 	return sections
 }
 
+func acquisitionCorrection(template string, obs Object) string {
+	name, _ := obs["limit"].(string)
+	// The wire decoder preserves integers as json.Number.
+	integer := func(key string) (int64, bool) {
+		switch value := obs[key].(type) {
+		case json.Number:
+			n, err := value.Int64()
+			return n, err == nil
+		case int64:
+			return value, true
+		case int:
+			return int64(value), true
+		case float64:
+			n := int64(value)
+			return n, float64(n) == value
+		default:
+			return 0, false
+		}
+	}
+	observed, ok := integer("observed")
+	ceiling, bounded := integer("ceiling")
+	if !AcquisitionLimit(name) || !ok || !bounded || observed < 0 || ceiling < 1 || observed > ceiling {
+		return "Ometti il limite segnalato e ripeti con la nuova commandKey."
+	}
+	return strings.NewReplacer("{limit}", name, "{observed}", strconv.FormatInt(observed, 10), "{ceiling}", strconv.FormatInt(ceiling, 10)).Replace(template)
+}
+
 func (e Engine) blockedRule(r manifest.Rule, obs, input Object) Object {
+	switch r.Reason {
+	case "ONB_GOVERNED_IDENTITY_INVALID":
+		constraint, _ := obs["constraint"].(string)
+		if message, ok := IdentityConstraintMessage(constraint); ok {
+			r.Message = message + " Mantieni il resto della proposta e ripeti con la nuova commandKey."
+		}
+	case "ONB_ACQUISITION_LIMIT_BELOW_PROFILE":
+		r.Message = acquisitionCorrection(r.Message, obs)
+	case "ONB_ACQUISITION_LIMIT_INSTALLATION_EXCEEDED":
+		return e.installationLimitDecision(r)
+	}
 	if strings.Contains(r.Message, "{missingSections}") {
 		sections, _ := obs["missingSections"].([]any)
 		label := strings.Join(ProposalSections(sections), ", ")
@@ -440,30 +519,30 @@ func (e Engine) blockedRule(r manifest.Rule, obs, input Object) Object {
 		}
 		r.Message = strings.ReplaceAll(r.Message, "{missingSections}", label)
 	}
-	s := Block(r.Reason, r.Tool, r.Message)
-	if len(r.Alternatives) > 0 {
-		alts := make([]Object, 0, len(r.Alternatives))
-		for _, option := range r.Alternatives {
-			alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
-			if args := e.project(option, obs, input); len(args) > 0 {
-				alt["arguments"] = args
-			}
-			alts = append(alts, alt)
+	if len(r.Alternatives) == 0 {
+		args := readReference(r.Tool, obs, input)
+		if len(r.Args) > 0 || r.CopyInput {
+			args = e.project(r, obs, input)
 		}
-		s["alternatives"] = alts
-	}
-	if r.Actor == "OPERATOR" && r.Tool == "" {
-		return ManualBlock(r.Reason, r.Message, r.Actor)
-	}
-	if len(r.Args) > 0 {
-		args := e.project(r, obs, input)
-		if e.Valid(r.Tool, args) {
-			if r.Decision != "" && e.Issue != nil {
-				return e.Issue(r, args, obs)
-			}
-			s["alternatives"].([]Object)[0]["arguments"] = args
+		if r.Decision != "" && e.Issue != nil && e.Valid(r.Tool, args) {
+			return e.Issue(r, args, obs)
 		}
+		return e.blockTarget(r.Reason, r.Tool, args, r.Message, r.Actor)
 	}
+	alts := make([]Object, 0, len(r.Alternatives))
+	for _, option := range r.Alternatives {
+		alt := Object{"action": "CALL_TOOL", "tool": option.Tool, "reasonCode": r.Reason, "userMessage": option.Message}
+		args := e.project(option, obs, input)
+		if option.CopyInput && !e.Valid(option.Tool, args) {
+			continue
+		}
+		if len(args) > 0 {
+			alt["arguments"] = args
+		}
+		alts = append(alts, alt)
+	}
+	s := Block(r.Reason, "", r.Message)
+	s["alternatives"] = alts
 	if r.Actor != "" {
 		s["actor"] = r.Actor
 	}
@@ -516,7 +595,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			}
 			return call("CALL_TOOL", "READ_ORIGINAL_RECEIPT", tool, args)
 		}
-		return Block("READ_ORIGINAL_RECEIPT", policy.Read, "Consulta la ricevuta del comando originale.")
+		return ManualBlock("READ_ORIGINAL_RECEIPT", "Verifica la ricevuta del comando originale.", "OPERATOR")
 	}
 	for path, allowed := range policy.Vocabulary {
 		if path == "activationProgress.readiness_phase" && obs["allowedActions"] != nil {
@@ -526,7 +605,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			if v := lookup(obs, field); v != nil {
 				state, ok := v.(string)
 				if !ok || !slices.Contains(allowed, state) {
-					return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+					return e.blockTarget("OWNER_STATE_UNKNOWN", policy.Read, readReference(policy.Read, obs, input), "Lo stato ricevuto richiede una nuova lettura.", "")
 				}
 				break
 			}
@@ -539,7 +618,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		switch r.Action {
 		case "BLOCKED":
 			if r.Reason == "EXECUTION_PROPOSAL_REQUIRED" && lookup(obs, "deferredReaderChecks.0.fieldName") != nil {
-				r.Message = "Completa executionProposal ({missingSections}) con semanticId, semanticVersion, revisionId e publicationSetId da semantic.get. Usa quel publicationSetId per semanticPublicationSetRef e i limiti della preview. I campi in deferredReaderChecks saranno verificati in preparazione. Per un CSV, IDENTITY è sempre preparabile."
+				r.Message = "Completa {missingSections} coi quattro pin di semantic.get e usa publicationSetId per semanticPublicationSetRef. L’Onboarding calcola i limiti dal profilo del file. Usa limits solo per restringerli, mai sotto i valori reali. Verifica deferredReaderChecks in preparazione. Per un CSV puoi usare IDENTITY."
 			}
 			return e.blockedRule(r, obs, input)
 		case "DONE":
@@ -567,7 +646,11 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			}
 		}
 		if !e.Valid(r.Tool, args) {
-			return Block(r.Reason, r.Tool, "Recupera gli argomenti mancanti per il passo indicato.")
+			actor := "OPERATOR"
+			if r.Action == "WAIT_FOR_HUMAN" {
+				actor = "HUMAN_THS"
+			}
+			return ManualBlock(r.Reason, "Verifica i riferimenti mancanti per il passo indicato.", actor)
 		}
 		if r.Action == "WAIT_FOR_HUMAN" {
 			if e.Issue != nil {
@@ -582,7 +665,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 				}
 				return next
 			}
-			return Block("WAIT_UNAVAILABLE", r.Tool, "Consulta lo stato della decisione.")
+			return e.blockTarget("WAIT_UNAVAILABLE", r.Tool, args, "Consulta lo stato della decisione.", "HUMAN_THS")
 		}
 		s := call(r.Action, r.Reason, r.Tool, args)
 		if r.Message != "" {
@@ -593,7 +676,7 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		return s
 	}
-	return Block("OWNER_STATE_UNKNOWN", policy.Read, "Lo stato ricevuto richiede una nuova lettura.")
+	return e.blockTarget("OWNER_STATE_UNKNOWN", policy.Read, readReference(policy.Read, obs, input), "Lo stato ricevuto richiede una nuova lettura.", "")
 }
 
 // A deadline is checked before proposing another delay, including an owner error.
@@ -614,7 +697,7 @@ func (e Engine) machinePoll(next Object, read string, obs, args Object, terminal
 	}
 	delay, ok := retryDelay(obs, now)
 	if !ok {
-		return Block("RETRY_WINDOW_UNAVAILABLE", read, "Verifica la finestra di ripresa.")
+		return e.blockTarget("RETRY_WINDOW_UNAVAILABLE", read, readReference(read, obs, args), "Verifica la finestra di ripresa.", "")
 	}
 	next["pollAfterSeconds"], next["terminalStates"] = max(delay, e.PollIntervalSeconds), terminal
 	return next
@@ -685,6 +768,27 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		code = "OWNER_REQUEST_FAILED"
 	}
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
+	if c.ToolName == "source.analysis.plan" && code == analysis.ErrEpochChanged.Error() {
+		if id, ok := obs["analysisId"].(string); ok && analysis.ValidateID(id) == nil {
+			return e.ReplanNext(id, code)
+		}
+	}
+	if id, ok := args["analysisId"].(string); ok && (c.ToolName == "source.analysis.step" || c.ToolName == "source.analysis.read") {
+		if code == analysis.ErrEpochChanged.Error() || (obs["authorizationPhase"] == "OWNER" && analysis.PermissionHold(code)) {
+			return e.ReplanNext(id, code)
+		}
+	}
+	if c.ToolName == "source.analysis.plan" && code == analysis.ErrPolicyUnchanged.Error() {
+		return permissionHold(code, "Attendi la conferma della correzione dei permessi nella THS.")
+	}
+	if obs["authorizationPhase"] == "OWNER" {
+		switch code {
+		case "SEM_READ_RECEIPT_INVALID", "SEM_DISCOVERY_RECEIPT_INVALID":
+			return ManualBlock(code, "La ricevuta di lettura è invalida. Chiedi all’operatore di verificare la piattaforma.", "OPERATOR")
+		case "CAPABILITY_NOT_DECLARED", "SCOPE_MISSING", "ACTOR_NOT_ALLOWED", "EXPLICIT_DENY":
+			return PermissionDenied(c.RequiredAuthorization, code)
+		}
+	}
 	if next := e.draftFailure(c.ToolName, code, status, args, obs); next != nil {
 		return next
 	}
@@ -712,6 +816,18 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 	flags := Object{}
 	maps.Copy(flags, obs)
 	flags["code"], flags["tool"], flags["retryable"], flags["safeToRepeat"] = code, c.ToolName, retryable, safe
+	if c.ToolName == "authorization.permissions.propose" {
+		if id := obs["proposalId"]; id != nil {
+			read := Object{"proposalId": id}
+			if e.Valid(p.Read, read) {
+				if state, _ := obs["state"].(string); state != "" {
+					return e.evaluate(c, p, args, obs, false)
+				}
+				return call("CALL_TOOL", code, p.Read, read)
+			}
+		}
+		flags["applicationRejection"] = obs["applicationRejection"] == true || status == "400" || status == "422" || code == "ONB_BAD_REQUEST" || code == "AUTH_ROLE_CAPABILITY_INVALID" || code == "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"
+	}
 	for _, r := range e.Errors {
 		if !matches(r.When, flags, args) {
 			continue
@@ -724,6 +840,9 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			target = c.ToolName
 		}
 		if r.Action == "BLOCKED" {
+			if c.ToolName == "authorization.permissions.propose" && target == "authorization.proposal.read" {
+				return ManualBlock(code, "Verifica nella THS l’esito della proposta prima di inviare altri comandi.", "HUMAN_THS")
+			}
 			if code == "NO_APPLICABLE_GRANT" && target == "authorization.permissions.propose" {
 				capability := c.RequiredAuthorization
 				if required, ok := obs["requiredCapability"].(string); ok && (obs["authorizationPhase"] == "MCP_PRE_ADMISSION" || obs["authorizationPhase"] == "OWNER") {
@@ -745,7 +864,7 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			if code == "INVALID_TOOL_ARGUMENTS" {
 				continue
 			}
-			return Block(code, target, "Recupera gli argomenti necessari per proseguire.")
+			return ManualBlock(code, "Verifica i riferimenti necessari per proseguire.", "OPERATOR")
 		}
 		s := call(r.Action, code, target, projected)
 		if r.Action == "POLL" {
@@ -753,7 +872,7 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		}
 		return s
 	}
-	return Block(code, p.Read, "Verifica il motivo del rifiuto.")
+	return e.blockTarget(code, p.Read, readReference(p.Read, obs, args), "Verifica il motivo del rifiuto.", "")
 }
 
 func AdmissionWindowCode(code string) bool {

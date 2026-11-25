@@ -35,9 +35,11 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			return actorOrDelegationDenial(i, ok), nil, nil
 		}
 		_, railCommand := input["commandKey"]
-		if key, supplied := input["commandKey"]; supplied {
+		key, _ := input["commandKey"].(string)
+		replan, _ := input["replanOf"].(string)
+		if railCommand {
 			delete(input, "commandKey")
-			if key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
+			if c.ToolName != "source.analysis.plan" && key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
 				return errorResult("IDEMPOTENCY_KEY_REUSE", false), nil, nil
 			}
 		}
@@ -54,6 +56,10 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		var err error
 		switch c.ToolName {
 		case "source.analysis.plan":
+			if replan != "" {
+				out, err = coordinator.Replan(ctx, i.Identity, replan, key)
+				break
+			}
 			var args struct {
 				AssetID          string          `json:"assetId"`
 				ProfileID        string          `json:"profileId"`
@@ -63,6 +69,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			if json.Unmarshal(raw, &args) != nil {
 				return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 			}
+			coordinator.CommandKey = key
 			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
 		case "source.analysis.read":
 			if input["view"] != nil {
@@ -95,6 +102,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				result.Meta = mcp.Meta{"ouf/httpStatus": 502}
 				return result, nil, nil
 			}
+			task.Epoch, task.OwnerIntent = "", ""
 			if task.Visibility != "" {
 				task.Visibility, task.OwnerKey, task.Groups, task.Arguments = "", "", nil, nil
 				if task.Tool == analysis.BatchTool {
@@ -113,12 +121,16 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 		}
 		if err != nil {
+			var epoch *analysis.PlanEpochError
+			if errors.As(err, &epoch) {
+				return workflowError(map[string]any{"code": epoch.Error(), "analysisId": epoch.AnalysisID, "retryable": false}), nil, nil
+			}
 			if errors.Is(err, orchestration.ErrUnauthorized) {
 				return governedCallErrorResult(err), nil, nil
 			}
 			var denied *analysis.OwnerDenial
 			if errors.As(err, &denied) {
-				return ownerDenialResult(&orchestration.Problem{Status: 403, Code: denied.ReasonCode}, denied.CapabilityID), nil, nil
+				return ownerDenialResult(&orchestration.Problem{Status: 403, Code: denied.ReasonCode, PolicyVersion: denied.PolicyVersion}, denied.CapabilityID), nil, nil
 			}
 			if wait := windowAdmissionErrorResult(err); wait != nil {
 				return wait, nil, nil

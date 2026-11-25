@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
@@ -381,7 +382,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 			if inputSchema.Properties["analysisId"] != nil {
 				delete(input, "analysisId")
 			}
-			if key, ok := input["commandKey"].(string); ok && c.ToolName == "source.file.profile" {
+			if key, ok := input["commandKey"].(string); ok && (c.ToolName == "source.file.profile" || c.ToolName == "authorization.permissions.propose") {
 				if identity, present := ctx.Value(identityKey{}).(requestIdentity); present {
 					identity.IdempotencyKey = key
 					ctx = context.WithValue(ctx, identityKey{}, identity)
@@ -449,6 +450,9 @@ func registerOperationalTool(server *workflowServer, c manifest.Capability, snap
 	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
+		if c.CapabilityID == "ouf.operations.explain" {
+			return invoke(ctx, c, checksum, args, service, 1, 128<<10)
+		}
 		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
 	})
 }
@@ -603,8 +607,121 @@ type readerDiagnostic struct {
 	AllowedTransforms []string `json:"allowedTransforms"`
 }
 
+// Only schema names and array indices can be returned in a diagnostic pointer.
+var identityPath = regexp.MustCompile(`^/executionProposal(/(udp|resolution|strategyId|strategyVersion|policyRef|governedIdentity|ref|version|tenantId|canonicalClass|sourceId|maxCandidates|allowAutoNew|signals|sufficientRules|distinctRules|category|id|semanticRef|comparator|excludesOnDisagreement|uniqueWithinScope|assertionRef|signalIds|semanticPublicationSetRef|materialization|properties|propertyIri|0|[1-9][0-9]*))*$`)
+
+func propertyIRI(value string) bool {
+	if utf8.RuneCountInString(value) > 2048 || strings.ContainsAny(value, "<>\"{}|\\^`") || strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r)
+	}) >= 0 {
+		return false
+	}
+	if _, err := url.PathUnescape(value); err != nil {
+		return false
+	}
+	iri, err := url.Parse(value)
+	return err == nil && iri.IsAbs() && len(value) > len(iri.Scheme)+1
+}
+
+func projectIdentityProblem(body []byte, out map[string]any) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		return false
+	}
+	if _, typed := fields["constraint"]; !typed {
+		return true // Pre-59b owner.
+	}
+	var constraint, path string
+	if json.Unmarshal(fields["constraint"], &constraint) != nil || json.Unmarshal(fields["path"], &path) != nil ||
+		len(path) > 512 || !identityPath.MatchString(path) {
+		return false
+	}
+	if _, known := nextstep.IdentityConstraintMessage(constraint); !known {
+		return false
+	}
+	out["constraint"], out["path"] = constraint, path
+
+	needsProperties := slices.Contains([]string{"SIGNAL_NOT_MAPPED", "SIGNAL_DUPLICATE", "SIGNAL_FLAGS", "SIGNAL_COMPARATOR", "SIGNAL_SEMANTIC_REF", "SIGNALS_INCOMPLETE"}, constraint)
+	if needsProperties || fields["propertyIris"] != nil || fields["propertyCount"] != nil {
+		var iris []string
+		var count *int
+		if json.Unmarshal(fields["propertyIris"], &iris) != nil || iris == nil || len(iris) > 64 ||
+			json.Unmarshal(fields["propertyCount"], &count) != nil || count == nil || *count < len(iris) {
+			return false
+		}
+		for _, iri := range iris {
+			if !propertyIRI(iri) {
+				return false
+			}
+		}
+		out["propertyIris"], out["propertyCount"] = iris, *count
+	}
+	if fields["expectedSignals"] != nil || constraint == "SIGNALS_INCOMPLETE" || constraint == "SIGNAL_COMPARATOR" || constraint == "SIGNAL_SEMANTIC_REF" {
+		var signals []map[string]string
+		if json.Unmarshal(fields["expectedSignals"], &signals) != nil || signals == nil || len(signals) > 64 {
+			return false
+		}
+		for _, signal := range signals {
+			id := signal["id"]
+			set, ok := strings.CutPrefix(signal["semanticRef"], id+"@")
+			if len(signal) != 3 || !ok || !propertyIRI(id) || len(set) != 36 || uuid.Validate(set) != nil ||
+				!slices.Contains([]string{"CONCEPT", "TEXT_V1", "DECIMAL_V1", "JSON_V1"}, signal["comparator"]) {
+				return false
+			}
+		}
+		out["expectedSignals"] = signals
+	}
+	if fields["ruleIds"] != nil || constraint == "RULE_DUPLICATE" || constraint == "RULE_MEMBERS" || constraint == "DISTINCT_RULE_MEMBERS" {
+		var ids []string
+		if json.Unmarshal(fields["ruleIds"], &ids) != nil || ids == nil || len(ids) > 32 {
+			return false
+		}
+		for _, id := range ids {
+			if strings.TrimSpace(id) == "" || utf8.RuneCountInString(id) > 2048 || strings.IndexFunc(id, unicode.IsControl) >= 0 {
+				return false
+			}
+		}
+		out["ruleIds"] = ids
+	}
+	return true
+}
+
+func projectAcquisitionLimit(body []byte, out map[string]any, code string) bool {
+	var problem struct {
+		Limit               string `json:"limit"`
+		Observed            *int64 `json:"observed"`
+		Ceiling             *int64 `json:"ceiling"`
+		InstallationMaximum *int64 `json:"installationMaximum"`
+	}
+	if json.Unmarshal(body, &problem) != nil || !nextstep.AcquisitionLimit(problem.Limit) || problem.Observed == nil || *problem.Observed < 0 {
+		return false
+	}
+	out["limit"], out["observed"] = problem.Limit, *problem.Observed
+	if code == "ONB_ACQUISITION_LIMIT_BELOW_PROFILE" {
+		if problem.Ceiling == nil || *problem.Ceiling < 1 || *problem.Ceiling < *problem.Observed {
+			return false
+		}
+		out["ceiling"] = *problem.Ceiling
+	} else {
+		if problem.InstallationMaximum == nil || *problem.InstallationMaximum < 1 || *problem.Observed <= *problem.InstallationMaximum {
+			return false
+		}
+		out["installationMaximum"] = *problem.InstallationMaximum
+	}
+	return true
+}
+
 // Each Onboarding refusal has its own public diagnostic. Never include the
 // owner's free-form problem detail, even on an internal review failure.
+func permissionApplicationRejection(problem *orchestration.Problem) bool {
+	switch problem.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return problem.Status == http.StatusBadRequest || problem.Status == http.StatusUnprocessableEntity ||
+		(problem.Status >= 400 && problem.Status < 500 && (strings.HasPrefix(problem.Code, "AUTH_") || strings.HasPrefix(problem.Code, "ONB_")))
+}
+
 func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.CallToolResult {
 	out := map[string]any{"code": p.Code, "Status": p.Status}
 	var fields struct {
@@ -613,6 +730,45 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 		SemanticRef     string `json:"semanticRef"`
 	}
 	switch {
+	case tool == "authorization.permissions.propose" && permissionApplicationRejection(p):
+		var rejection struct {
+			ProposalID   string
+			State        string
+			Status       json.RawMessage
+			ApprovalPath string
+			ReviewURL    string
+			ExpiresAt    string
+			Violations   []struct {
+				Role                     string `json:"role,omitempty"`
+				GrantID                  string `json:"grantId,omitempty"`
+				CapabilityID             string `json:"capabilityId,omitempty"`
+				Field                    string `json:"field,omitempty"`
+				MissingResourceAttribute string `json:"missingResourceAttribute,omitempty"`
+			} `json:"violations"`
+		}
+		out["applicationRejection"] = true
+		if json.Unmarshal(body, &rejection) == nil {
+			if rejection.ProposalID != "" {
+				out["proposalId"] = rejection.ProposalID
+				state := rejection.State
+				if state == "" {
+					_ = json.Unmarshal(rejection.Status, &state)
+				}
+				out["state"], out["approvalPath"] = state, rejection.ApprovalPath
+				out["reviewUrl"], out["expiresAt"] = rejection.ReviewURL, rejection.ExpiresAt
+			}
+			if p.Code == "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE" && rejection.Violations != nil {
+				out["violations"] = rejection.Violations
+			}
+		}
+	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_GOVERNED_IDENTITY_INVALID":
+		if !projectIdentityProblem(body, out) {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+	case tool == "source.onboarding.review.prepare" && p.Status == 422 && (p.Code == "ONB_ACQUISITION_LIMIT_BELOW_PROFILE" || p.Code == "ONB_ACQUISITION_LIMIT_INSTALLATION_EXCEEDED"):
+		if !projectAcquisitionLimit(body, out, p.Code) {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
 	case tool == "source.onboarding.review.prepare" && p.Status == 422 && p.Code == "ONB_EXECUTION_PROPOSAL_REQUIRED":
 		if json.Unmarshal(body, &fields) != nil {
 			return errorResult("OWNER_PROBLEM_INVALID", false)

@@ -25,6 +25,7 @@ type rawTool func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, e
 type registeredTool struct {
 	capability manifest.Capability
 	input      *jsonschema.Resolved
+	decision   *jsonschema.Resolved
 	forms      []string
 	limit      int
 	run        rawTool
@@ -76,6 +77,13 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 func (s *workflowServer) commandKey(ctx context.Context, tool string, args, obs, input nextstep.Object) string {
 	mac := hmac.New(sha256.New, s.key)
 	seed := []any{"ouf.next-step.v1/command-key", waitBinding(ctx), tool, args}
+	if tool == "source.analysis.plan" && s.analysisService != nil {
+		i, _ := ctx.Value(identityKey{}).(requestIdentity)
+		c := analysis.Coordinator{Service: s.analysisService, Manifest: s.manifest}
+		if epoch, err := c.Epoch(ctx, i.Identity); err == nil && epoch != "" {
+			seed = append(seed, epoch)
+		}
+	}
 	if tool != "source.analysis.plan" && tool != "source.analysis.step" {
 		seed = append(seed, nextstep.Version(obs), obs["challengeId"], input["commandKey"])
 	}
@@ -158,7 +166,11 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		// The predecessor Gateway route uses the upload envelope. Its bound handoff operation is read-only.
 		c.OperationClass = "READ"
 	}
-	t := registeredTool{c, input, manifest.InputForms(raw), budget.HardMaxResultBytes, run}
+	decision, err := nextstep.DecisionSchema(raw)
+	if err != nil {
+		panic(err)
+	}
+	t := registeredTool{c, input, decision, manifest.InputForms(raw), budget.HardMaxResultBytes, run}
 	s.tools[name] = t
 	s.Server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
@@ -229,6 +241,32 @@ func (s *workflowServer) validateNext(name string, result *mcp.CallToolResult) *
 	raw, err := json.Marshal(body["next"])
 	var next nextstep.Object
 	if err == nil && json.Unmarshal(raw, &next) == nil && next != nil && s.nextSchema.Validate(next) == nil {
+		// Preserve exact integers in any retained command arguments.
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		_ = decoder.Decode(&next)
+		checked := nextstep.CheckTargets(next, func(tool string, args nextstep.Object, decision bool) bool {
+			t, ok := s.tools[tool]
+			if !ok {
+				return false
+			}
+			if decision && t.decision != nil {
+				encoded, err := json.Marshal(args)
+				var value nextstep.Object
+				return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(encoded)) && json.Unmarshal(encoded, &value) == nil && t.decision.Validate(value) == nil
+			}
+			return s.valid(tool, args)
+		})
+		updated, _ := json.Marshal(checked)
+		if !bytes.Equal(raw, updated) {
+			body["next"] = checked
+			// Text-only clients must see the same checked alternatives.
+			if original := ownerObject(&mcp.CallToolResult{Content: result.Content}); original["next"] != nil {
+				original["next"] = checked
+				wire, _ := json.Marshal(original)
+				result.Content = []mcp.Content{&mcp.TextContent{Text: string(wire)}}
+			}
+		}
 		return result
 	}
 	const code = "NEXT_CONTRACT_INVALID"
@@ -309,7 +347,15 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 		if !scope.Valid() {
 			return ""
 		}
-		return analysis.AnalysisID(scope, analysis.Profile{AssetID: asset, ProfileID: profile})
+		if s.analysisService == nil {
+			return analysis.AnalysisID(scope, analysis.Profile{AssetID: asset, ProfileID: profile})
+		}
+		c := analysis.Coordinator{Service: s.analysisService, Manifest: s.manifest}
+		epoch, err := c.Epoch(ctx, identity.Identity)
+		if err != nil {
+			return ""
+		}
+		return analysis.AnalysisID(scope, analysis.Profile{AssetID: asset, ProfileID: profile}, epoch)
 	}}
 }
 

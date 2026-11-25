@@ -1,6 +1,9 @@
 package nextstep
 
-import "github.com/google/uuid"
+import (
+	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/google/uuid"
+)
 
 const (
 	onboardingCreate  = "source.onboarding.create"
@@ -164,4 +167,47 @@ func (e Engine) afterDraftRecoveryRead(input, owner Object) Object {
 		}
 	}
 	return draftDecision(reason, message, options)
+}
+
+var identityCorrections = map[string]string{
+	"RESOLUTION_SHAPE":      "Nel campo indicato da path usa la strategia GOVERNED_IDENTITY con strategyVersion, policyRef e governedIdentity.",
+	"POLICY_FIELDS":         "Verifica in path i campi di governedIdentity. Includi quelli richiesti dallo schema e rimuovi quelli sconosciuti.",
+	"POLICY_REFERENCE":      "Allinea ref e version della policy indicata da path a policyRef e strategyVersion della risoluzione.",
+	"POLICY_SOURCE":         "Nel campo indicato da path usa il sourceId della fonte in preparazione.",
+	"POLICY_TENANT":         "Nel campo indicato da path usa il tenantId del chiamante autorizzato.",
+	"POLICY_CLASS":          "Nel campo indicato da path usa la canonicalClass fra le classi di destinazione del mapping.",
+	"POLICY_BOUNDS":         "Verifica in path il tipo booleano di allowAutoNew e i limiti di maxCandidates (1–1000), signals (1–1024) e sufficientRules (1–32). distinctRules ammette fino a 32 regole.",
+	"SIGNAL_SHAPE":          "Completa il segnale indicato da path con id, semanticRef, comparator, assertionRef, uniqueWithinScope ed excludesOnDisagreement secondo lo schema.",
+	"SIGNAL_NOT_MAPPED":     "Confronta propertyIris con le proprietà materializzate. Correggi il segnale in path affinché il suo id identifichi una proprietà del mapping.",
+	"SIGNAL_DUPLICATE":      "Per ogni id segnalato in propertyIris conserva un solo segnale. Usa path per individuare il duplicato.",
+	"SIGNAL_FLAGS":          "Nel segnale indicato da path imposta uniqueWithinScope=false ed excludesOnDisagreement=false. Verifica le proprietà elencate in propertyIris.",
+	"SIGNAL_COMPARATOR":     "Per il segnale in path usa il comparator indicato in expectedSignals per il suo id e tipo materializzato.",
+	"SIGNAL_SEMANTIC_REF":   "Per il segnale in path usa il semanticRef di expectedSignals, formato dall’id della proprietà e da semanticPublicationSetRef uniti con @.",
+	"SIGNAL_ASSERTION_REF":  "Completa assertionRef del segnale in path con il riferimento all’asserzione che lo giustifica.",
+	"SIGNALS_INCOMPLETE":    "Ogni proprietà materializzata deve avere un segnale d’identità. Aggiungi a governedIdentity.signals gli expectedSignals con assertionRef, uniqueWithinScope=false ed excludesOnDisagreement=false. Se propertyCount supera l’elenco, verifica le altre proprietà del mapping.",
+	"RULE_SHAPE":            "Correggi la regola in path secondo lo schema con id, signalIds e un assertionRef che giustifichi la regola.",
+	"RULE_DUPLICATE":        "Usa ruleIds e path per individuare gli id ripetuti. Assegna un id distinto a ciascuna regola.",
+	"RULE_MEMBERS":          "Nella regola sufficiente indicata da path e ruleIds inserisci da 1 a 32 signalIds distinti, tutti presenti in governedIdentity.signals.",
+	"DISTINCT_RULE_MEMBERS": "Nella regola di distinzione indicata da path e ruleIds inserisci da 2 a 32 signalIds distinti, tutti presenti in governedIdentity.signals.",
+}
+
+// IdentityConstraintMessage defines the vocabulary shared with the owner projection.
+func IdentityConstraintMessage(constraint string) (string, bool) {
+	message, ok := identityCorrections[constraint]
+	return message, ok
+}
+
+// AcquisitionLimit reports whether name identifies a profile dimension in the owner contract.
+func AcquisitionLimit(name string) bool {
+	return name == "maxRows" || name == "maxColumns" || name == "maxCellChars"
+}
+
+func (e Engine) installationLimitDecision(r manifest.Rule) Object {
+	if !e.Valid(r.Tool, Object{}) {
+		return ManualBlock(r.Reason, r.Message, r.Actor)
+	}
+	next := Block(r.Reason, "", r.Message)
+	next["actor"] = r.Actor
+	next["alternatives"] = []Object{alternative(r.Tool, Object{}, r.Reason, "Scegli un file più piccolo.")}
+	return next
 }

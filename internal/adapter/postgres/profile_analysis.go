@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -24,11 +25,8 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	if err != nil {
 		return p, 0, err
 	}
-	if stored != manifest {
-		old := manifestpkg.AnalysisPredecessor(manifest)
-		if old == "" || stored != old {
-			return p, 0, analysis.ErrScope
-		}
+	if !slices.Contains(manifestpkg.AnalysisManifests(manifest), stored) {
+		return p, 0, analysis.ErrScope
 	}
 	if json.Unmarshal(raw, &p) != nil {
 		return p, 0, analysis.ErrScope
@@ -37,7 +35,7 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 }
 func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, error) {
 	// Never load potentially large evidence bodies or intent arguments for totals.
-	rows, err := tx.Query(ctx, `select task-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey' from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal`, id)
+	rows, err := tx.Query(ctx, `select task-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey'-'policyEpoch'-'ownerIntent' from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -57,22 +55,39 @@ func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, 
 	return tasks, rows.Err()
 }
 func analysisView(id string, p analysis.Profile, rev int64, tasks []analysis.Task, offset, limit int) analysis.View {
+	tasks = slices.DeleteFunc(tasks, func(t analysis.Task) bool { return t.AwaitParent })
 	budget, covered, complete := analysis.Calculate(tasks)
 	end := min(len(tasks), offset+limit)
 	start := min(offset, len(tasks))
 	return analysis.View{ID: id, Revision: rev, Profile: p, Budget: budget, Tasks: tasks[start:end], Offset: offset, HasMore: end < len(tasks), CoveredColumns: covered, EvidenceColumns: complete}
 }
 func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.View, error) {
-	if !p.Scope.Valid() || !p.Profile.Valid() || (p.Visibility == "" && (len(p.Tasks) < 1 || (len(p.Tasks) > analysis.MaxPlanBatch && p.Tasks[0].Compatibility == ""))) || len(p.Tasks) > analysis.MaxTasks || p.ID != analysis.AnalysisID(p.Scope, p.Profile) {
-		return analysis.View{}, analysis.ErrInvalid
+	if p.CommandKey != "" {
+		return s.planCommand(ctx, p.Scope, p.Manifest, p.CommandKey, p.CommandDigest, func(tx pgx.Tx) (analysis.View, error) {
+			return planAnalysis(ctx, tx, p)
+		})
 	}
 	tx, e := s.pool.Begin(ctx)
 	if e != nil {
 		return analysis.View{}, e
 	}
 	defer tx.Rollback(ctx)
-	raw, _ := json.Marshal(p.Profile)
-	_, e = tx.Exec(ctx, `insert into ouf_mcp.profile_analysis(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum) values($1,$2,$3,$4,$5,$6) on conflict do nothing`, p.ID, p.Scope.Service, p.Scope.Principal, p.Scope.Tenant, raw, p.Manifest)
+	v, e := planAnalysis(ctx, tx, p)
+	if e != nil {
+		return v, e
+	}
+	return v, tx.Commit(ctx)
+}
+
+func planAnalysis(ctx context.Context, tx pgx.Tx, p analysis.Plan) (analysis.View, error) {
+	if !p.Scope.Valid() || !p.Profile.Valid() || (p.Visibility == "" && (len(p.Tasks) < 1 || (len(p.Tasks) > analysis.MaxPlanBatch && !p.Replan && p.Tasks[0].Compatibility == ""))) || len(p.Tasks) > analysis.MaxTasks || p.ID != analysis.AnalysisID(p.Scope, p.Profile, p.Epoch) {
+		return analysis.View{}, analysis.ErrInvalid
+	}
+	raw, _ := json.Marshal(struct {
+		analysis.Profile
+		Epoch string `json:"policyEpoch,omitempty"`
+	}{p.Profile, p.Epoch})
+	_, e := tx.Exec(ctx, `insert into ouf_mcp.profile_analysis(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum) values($1,$2,$3,$4,$5,$6) on conflict do nothing`, p.ID, p.Scope.Service, p.Scope.Principal, p.Scope.Tenant, raw, p.Manifest)
 	if e != nil {
 		return analysis.View{}, e
 	}
@@ -89,6 +104,9 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	mode := analysis.View{ID: p.ID}
 	if e = publishedMetadata(ctx, tx, &mode); e != nil {
 		return analysis.View{}, e
+	}
+	if !p.Replan && analysis.PermissionHold(mode.StopReason) {
+		return analysis.View{}, analysis.ErrPolicyUnchanged
 	}
 	if mode.Seed != "" && (mode.Seed != p.Seed || mode.Visibility != p.Visibility) {
 		return analysis.View{}, analysis.ErrConflict
@@ -113,7 +131,15 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	changes := []analysis.Task{}
 	newCount := 0
 	for _, t := range p.Tasks {
-		t.Visibility = p.Visibility
+		if t.AwaitParent {
+			if rev != 0 {
+				// The target already owns its child set. A later replan command
+				// must not recreate inputs discarded by a completed parent.
+				continue
+			}
+			t.State = "AWAITING_PARENT"
+		}
+		t.Visibility, t.Epoch = p.Visibility, p.Epoch
 		if n, found := indices[t.ID]; found {
 			merged := analysis.Union(tasks[n].Columns, t.Columns)
 			if len(merged) != len(tasks[n].Columns) {
@@ -151,6 +177,9 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 		if e != nil {
 			return analysis.View{}, e
 		}
+		if t.AwaitParent {
+			continue
+		}
 		if t.State == "HELD" && t.Code == "DISCOVERY_TYPE_UNSUPPORTED" {
 			if e = projectOutcome(ctx, tx, p.ID, t.Columns, "", analysis.Outcome{State: "BLOCKED", Reason: t.Code}, ""); e != nil {
 				return analysis.View{}, e
@@ -183,7 +212,7 @@ func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.Vie
 	if e = publishedMetadata(ctx, tx, &v); e != nil {
 		return analysis.View{}, e
 	}
-	return v, tx.Commit(ctx)
+	return v, nil
 }
 func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, manifest string, offset, limit int) (analysis.View, error) {
 	if !scope.Valid() || analysis.ValidateID(id) != nil || offset < 0 || limit < 1 || limit > 128 {
@@ -206,13 +235,20 @@ func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, mani
 	if e = publishedMetadata(ctx, tx, &v); e != nil {
 		return v, e
 	}
+	if v.Visibility != "" && v.Epoch == "" {
+		v.Epoch, e = predecessorEpoch(ctx, tx, v.ID)
+		if e != nil {
+			return v, e
+		}
+	}
 	return v, tx.Commit(ctx)
 }
 func readAnalysisTask(ctx context.Context, tx pgx.Tx, id, taskID string) (analysis.Task, error) {
 	var t analysis.Task
 	var raw []byte
 	var fence *string
-	e := tx.QueryRow(ctx, `select task,fence::text from ouf_mcp.profile_analysis_task where analysis_id=$1 and task_id=$2 for update`, id, taskID).Scan(&raw, &fence)
+	e := tx.QueryRow(ctx, `select task,fence::text from ouf_mcp.profile_analysis_task
+		where analysis_id=$1 and task_id=$2 and task->>'awaitParent' is distinct from 'true' for update`, id, taskID).Scan(&raw, &fence)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return t, analysis.ErrScope
 	}
@@ -289,6 +325,11 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 			t.State, t.Code = "HELD", "ANALYSIS_COLUMN_INVALID"
 			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
 				return t, e
+			}
+			if t.Tool == analysis.BatchTool {
+				if e = discardAwaitingChildren(ctx, tx, id, t.Columns); e != nil {
+					return t, e
+				}
 			}
 			return t, tx.Commit(ctx)
 		}
@@ -414,6 +455,7 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 	}
 	t.State = f.State
 	t.Code = f.Code
+	t.PolicyVersion = f.PolicyVersion
 	t.Dimension = f.Dimension
 	t.AttemptID = f.AttemptID
 	t.Calls += f.Calls

@@ -1,6 +1,11 @@
 package nextstep
 
-import "github.com/GioNob/ouf-mcp-server/internal/analysis"
+import (
+	"fmt"
+
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	"github.com/google/uuid"
+)
 
 func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object {
 	read := Object{"analysisId": id, "view": "SUMMARY"}
@@ -9,10 +14,13 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 		return call("CALL_TOOL", "ANALYSIS_NEXT_PAGE", "source.analysis.read", read)
 	}
 	state := s.State()
-	if view == "STATUS" && state != "RUNNING" {
+	if view == "STATUS" && state != "RUNNING" && !analysis.PermissionHold(s.Hint.Reason) {
 		return call("CALL_TOOL", "ANALYSIS_SUMMARY", "source.analysis.read", read)
 	}
 	h := s.Hint
+	if state == "PARTIAL" && h.Reason != "" {
+		state = "BLOCKED"
+	}
 	switch state {
 	case "RUNNING":
 		var args Object
@@ -42,19 +50,26 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			next["outcome"] = "SUCCEEDED"
 			return next
 		}
-		next := Block("MAPPING_DECISION_REQUIRED", "", "Scegli il mapping usando gli esiti delle colonne e i riferimenti verificati.")
+		const reason = "MAPPING_DECISION_REQUIRED"
+		message := fmt.Sprintf("Con termine pubblicato: %d. Con candidati: %d. Senza candidati: %d. ", s.Counts.Matched, s.Counts.Ready, s.Counts.Zero)
+		if s.Counts.Ready > 0 {
+			message += "Confronta ogni colonna informativa con i candidati del suo requestId. Se uno la rappresenta usa semantic.discovery.adopt con la coppia letta. "
+		} else {
+			message += "Scegli i termini pubblicati che rappresentano le colonne informative. "
+		}
+		message += "Se manca un termine valuta semantic.propose. Escludi solo per provenienza o assenza di termini adatti e motiva la scelta all’utente. Prepara la fonte solo a termini pubblicati."
+		next := Block(reason, "", message)
 		alts := []Object{}
-		for _, option := range []struct {
-			tool string
-			args Object
-		}{
-			{"semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}},
-			{"source.file.preview", Object{"assetId": h.AssetID, "profileId": h.ProfileID}},
-		} {
-			if e.Valid(option.tool, option.args) {
-				alts = append(alts, Object{"action": "CALL_TOOL", "tool": option.tool, "arguments": option.args, "reasonCode": "MAPPING_DECISION_REQUIRED", "userMessage": "Consulta l’evidenza per scegliere il mapping."})
+		add := func(tool string, args Object, label string) {
+			if e.Valid(tool, args) {
+				alts = append(alts, alternative(tool, args, reason, label))
 			}
 		}
+		add("source.analysis.read", Object{"analysisId": id}, "Scegli il mapping con le evidenze già lette")
+		if h.RequestID != "" {
+			add("semantic.discovery.candidates", Object{"analysisId": id, "requestId": h.RequestID, "includeState": true}, "Consulta i candidati della richiesta indicata")
+		}
+		add("source.file.preview", Object{"assetId": h.AssetID, "profileId": h.ProfileID}, "Verifica il significato delle colonne sui valori del file")
 		next["alternatives"] = alts
 		return next
 	case "PARTIAL":
@@ -64,9 +79,32 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 		if reason == "" {
 			reason = "ANALYSIS_HELD"
 		}
-		if reason == "OWNER_AUTHORIZATION_DENIED" || reason == "AUTHORIZATION_DENIED" {
-			return ManualBlock(reason, "Verifica il permesso per riprendere l’analisi.", "HUMAN_THS")
+		if analysis.PermissionHold(reason) || reason == analysis.ErrEpochChanged.Error() {
+			return e.ReplanNext(id, reason)
+		}
+		if reason == "AUTHORIZATION_DENIED" {
+			return permissionHold(reason, "Verifica i permessi del ruolo nella THS.")
+		}
+		switch reason {
+		case "SEM_READ_RECEIPT_INVALID", "SEM_DISCOVERY_RECEIPT_INVALID":
+			return ManualBlock(reason, "La ricevuta di lettura è invalida. Chiedi all’operatore di verificare la piattaforma.", "OPERATOR")
 		}
 		return ManualBlock(reason, "Verifica il motivo che impedisce di proseguire.", "OPERATOR")
 	}
+}
+
+func (e Engine) ReplanNext(id, reason string) Object {
+	const message = "Dopo la conferma della correzione dei permessi nella THS, ripianifica l'analisi da qui"
+	next := permissionHold(reason, message)
+	args := Object{"replanOf": id, "commandKey": uuid.NewString()}
+	if analysis.ValidateID(id) == nil && (e.Valid == nil || e.Valid("source.analysis.plan", args)) {
+		next["alternatives"] = append(next["alternatives"].([]Object), alternative("source.analysis.plan", args, reason, message))
+	}
+	return next
+}
+
+func permissionHold(reason, message string) Object {
+	next := ManualBlock(reason, message, "HUMAN_THS")
+	next["alternatives"] = append(next["alternatives"].([]Object), alternative("authorization.permissions.read", Object{"view": "ROLES"}, reason, "Rileggi il catalogo dei ruoli."))
+	return next
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ type publishedFailureOwner struct {
 	status  int
 	code    string
 	batches int
+	version *int64
 }
 
 func (g *publishedFailureOwner) Execute(ctx context.Context, r orchestration.GatewayRequest, d time.Duration) (orchestration.GatewayResponse, error) {
@@ -28,28 +30,38 @@ func (g *publishedFailureOwner) Execute(ctx context.Context, r orchestration.Gat
 	}
 	g.batches++
 	if g.status != 200 {
-		return orchestration.GatewayResponse{Status: g.status, Problem: &orchestration.Problem{Status: g.status, Code: g.code, RetryAfter: "7200"}}, nil
+		return orchestration.GatewayResponse{Status: g.status, Problem: &orchestration.Problem{Status: g.status, Code: g.code, PolicyVersion: g.version, RetryAfter: "7200"}}, nil
 	}
 	return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"contract":"ouf.semantic.published-batch.v1","results":[]}`)}, nil
 }
 
 func TestPublishedDurableFailuresAndCompatibility(t *testing.T) { // MCP-50T-07
+	older, current, newer := int64(76), int64(77), int64(78)
 	for _, tc := range []struct {
 		status              int
 		code, state, reason string
 		children            int
+		version             *int64
 	}{
-		{429, "SEM_BATCH_RATE_LIMITED", "WAITING", "TRANSIENT_OWNER_WAIT", 0},
-		{503, "SEM_BATCH_UNAVAILABLE", "WAITING", "TRANSIENT_OWNER_WAIT", 0},
-		{200, "", "HELD", analysis.InvalidOwner, 0},
-		{403, "SEM_READ_RECEIPT_OR_POLICY_DENIED", "HELD", "OWNER_AUTHORIZATION_DENIED", 0},
-		{404, "ROUTE_NOT_FOUND", "SUCCEEDED", "PUBLISHED_BATCH_UNAVAILABLE", 4},
-		{413, "SEM_BATCH_REQUEST_TOO_LARGE", "SUCCEEDED", "PUBLISHED_BATCH_SPLIT", 2},
-		{422, "SEM_BATCH_RESULT_TOO_LARGE", "SUCCEEDED", "PUBLISHED_BATCH_SPLIT", 2},
+		{429, "SEM_BATCH_RATE_LIMITED", "WAITING", "TRANSIENT_OWNER_WAIT", 0, nil},
+		{503, "SEM_BATCH_UNAVAILABLE", "WAITING", "TRANSIENT_OWNER_WAIT", 0, nil},
+		{200, "", "HELD", analysis.InvalidOwner, 0, nil},
+		{403, "SEM_READ_RECEIPT_OR_POLICY_DENIED", "HELD", "OWNER_AUTHORIZATION_DENIED", 0, nil},
+		{403, "NO_APPLICABLE_GRANT", "HELD", "NO_APPLICABLE_GRANT", 0, nil},
+		{403, "NO_APPLICABLE_GRANT", "WAITING", "TRANSIENT_OWNER_WAIT", 0, &older},
+		{403, "NO_APPLICABLE_GRANT", "HELD", "NO_APPLICABLE_GRANT", 0, &current},
+		{403, "NO_APPLICABLE_GRANT", "HELD", "NO_APPLICABLE_GRANT", 0, &newer},
+		{403, "STALE_POLICY_BUNDLE", "WAITING", "TRANSIENT_OWNER_WAIT", 0, nil},
+		{403, "NO_POLICY_BUNDLE", "WAITING", "TRANSIENT_OWNER_WAIT", 0, nil},
+		{403, "SEM_READ_RECEIPT_INVALID", "HELD", "SEM_READ_RECEIPT_INVALID", 0, &older},
+		{404, "ROUTE_NOT_FOUND", "SUCCEEDED", "PUBLISHED_BATCH_UNAVAILABLE", 4, nil},
+		{413, "SEM_BATCH_REQUEST_TOO_LARGE", "SUCCEEDED", "PUBLISHED_BATCH_SPLIT", 2, nil},
+		{422, "SEM_BATCH_RESULT_TOO_LARGE", "SUCCEEDED", "PUBLISHED_BATCH_SPLIT", 2, nil},
 	} {
 		t.Run(tc.reason+tc.code, func(t *testing.T) {
-			ctx, s, c, i, _, g, p := coordinatorFixture(t, 4)
-			owner := &publishedFailureOwner{preview: g, status: tc.status, code: tc.code}
+			ctx, s, c, i, auth, g, p := coordinatorFixture(t, 4)
+			auth.version = current
+			owner := &publishedFailureOwner{preview: g, status: tc.status, code: tc.code, version: tc.version}
 			c.Service.Gateway = owner
 			work := analysis.Work{Tool: "semantic.discovery.request", Arguments: json.RawMessage(`{"intent":"other","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`), Columns: []int{0}}
 			v, err := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{work})
@@ -58,7 +70,8 @@ func TestPublishedDurableFailuresAndCompatibility(t *testing.T) { // MCP-50T-07
 			}
 			task, err := c.Step(ctx, i, v.ID, v.Tasks[0].ID)
 			var denied *analysis.OwnerDenial
-			if (tc.status == 403 && !errors.As(err, &denied)) || (tc.status != 403 && err != nil) || task.State != tc.state || task.Code != tc.reason {
+			stableDenial := tc.status == 403 && tc.state == "HELD"
+			if (stableDenial && !errors.As(err, &denied)) || (!stableDenial && err != nil) || task.State != tc.state || task.Code != tc.reason {
 				t.Fatal(task, err)
 			}
 			// Reopen the store as a new executor.
@@ -79,6 +92,24 @@ func TestPublishedDurableFailuresAndCompatibility(t *testing.T) { // MCP-50T-07
 			if tc.status == 404 && next.Compatibility != tc.reason {
 				t.Fatal(next)
 			}
+			if stableDenial {
+				if analysis.PermissionHold(tc.reason) {
+					_, err := c.Plan(ctx, i, p.AssetID, p.ProfileID, 0, []analysis.Work{work})
+					if !errors.Is(err, analysis.ErrPolicyUnchanged) || owner.batches != 1 {
+						t.Fatal("replan under unchanged policy", err, owner.batches)
+					}
+				}
+				summary, err := other.ReadSummary(ctx, analysis.IdentityScope(i), v.ID, checksum, analysis.Position{Seq: 1<<63 - 1, Last: -1, Limit: 4}, true)
+				if err != nil || summary.Hint.Reason != tc.reason || len(summary.Items) != 4 {
+					t.Fatal(summary, err)
+				}
+				for _, raw := range summary.Items {
+					var item analysis.Outcome
+					if json.Unmarshal(raw, &item) != nil || item.Reason != tc.reason || !reflect.DeepEqual(item.PolicyVersion, tc.version) {
+						t.Fatal(string(raw))
+					}
+				}
+			}
 			keys := map[string]bool{}
 			for _, child := range next.Tasks[1:] {
 				if tc.status != 404 {
@@ -94,7 +125,7 @@ func TestPublishedDurableFailuresAndCompatibility(t *testing.T) { // MCP-50T-07
 				keys[saved.OwnerKey] = true
 			}
 			again, err := c.Step(ctx, i, v.ID, task.ID)
-			if tc.status == 403 {
+			if stableDenial {
 				if !errors.Is(err, analysis.ErrScope) {
 					t.Fatal("denied scope restarted", err)
 				}

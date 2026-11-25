@@ -20,6 +20,7 @@ type acquisitionDenial struct {
 	AuthorizationPhase     string `json:"authorizationPhase"`
 	ReasonCode             string `json:"reasonCode"`
 	EvaluatedPolicyVersion int64  `json:"evaluatedPolicyVersion,omitempty"`
+	PolicyVersion          *int64 `json:"policyVersion,omitempty"`
 	RequiredCapability     string `json:"requiredCapability,omitempty"`
 }
 
@@ -65,7 +66,7 @@ func ownerDenialResult(p *orchestration.Problem, capability string) *mcp.CallToo
 	if p.Code == "SEM_CAPABILITY_REQUIRED:ouf.semantic.discovery.adopt" {
 		reason = p.Code
 	}
-	value := acquisitionDenial{Code: "NOT_AUTHORIZED", ReasonCode: reason, AuthorizationPhase: "OWNER"}
+	value := acquisitionDenial{Code: "NOT_AUTHORIZED", ReasonCode: reason, AuthorizationPhase: "OWNER", PolicyVersion: p.PolicyVersion}
 	if reason == "NO_APPLICABLE_GRANT" {
 		value.RequiredCapability = capability
 	}
