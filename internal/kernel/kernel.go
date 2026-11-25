@@ -449,6 +449,9 @@ func registerOperationalTool(server *workflowServer, c manifest.Capability, snap
 	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
+		if c.CapabilityID == "ouf.operations.explain" {
+			return invoke(ctx, c, checksum, args, service, 1, 128<<10)
+		}
 		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
 	})
 }

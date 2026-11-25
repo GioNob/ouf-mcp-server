@@ -2,7 +2,9 @@ package kernel
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -192,5 +194,72 @@ func TestIngestionManifestAndResourceBindingFailClosed(t *testing.T) {
 	permission, resource, err = ingestionReadAuthorization(other, []byte("{}"), "tenant-a")
 	if err != nil || permission != "" || resource.ResourceType != "" {
 		t.Fatal("unrelated capability changed")
+	}
+}
+
+func TestExplainDispatchRequiresIncidentScopeAndGrant(t *testing.T) { // MCP-60m-c-03
+	const tool = "ouf.operations.explain"
+	const scope = "operations.incident.explain"
+	const incident = "22222222-2222-4222-8222-222222222222"
+	now := time.Now().UTC()
+	bundle := authorization.PolicyBundle{
+		BundleID: "explain-test", Version: 1, PublishedAt: now,
+		Capabilities: []authorization.CapabilityDescriptor{{CapabilityID: scope, Operation: "READ", RequiredScope: scope, AllowedActors: []string{"HUMAN"}}},
+		Grants: []authorization.Grant{{
+			GrantID: "incident-read", CapabilityID: scope, TenantID: "tenant-a", SubjectID: "user-a",
+			ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+			Constraints: &authorization.GrantConstraints{Effect: "ALLOW", ResourceType: "operational", ResourceID: incident,
+				ResourceAttributes: map[string]string{"module": "INGESTION"}, AllowedDetailLevels: []string{"TENANT_OPERATIONAL"}},
+		}},
+	}
+	cache := authorization.NewCache(statusBundle{authorization.ActivePolicyBundle{BundleID: bundle.BundleID, BundleVersion: 1, ActivatedAt: now, Bundle: bundle}})
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var in orchestration.GatewayRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Error(err)
+			return
+		}
+		if in.CapabilityID != tool || in.Owner != "ingestion" || in.OperationClass != "READ" || in.AuthorizationDecisionRef != "explain-test:1:"+scope ||
+			in.MaxResultBytes != 128<<10 || string(in.Arguments) != `{"incidentId":"`+incident+`"}` || in.RequestHash != fmt.Sprintf("%x", sha256.Sum256(in.Arguments)) ||
+			in.Identity.PrincipalID != "user-a" || in.Identity.TenantID != "tenant-a" || r.Header.Get("X-OUF-Delegation") != "human-proof" {
+			t.Error("incident dispatch differs from owner contract")
+		}
+		_, _ = io.WriteString(w, `{"classification":"OPERATIONAL"}`)
+	}))
+	defer gateway.Close()
+	client, err := httpclient.NewGatewayWithTokenSource(gateway.URL+"/execute", httpclient.StaticTokenSource("test-workload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := &statusAdmission{}
+	service := &orchestration.Service{RequireDelegation: true, Auth: cache, Admission: admission, Gateway: client, FingerprintKey: make([]byte, 32)}
+	for _, tc := range []struct {
+		name, granted, incidentID string
+		allowed                   bool
+	}{
+		{"authorized", scope, incident, true},
+		{"collection-scope", "ingestion.operations.read", incident, false},
+		{"other-incident", scope, "33333333-3333-4333-8333-333333333333", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := revisionSession(t, service, "mcp.connect "+tc.granted)
+			before := calls.Load()
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"incidentId": tc.incidentID}})
+			if err != nil || result.IsError == tc.allowed {
+				t.Fatalf("unexpected explain result: %+v err=%v", result, err)
+			}
+			want := before
+			if tc.allowed {
+				want++
+			}
+			if calls.Load() != want || admission.calls.Load() != want {
+				t.Error("unexpected admission or dispatch count")
+			}
+		})
 	}
 }

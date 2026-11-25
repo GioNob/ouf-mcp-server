@@ -88,7 +88,7 @@ func TestMCPGatewayUDPPairwise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewGateway(fmt.Sprintf("http://127.0.0.1:%d/internal/capabilities/v1/execute/urban.object.related_search", port), token)
+	client, err := NewGateway(fmt.Sprintf("http://127.0.0.1:%d/internal/capabilities/v1/execute", port), token)
 	if err != nil {
 		t.Fatal(err)
 	}
