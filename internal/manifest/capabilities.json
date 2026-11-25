@@ -1,5 +1,5 @@
 {
-  "version": "1.18.1-onboarding-replan-v1",
+  "version": "1.18.2-history-limit-v1",
   "nextErrors": [
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-", "code": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"}, "action": "BLOCKED", "reason": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE", "actor": "AGENT", "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta."}]},
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-"}, "action": "BLOCKED", "reason": "$code", "actor": "AGENT", "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave."}]},
@@ -662,7 +662,7 @@
         "ouf.operations.incidents"
       ],
       "operationalLimits": {
-        "maxLimit": 200
+        "maxLimit": 100
       },
       "resultSemantics": "Bounded persisted run history for authorized sources",
       "securityNotes": [
@@ -678,7 +678,7 @@
       "baseCostEnvelope": {
         "hardMaxToolCalls": 1,
         "hardMaxGraphCalls": 0,
-        "hardMaxDistinctObjects": 200,
+        "hardMaxDistinctObjects": 100,
         "hardMaxResultBytes": 524288,
         "hardMaxElapsedMs": 3000
       },
@@ -704,7 +704,7 @@
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 200
+            "maximum": 100
           }
         }
       }

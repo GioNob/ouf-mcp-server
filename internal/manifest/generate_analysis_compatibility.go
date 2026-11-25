@@ -58,7 +58,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if m.Version != "1.18.1-onboarding-replan-v1" {
+	if m.Version != "1.18.2-history-limit-v1" {
 		panic("unexpected analysis baseline")
 	}
 	current := batchChecksums(m)

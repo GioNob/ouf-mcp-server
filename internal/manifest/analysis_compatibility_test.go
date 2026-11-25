@@ -2,9 +2,8 @@ package manifest
 
 import "testing"
 
-// Checksum of the manifest in service before 1.18.0: 1.17.0 (4b39568) with the
-// published batch ACTIVE. An analysis planned under it must stay readable and
-// resumable after the release (regenerate with go generate when the manifest changes).
+// Plans created with the batch ACTIVE on the 1.17.0 service manifest (4b39568)
+// must remain readable and resumable after the release.
 const servicePredecessorActive = "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"
 
 func TestAnalysisPredecessorResumesPlansOfTheManifestInService(t *testing.T) {
