@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,10 +9,22 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
+
+func (s *Store) ObserveDiscovery(ctx context.Context, scope analysis.Scope, id, manifest, tool, request string, raw []byte, floor time.Time) error {
+	obs := orchestration.ObserveOwner(orchestration.GatewayResponse{Status: 200, Body: raw}, nil, time.Now())
+	if floor.After(obs.Due) {
+		obs.Due = floor
+	}
+	_, err := s.RecordDiscovery(ctx, scope, id, manifest, tool, request, raw, obs)
+	return err
+}
 
 func TestSummaryPostgresSnapshotAndCost(t *testing.T) {
 	for _, width := range []int{18, 1000, 1024} {
@@ -37,12 +50,13 @@ func TestSummaryPostgresSnapshotAndCost(t *testing.T) {
 				t.Fatal(err)
 			}
 			refs := []string{uuid.NewString(), uuid.NewString()}
+			due := time.Now().UTC().Truncate(time.Microsecond).Add(72 * time.Second).Format(time.RFC3339Nano)
 			for n, task := range p.Tasks {
 				claimed, err := s.ClaimAnalysisTask(ctx, scope, p.ID, task.ID, p.Manifest)
 				if err != nil {
 					t.Fatal(err)
 				}
-				body, _ := json.Marshal(map[string]string{"state": "PENDING", "requestId": refs[n]})
+				body, _ := json.Marshal(map[string]string{"state": "PENDING", "requestId": refs[n], "nextAttemptAt": due})
 				if _, err = s.FinishAnalysisTask(ctx, scope, p.ID, task.ID, claimed.Fence, analysis.Finish{State: "SUCCEEDED", Body: body, Calls: 1}); err != nil {
 					t.Fatal(err)
 				}
@@ -65,8 +79,24 @@ func TestSummaryPostgresSnapshotAndCost(t *testing.T) {
 			if status.Counts.Pending != width || status.Seq != 3 || len(status.Items) != 0 || first.Seq != status.Seq {
 				t.Fatal(status, first.Seq)
 			}
+			if status.Hint.NotBefore != due || first.Hint.NotBefore != due {
+				t.Fatal("summary lost the owner clock", status.Hint, first.Hint)
+			}
 			if status.ReadRows != 2 || first.ReadRows != 2+min(width, 32) {
 				t.Fatal("non-page rows returned", status.ReadRows, first.ReadRows)
+			}
+			// A later live status can lengthen the receipt's lower bound.
+			// Rereading the same request with a shorter delay must preserve it.
+			later := time.Now().UTC().Truncate(time.Microsecond).Add(2 * time.Minute)
+			for _, bound := range []string{later.Format(time.RFC3339Nano), due} {
+				body, _ := json.Marshal(map[string]string{"state": "RUNNING", "next_retry_at": bound})
+				if err := s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.status", refs[0], body, time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first = read(initial, true)
+			if got := read(initial, false).Hint.NotBefore; got != later.Format(time.RFC3339Nano) || first.Hint.NotBefore != got {
+				t.Fatal("reread shortened the persisted owner wait", got, first.Hint)
 			}
 			t.Logf("width=%d STATUS rows=%d fieldBytes=%d first SUMMARY rows=%d fieldBytes=%d", width, status.ReadRows, status.ReadBytes, first.ReadRows, first.ReadBytes)
 			pos := initial
@@ -84,7 +114,7 @@ func TestSummaryPostgresSnapshotAndCost(t *testing.T) {
 				go func() {
 					defer wg.Done()
 					<-start
-					errs <- s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.status", ref, []byte(zero))
+					errs <- s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.status", ref, []byte(zero), time.Time{})
 				}()
 			}
 			close(start)
@@ -117,18 +147,62 @@ func TestSummaryPostgresSnapshotAndCost(t *testing.T) {
 				}
 			}
 			done := read(initial, false)
-			if done.Counts.State() != "COMPLETE" || done.Counts.Zero != width || done.Seq != 5 {
+			if done.State() != "RUNNING" || done.Counts.Blocked != width || done.Counts.Zero != 0 || done.Seq != 5 ||
+				!done.Hint.DecisionRequired || done.Hint.Tool != "semantic.discovery.candidates" {
 				t.Fatal(done)
 			}
-			if err = s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.status", refs[0], []byte(zero)); err != nil {
+			if err = s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.status", refs[0], []byte(zero), time.Time{}); err != nil {
 				t.Fatal(err)
 			}
 			expired := []byte(`{"state":"SUCCEEDED","candidateCount":0,"candidates":[]}`)
-			if err = s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.candidates", refs[0], expired); err != nil {
+			if err = s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.candidates", refs[0], expired, time.Time{}); err != nil {
 				t.Fatal(err)
 			}
-			if got := read(initial, false); got.Seq != done.Seq || got.Counts != done.Counts {
+			if got := read(initial, false); got.Seq != done.Seq || got.Counts != done.Counts || !got.Hint.DecisionRequired {
 				t.Fatal("replay or expiry erased prior evidence", got)
+			}
+			engine := nextstep.Engine{Valid: func(string, nextstep.Object) bool { return true }, Now: func() time.Time { return later.Add(time.Second) }}
+			for _, view := range []string{"SUMMARY", "STATUS"} {
+				resumed := read(initial, view == "SUMMARY")
+				next := engine.SummaryNext(p.ID, view, "", resumed)
+				args, _ := next["arguments"].(nextstep.Object)
+				if next["action"] != "CALL_TOOL" || next["tool"] != "semantic.discovery.candidates" ||
+					next["reasonCode"] != analysis.DiscoveryDecisionRequired || args["requestId"] != refs[0] || args["includeState"] != true {
+					t.Fatal("lost empty page skipped the decision", view, next)
+				}
+			}
+			if width == 18 {
+				// Two different ordinals share the same discovery. The empty page
+				// was delivered and lost. Re-reading offers stable, per-column keys.
+				for index, capability := range []string{"ouf.semantic.propose", "ouf.managed-source.onboarding.create"} {
+					proposal, exclude, err := s.DecisionKeys(ctx, scope, p.ID, p.Manifest, refs[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					again, same, err := s.DecisionKeys(ctx, scope, p.ID, p.Manifest, refs[0])
+					if err != nil || proposal != again || exclude != same {
+						t.Fatal("choice changed on resume", err)
+					}
+					key, owner := proposal, "semantic"
+					args := map[string]any{"commandKey": key}
+					if index == 1 {
+						key, owner = exclude, "onboarding"
+						args = map[string]any{"assetId": profile.AssetID, "profileId": profile.ProfileID,
+							"fields": []map[string]string{{"fieldName": headers[0], "extractionDecision": "EXCLUDE"}}}
+					}
+					raw, _ := json.Marshal(args)
+					service := orchestration.Service{Auth: controlPolicyFixture{}, Gateway: &repeatabilityGateway{body: "{}"}, Admission: s, FingerprintKey: make([]byte, 32)}
+					in := orchestration.Invocation{Identity: orchestration.Identity{ServicePrincipalID: scope.Service, PrincipalID: scope.Principal, TenantID: scope.Tenant},
+						CapabilityID: capability, Owner: owner, OperationClass: "COMMAND", GatewayBindingRef: "capability://" + capability,
+						IdempotencyKey: key, Arguments: raw, ManifestChecksum: p.Manifest, CorrelationID: uuid.NewString(), RetryThreshold: 3,
+						Timeout: time.Second, Window: time.Minute, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144}}
+					for replay := 0; replay < 2; replay++ {
+						res, err := service.Call(ctx, in)
+						if err != nil || res.Replay != (replay == 1) || read(initial, false).Counts.Zero != index+1 {
+							t.Fatal("decision must close exactly one ordinal", res, err)
+						}
+					}
+				}
 			}
 			wrong := scope
 			wrong.Tenant = uuid.NewString()
@@ -194,7 +268,7 @@ func TestSummaryPreviewResumeAndInheritedOutcome(t *testing.T) {
 	}
 	observe := func(tool, raw string) {
 		t.Helper()
-		if err := s.ObserveDiscovery(ctx, scope, plan.ID, plan.Manifest, tool, request, []byte(raw)); err != nil {
+		if err := s.ObserveDiscovery(ctx, scope, plan.ID, plan.Manifest, tool, request, []byte(raw), time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -222,13 +296,107 @@ func TestSummaryPreviewResumeAndInheritedOutcome(t *testing.T) {
 	if err != nil || replay.Seq != result.Seq {
 		t.Fatal(replay, err)
 	}
-	conflict := s.ObserveDiscovery(ctx, scope, plan.ID, plan.Manifest, "semantic.discovery.status", request, []byte(`{"state":"SUCCEEDED","completedCandidateCount":0}`))
+	observe("semantic.discovery.candidates", `{"state":"SUCCEEDED","candidateCount":0,"candidates":[]}`)
+	expired, err := s.ReadSummary(ctx, scope, plan.ID, plan.Manifest, pos, true)
+	if err != nil || !expired.Hint.DecisionRequired || expired.Hint.RequestID != request ||
+		expired.Counts.Ready != 0 || expired.Counts.Blocked != 3 || expired.State() != "RUNNING" {
+		t.Fatal("expired listed candidates did not reopen the column decision", expired, err)
+	}
+	conflict := s.ObserveDiscovery(ctx, scope, plan.ID, plan.Manifest, "semantic.discovery.status", request, []byte(`{"state":"SUCCEEDED","completedCandidateCount":0}`), time.Time{})
 	if !errors.Is(conflict, analysis.ErrProfile) {
 		t.Fatal("changed immutable count", conflict)
 	}
 	hold, err := s.ReadSummary(ctx, scope, plan.ID, plan.Manifest, pos, false)
-	if err != nil || hold.State() != "BLOCKED" || hold.Hint.Reason != "ANALYSIS_PROFILE_CHANGED" || hold.Seq != result.Seq+1 {
+	if err != nil || hold.State() != "BLOCKED" || hold.Hint.Reason != "ANALYSIS_PROFILE_CHANGED" || hold.Seq != expired.Seq+1 {
 		t.Fatal(hold, err)
 	}
 
+}
+
+func TestLegacyEmptyPageResumesAndReconcilesOriginalChoice(t *testing.T) {
+	for _, mode := range []string{"legacy receipt", "021_empty_candidate_resume.sql", "022_expired_candidate_decision.sql"} {
+		t.Run(mode, func(t *testing.T) { checkLegacyEmptyChoice(t, mode) })
+	}
+}
+
+func checkLegacyEmptyChoice(t *testing.T, mode string) {
+	t.Helper()
+	ctx, s, scope, profile, m := analysisFixture(t, 1)
+	p, err := analysis.Build(scope, profile, m, 0, []analysis.Work{{Tool: "semantic.discovery.request", Columns: []int{0},
+		Arguments: json.RawMessage(`{"intent":"fixture","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Headers = []string{"fixture"}
+	if _, err = s.PlanAnalysis(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	request, key := uuid.NewString(), uuid.NewString()
+	// Seed a receipt from the previous implementation, which left the column open.
+	service := orchestration.Service{Auth: controlPolicyFixture{}, Gateway: &repeatabilityGateway{body: "{}"}, Admission: s, FingerprintKey: make([]byte, 32)}
+	raw, _ := json.Marshal(map[string]any{"assetId": profile.AssetID, "profileId": profile.ProfileID,
+		"fields": []map[string]string{{"fieldName": "fixture", "extractionDecision": "EXCLUDE"}}})
+	const capability = "ouf.managed-source.onboarding.create"
+	in := orchestration.Invocation{Identity: orchestration.Identity{ServicePrincipalID: scope.Service, PrincipalID: scope.Principal, TenantID: scope.Tenant},
+		CapabilityID: capability, Owner: "onboarding", OperationClass: "COMMAND", GatewayBindingRef: "capability://" + capability,
+		IdempotencyKey: key, Arguments: raw, ManifestChecksum: p.Manifest, CorrelationID: uuid.NewString(), RetryThreshold: 3,
+		Timeout: time.Second, Window: time.Minute, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 262144}}
+	if res, err := service.Call(ctx, in); err != nil || res.Replay {
+		t.Fatal(res, err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// Reproduce the previous projection, including its immutable version
+	// and the keys delivered before the client lost the reply.
+	old := analysis.Outcome{State: "BLOCKED", Reason: "DISCOVERY_EVIDENCE_UNAVAILABLE", RequestID: request}
+	if err = projectOutcome(ctx, tx, p.ID, []int{0}, request, old, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `update ouf_mcp.analysis_column set empty_candidate_page=true,
+		proposal_choice=gen_random_uuid(),exclusion_choice=$2 where analysis_id=$1`, p.ID, key); err != nil {
+		t.Fatal(err)
+	}
+	if mode == "022_expired_candidate_decision.sql" {
+		if _, err := tx.Exec(ctx, `insert into ouf_mcp.analysis_job_completion(analysis_id,request_id,completed_count)
+			values($1,$2,1)`, p.ID, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pos := analysis.Position{Seq: math.MaxInt64, Last: -1, Limit: 1}
+	if mode != "legacy receipt" {
+		sql, err := migrationFiles.ReadFile("migrations/" + mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for pass := range 2 {
+			tag, err := s.pool.Exec(ctx, string(sql))
+			if err != nil || (pass == 1 && tag.RowsAffected() != 0) {
+				t.Fatal("backfill was not idempotent", tag, err)
+			}
+		}
+		status, err := s.ReadSummary(ctx, scope, p.ID, p.Manifest, pos, false)
+		if err != nil || status.State() != "RUNNING" || status.Hint.RequestID != request || status.Hint.Tool != "semantic.discovery.candidates" {
+			t.Fatal(status, err)
+		}
+		if mode == "022_expired_candidate_decision.sql" && !status.Hint.DecisionRequired {
+			t.Fatal("migrated expiry did not request a decision", status)
+		}
+		if err := s.ObserveDiscovery(ctx, scope, p.ID, p.Manifest, "semantic.discovery.candidates", request,
+			[]byte(`{"state":"SUCCEEDED","candidateCount":0,"candidates":[]}`), time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if res, err := service.Call(ctx, in); err != nil || !res.Replay {
+		t.Fatal("lost legacy receipt caused a new dispatch", res, err)
+	}
+	status, err := s.ReadSummary(ctx, scope, p.ID, p.Manifest, pos, false)
+	if err != nil || status.State() != "COMPLETE" || status.Counts.Zero != 1 {
+		t.Fatal(status, err)
+	}
 }

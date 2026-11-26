@@ -16,7 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func summaryFailure(err error, id string) *mcp.CallToolResult {
+func (s *workflowServer) summaryFailure(ctx context.Context, err error, id string) *mcp.CallToolResult {
 	code := analysis.SafeError(err)
 	if code == "ANALYSIS_OPERATION_HELD" {
 		code = "ANALYSIS_STORE_UNAVAILABLE"
@@ -26,9 +26,7 @@ func summaryFailure(err error, id string) *mcp.CallToolResult {
 		next = (nextstep.Engine{}).ReplanNext(id, code)
 	}
 	if errors.Is(err, analysis.ErrExpired) {
-		next = nextstep.Object{"contract": nextstep.Contract, "action": "CALL_TOOL", "reasonCode": code,
-			"tool": "source.analysis.read", "arguments": nextstep.Object{"analysisId": id, "view": "SUMMARY"},
-			"userMessage": "Il cursore è scaduto. Leggi il riepilogo corrente dalla prima pagina."}
+		next = s.engine(ctx).ExpiredSummary(id)
 	}
 	if errors.Is(err, orchestration.ErrUnauthorized) {
 		code = "AUTHORIZATION_DENIED"
@@ -63,11 +61,11 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 	view, _ := input["view"].(string)
 	checksum, decision, err := c.SummaryAccess(ctx, i)
 	if err != nil {
-		return summaryFailure(err, id)
+		return s.summaryFailure(ctx, err, id)
 	}
 	store, ok := c.Store.(analysis.SummaryStore)
 	if !ok {
-		return summaryFailure(errors.New("missing summary store"), id)
+		return s.summaryFailure(ctx, errors.New("missing summary store"), id)
 	}
 	limits := s.summaryLimits
 	now := time.Now()
@@ -79,7 +77,7 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 	if token, ok := input["cursor"].(string); ok {
 		pos, err = analysis.OpenPosition(token, s.key, scope, id, now)
 		if err != nil {
-			return summaryFailure(err, id)
+			return s.summaryFailure(ctx, err, id)
 		}
 	}
 	finish, err := admitSummary(ctx, c.Service, i, checksum, decision, input, limits.SummaryPageBytes)
@@ -87,10 +85,10 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		if wait := windowAdmissionErrorResult(err); wait != nil {
 			cap := s.tools["source.analysis.read"].capability
 			obs := ownerObject(wait)
-			next := s.engine(ctx).Evaluate(cap, s.manifest.NextPolicies[cap.NextPolicy], input, obs, true)
-			return workflowError(nextstep.Object{"code": obs["code"], "next": next})
+			obs["next"] = s.engine(ctx).Evaluate(cap, s.manifest.NextPolicies[cap.NextPolicy], input, obs, true)
+			return workflowError(obs)
 		}
-		return summaryFailure(err, id)
+		return s.summaryFailure(ctx, err, id)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -105,23 +103,23 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 			objects = max(1, len(items))
 		}
 		if err := finish(end, len(wire), objects, response != nil && !response.IsError); err != nil {
-			response = summaryFailure(err, id)
+			response = s.summaryFailure(ctx, err, id)
 		}
 	}()
 	page := view == "SUMMARY"
 	result, err := store.ReadSummary(ctx, scope, id, checksum, pos, page)
 	if err != nil {
-		return summaryFailure(err, id)
+		return s.summaryFailure(ctx, err, id)
 	}
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
-		return summaryFailure(c.ScopeError(ctx, i, id, checksum, err), id)
+		return s.summaryFailure(ctx, c.ScopeError(ctx, i, id, checksum, err), id)
 	}
 	if page && pos.Last < 0 {
 		pos.Snapshot = uuid.New()
 	}
 	out, last, err := s.summaryPage(ctx, id, view, scope, pos, result, limits.SummaryPageBytes)
 	if err != nil {
-		return summaryFailure(err, id)
+		return s.summaryFailure(ctx, err, id)
 	}
 	first := -1
 	if page {
@@ -132,7 +130,7 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		frozen = &result.Hint
 	}
 	if err = store.AuditSummary(ctx, scope, id, decision, result.Seq, first, last, pos.Snapshot, frozen); err != nil {
-		return summaryFailure(err, id)
+		return s.summaryFailure(ctx, err, id)
 	}
 	return out
 }
@@ -195,11 +193,9 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 	// A long but valid header can dominate the final next command.
 	// Deliver a compact authorized owner read for that column instead.
 	if result.Hint.Tool == "source.analysis.plan" && result.State() == "RUNNING" {
-		args := nextstep.Object{"assetId": result.Hint.AssetID, "profileId": result.Hint.ProfileID, "view": "COLUMNS", "offset": result.Hint.Ordinal, "limit": 1}
-		if s.valid("source.file.preview", args) {
+		if next := engine.PreviewColumn(result.Hint); next != nil {
 			body := out.StructuredContent.(nextstep.Object)
-			body["next"] = nextstep.Object{"contract": nextstep.Contract, "action": "CALL_TOOL", "tool": "source.file.preview", "arguments": args,
-				"reasonCode": "ANALYSIS_COLUMN_PREVIEW", "userMessage": "Leggi i metadati della colonna da pianificare."}
+			body["next"] = next
 			wire, _ := json.Marshal(body)
 			out.Content = []mcp.Content{&mcp.TextContent{Text: string(wire)}}
 			if raw, _ := json.Marshal(out); len(raw) <= maximum {
@@ -218,12 +214,12 @@ func analysisReadError(err error) *mcp.CallToolResult {
 }
 
 func recordAnalysisRead(ctx context.Context, service *orchestration.Service, snapshot *manifest.Snapshot, id, tool, request string, result *mcp.CallToolResult) error {
-	if result == nil || result.IsError || len(result.Content) != 1 {
+	if result == nil || ownerObject(result)["replay"] == true {
 		return nil
 	}
-	body, ok := result.Content[0].(*mcp.TextContent)
-	if !ok || ownerObject(result)["replay"] == true {
-		return nil
+	obs, observed := result.Meta["ouf/ownerObservation"].(orchestration.OwnerObservation)
+	if !observed {
+		return nil // Pre-dispatch refusals have no owner observation.
 	}
 	store, ok := service.Admission.(analysis.SummaryStore)
 	if !ok {
@@ -231,11 +227,28 @@ func recordAnalysisRead(ctx context.Context, service *orchestration.Service, sna
 	}
 	identity, _ := ctx.Value(identityKey{}).(requestIdentity)
 	c := analysis.Coordinator{Service: service, Manifest: snapshot}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
 	checksum, _, err := c.SummaryAccess(ctx, identity.Identity)
 	if err != nil {
 		return err
 	}
-	return store.ObserveDiscovery(ctx, analysis.IdentityScope(identity.Identity), id, checksum, tool, request, []byte(body.Text))
+	var evidence []byte
+	if !result.IsError {
+		if len(result.Content) != 1 {
+			return analysis.ErrInvalid
+		}
+		body, ok := result.Content[0].(*mcp.TextContent)
+		if !ok {
+			return analysis.ErrInvalid
+		}
+		evidence = []byte(body.Text)
+	}
+	saved, err := store.RecordDiscovery(ctx, analysis.IdentityScope(identity.Identity), id, checksum, tool, request, evidence, obs)
+	if err == nil {
+		attachObservation(result, saved)
+	}
+	return err
 }
 
 func summaryInput(tool string, args map[string]any) bool {
@@ -253,5 +266,7 @@ func configuredSummary(snapshot *manifest.Snapshot) (analysis.Limits, error) {
 	l.PreviewPageSize, preview = setting("OUF_ANALYSIS_PREVIEW_PAGE_SIZE", l.PreviewPageSize, 1, 128)
 	l.SummaryPageBytes, bytes = setting("OUF_ANALYSIS_SUMMARY_PAGE_BYTES", l.SummaryPageBytes, 4096, 1<<20)
 	l.SummaryCursorSeconds, ttl = setting("OUF_ANALYSIS_CURSOR_SECONDS", l.SummaryCursorSeconds, 1, 86400)
-	return l, errors.Join(preview, bytes, ttl)
+	limit, err := setting("OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS", l.MaxColumnReformulations, 0, 16)
+	l.MaxColumnReformulations = limit
+	return l, errors.Join(preview, bytes, ttl, err)
 }

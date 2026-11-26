@@ -111,7 +111,7 @@ func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f
 			} else if b.Intents[n].Type == "DATATYPE" {
 				project(cols, analysis.Outcome{State: "BLOCKED", Reason: "DISCOVERY_TYPE_UNSUPPORTED"}, "")
 			} else {
-				children = append(children, analysis.ResidualTask(id, b.Intents[n], cols, analysis.MaxResultBytes, false))
+				children = append(children, t.ResidualTasks(id, b.Intents[n], false)...)
 			}
 		}
 	}
@@ -165,21 +165,28 @@ func savePublished(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, f
 func (s *Store) PublishedHint(ctx context.Context, scope analysis.Scope, id, manifest, request string) (analysis.Summary, bool, error) {
 	var out analysis.Summary
 	var bound bool
+	var timing []byte
 	err := s.pool.QueryRow(ctx, `select m.visibility_digest,h.total,h.pending,h.blocked,h.matched,h.ready,h.zero_count,h.stopped,
 	coalesce(c.next_tool,''),coalesce(c.task_id,''),coalesce(c.request_id::text,''),m.stop_reason,coalesce(p.profile->>'policyEpoch',''),
+	`+summaryTimingSQL+`,coalesce(c.ordinal,0),
 	($6='' or exists(select from ouf_mcp.analysis_column where analysis_id=p.analysis_id and request_id=nullif($6,'')::uuid))
 	from ouf_mcp.analysis_published_plan m join ouf_mcp.profile_analysis p using(analysis_id)
 	cross join lateral (select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id order by seq desc limit 1) h
-	left join lateral (select next_tool,task_id,request_id from ouf_mcp.analysis_column
+	left join lateral (select analysis_id,next_tool,task_id,request_id,outcome,ordinal from ouf_mcp.analysis_column
 	where analysis_id=p.analysis_id and next_tool<>'' order by published_first desc,ordinal limit 1) c on true
+	left join ouf_mcp.profile_analysis_task t on t.analysis_id=c.analysis_id and t.task_id=c.task_id
+	left join ouf_mcp.analysis_owner_due w on w.analysis_id=c.analysis_id and w.request_id=c.request_id
 	where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[])`,
 		id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), request).Scan(&out.Visibility, &out.Counts.Total, &out.Counts.Pending, &out.Counts.Blocked,
-		&out.Counts.Matched, &out.Counts.Ready, &out.Counts.Zero, &out.Stopped, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Reason, &out.Epoch, &bound)
+		&out.Counts.Matched, &out.Counts.Ready, &out.Counts.Zero, &out.Stopped, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Reason, &out.Epoch, &timing, &out.Hint.Ordinal, &bound)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, false, nil
 	}
 	if err == nil && !bound {
 		err = analysis.ErrScope
+	}
+	if err == nil {
+		err = mergeSummaryTiming(&out.Hint, timing)
 	}
 	return out, true, err
 }

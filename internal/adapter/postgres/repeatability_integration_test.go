@@ -130,6 +130,28 @@ func TestOrdinaryReplayTracksAttemptTransitionsAndPublicReference(t *testing.T) 
 	}
 }
 
+func TestAdoptionReplayReadsReconciledRefusal(t *testing.T) {
+	ctx, store, manifest := controlStore(t)
+	request := controlRequest(manifest, uuid.NewString())
+	request.BudgetProfile = ""
+	request.CapabilityID, request.Owner, request.OperationClass = "ouf.semantic.discovery.adopt", "semantic", "COMMAND"
+	first, err := store.Reserve(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Dispatch(ctx, first.AttemptID, uuid.NewString(), time.Second, first.LockVersion); err != nil {
+		t.Fatal(err)
+	}
+	const code = "CANDIDATE_PUBLISHER_MISSING"
+	if err := store.Reconcile(ctx, first.AttemptID, orchestration.Cost{ToolCalls: 1}, orchestration.AttemptOutcome{Code: code, AdoptionRefusalCode: code}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := store.Reserve(ctx, request)
+	if err != nil || !replay.Replay || replay.AttemptID != first.AttemptID || replay.AttemptState != "FAILED" || replay.AdoptionRefusalCode != code {
+		t.Fatal(replay, err)
+	}
+}
+
 func TestDiscoveryBindsExistingTransportClaimOnlyOnExactPayload(t *testing.T) {
 	ctx, store, manifest := controlStore(t)
 	request := controlRequest(manifest, uuid.NewString())
@@ -227,6 +249,56 @@ func TestWaitAndStatusShareOrdinaryAdmission(t *testing.T) {
 		_, err := service.Call(ctx, in)
 		if n < orchestration.AdmissionRetryThreshold && err != nil || n == orchestration.AdmissionRetryThreshold && !errors.Is(err, orchestration.ErrToolSelectionStall) {
 			t.Fatal("equivalent picker command", n, err)
+		}
+	}
+}
+
+type uncertainAdoptionGateway struct{ status int }
+
+func (g uncertainAdoptionGateway) Execute(context.Context, orchestration.GatewayRequest, time.Duration) (orchestration.GatewayResponse, error) {
+	return orchestration.GatewayResponse{Status: g.status, Problem: &orchestration.Problem{Code: "OWNER_UNAVAILABLE", Status: g.status, RetryAfter: "72"}}, nil
+}
+
+func TestAdoptionClockSurvivesUnknownRecovery(t *testing.T) {
+	ctx, store, checksum := controlStore(t)
+	for _, status := range []int{429, 503} {
+		id := controlRequest(checksum, uuid.NewString()).Identity
+		key := uuid.NewString()
+		args, _ := json.Marshal(map[string]string{"commandKey": key, "candidateId": uuid.NewString(), "requestId": uuid.NewString()})
+		in := orchestration.Invocation{Identity: id, CapabilityID: "ouf.semantic.discovery.adopt", OperationClass: "COMMAND",
+			Owner: "semantic", GatewayBindingRef: "capability://ouf.semantic.discovery.adopt", ManifestChecksum: checksum,
+			Arguments: args, IdempotencyKey: key, CorrelationID: uuid.NewString(), Window: time.Minute, Timeout: time.Second,
+			RetryThreshold: 3, Maximum: orchestration.Cost{ToolCalls: 1, ResultBytes: 262144, DistinctObjects: 1}}
+		s := orchestration.Service{Auth: controlPolicyFixture{}, Admission: store, Gateway: uncertainAdoptionGateway{status}, FingerprintKey: make([]byte, 32)}
+		lost, err := s.Call(ctx, in)
+		if status == 503 && !errors.Is(err, orchestration.ErrIdempotencyOutcomeUnknown) || status == 429 && err != nil {
+			t.Fatal(status, err)
+		}
+		restarted := orchestration.Service{Auth: s.Auth, Admission: store, FingerprintKey: s.FingerprintKey}
+		check := func() {
+			t.Helper()
+			res, err := restarted.Call(ctx, in)
+			if err != nil && !errors.Is(err, orchestration.ErrIdempotencyOutcomeUnknown) || res.AttemptID != lost.AttemptID ||
+				!res.Observation.Due.Equal(lost.Observation.Due) || res.Observation.Status != status {
+				t.Fatal(status, res, err)
+			}
+			read, _ := json.Marshal(map[string]string{"commandKey": key})
+			clock, err := restarted.SavedObservation(ctx, id, "ouf.semantic.proposal.read", "READ", read)
+			if err != nil || !clock.Due.Equal(res.Observation.Due) || clock.Reason != "TRANSIENT_OWNER_WAIT" {
+				t.Fatal(clock, err)
+			}
+		}
+		check()
+		if status == 503 {
+			var state string
+			if err = store.pool.QueryRow(ctx, `select state from ouf_mcp.tool_attempt where attempt_id=$1`, lost.AttemptID).Scan(&state); err != nil || state != "RUNNING" {
+				t.Fatal("uncertain dispatch lost its lease", state, err)
+			}
+			_, err = store.pool.Exec(ctx, `update ouf_mcp.tool_attempt set state='UNKNOWN',dispatch_state='UNKNOWN',unknown_since=now(),lease_until=null where attempt_id=$1`, lost.AttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check()
 		}
 	}
 }

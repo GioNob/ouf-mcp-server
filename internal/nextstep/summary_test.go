@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -67,6 +68,48 @@ func TestSummaryNextAtWorkflowBoundaries(t *testing.T) {
 	s.Stopped = true
 	if n := e.SummaryNext(id, "STATUS", "", s); n["tool"] != "source.analysis.read" {
 		t.Fatal(n)
+	}
+}
+
+func TestSummaryOwnerTiming(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	id := strings.Repeat("a", 64)
+	job := "11111111-1111-4111-8111-111111111111"
+	engine := signedEngine(t, Engine{Now: func() time.Time { return now }, Valid: func(string, Object) bool { return true }})
+	start := now
+	for _, tc := range []struct {
+		field string
+		value any
+		delay time.Duration
+	}{
+		{"nextAttemptAt", start.Add(72 * time.Second), 72}, {"notBefore", start.Add(72 * time.Second), 72},
+		{"next_retry_at", start.Add(72 * time.Second), 72}, {"pollAfterSeconds", 72, 72}, {"retryAfterSeconds", 72, 72},
+		{"Retry-After", "72", 72}, {"RetryAfter", "72", 72}, {"recoveryState", "RETRY_WAIT", 5},
+	} {
+		for _, nested := range []bool{false, true} {
+			fields := Object{tc.field: tc.value}
+			if nested {
+				fields = Object{"result": fields}
+			}
+			raw, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, tool := analysis.DiscoveryContinuation(job, raw, start, time.Time{}, "semantic.discovery.status")
+			s := analysis.Summary{Counts: analysis.Counts{Total: 1, Pending: 1}, Hint: analysis.Hint{Tool: tool, RequestID: job, NotBefore: outcome.NotBefore.UTC().Format(time.RFC3339Nano)}}
+			for _, view := range []string{"STATUS", "SUMMARY"} {
+				now = start.Add(time.Second)
+				ref := pollTarget(t, engine, engine.SummaryNext(id, view, "", s))
+				due := start.Add(tc.delay * time.Second)
+				if ref.Read != tool || ref.Args["requestId"] != job || ref.Args["analysisId"] != id || ref.NotBefore != due.Format(time.RFC3339Nano) {
+					t.Fatalf("%s/%s nested=%t: %v", view, tc.field, nested, ref)
+				}
+				now = due
+				if next := engine.SummaryNext(id, view, "", s); next["action"] != "CALL_TOOL" || next["tool"] != tool {
+					t.Fatal("summary restarted the wait", next)
+				}
+			}
+		}
 	}
 }
 

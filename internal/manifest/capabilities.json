@@ -1,5 +1,5 @@
 {
-  "version": "1.18.2-history-limit-v1",
+  "version": "1.19.0-next-discovery-v1",
   "nextErrors": [
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-", "code": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"}, "action": "BLOCKED", "reason": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE", "actor": "AGENT", "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta."}]},
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-"}, "action": "BLOCKED", "reason": "$code", "actor": "AGENT", "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave."}]},
@@ -63,6 +63,7 @@
       "read": "source.analysis.read",
       "rules": [
         {"when": {"#readyTask": "?"}, "action": "CALL_TOOL", "reason": "PLANNED_STEP", "tool": "source.analysis.step", "args": {"commandKey": "#uuid", "analysisId": "analysisId", "taskId": "#readyTask"}},
+        {"when": {"#timedTask": "?"}, "action": "CALL_TOOL", "reason": "ANALYSIS_STEP_PENDING", "tool": "source.analysis.step", "args": {"commandKey": "#uuid", "analysisId": "analysisId|@analysisId", "taskId": "#timedTask"}},
         {"when": {"#resumeTask": "?"}, "action": "BLOCKED", "reason": "ANALYSIS_RESUME_AVAILABLE", "message": "Il piano indica un compito riprendibile. Verifica lo stato letto da source.analysis.read e riprendi il compito indicato.", "alternatives": [{"tool": "source.analysis.step", "args": {"analysisId": "analysisId|@analysisId", "taskId": "#resumeTask", "commandKey": "#uuid"}, "message": "Riprendi il compito con la stessa identità e il budget del piano."}]},
         {"when": {"#nextTaskOffset": "?"}, "action": "CALL_TOOL", "reason": "ANALYSIS_NEXT_PAGE", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId", "offset": "#nextTaskOffset"}},
         {"when": {"#allTerminal": "true"}, "action": "BLOCKED", "reason": "MAPPING_DECISION_REQUIRED", "message": "Scegli il mapping dai risultati di source.analysis.read, dalla preview e dai candidati letti. Verifica classe e riferimenti pubblicati con semantic.search e semantic.get. Mantieni gli argomenti indicati e completa quelli mancanti secondo lo schema.", "alternatives": [{"tool": "semantic.discovery.adopt", "args": {"analysisId": "analysisId|@analysisId", "commandKey": "#decisionKey"}, "message": "Adotta un candidato ammesso da semantic.discovery.candidates usando il suo requestId e candidateId."},{"tool": "semantic.propose", "args": {"analysisId": "analysisId|@analysisId", "commandKey": "#decisionKey"}, "message": "Proponi il termine mancante usando le colonne della preview e le evidenze semantiche raccolte."},{"tool": "source.onboarding.create", "args": {"analysisId": "analysisId|@analysisId", "commandKey": "#decisionKey", "assetId": "profile.assetId|@assetId", "profileId": "profile.profileId|@profileId"}, "message": "Prepara la fonte con la chiave e i campi della preview e con riferimenti semantici pubblicati verificati."},{"tool": "semantic.search", "args": {"analysisId": "analysisId|@analysisId"}, "message": "Cerca la classe o la proprietà necessaria per il mapping e consulta la revisione pubblicata."}]},
@@ -80,15 +81,17 @@
     },
     "discovery": {
       "read": "semantic.discovery.status",
-      "vocabulary": {"state": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "EXHAUSTED"], "recoveryState": ["ACTIVE", "RETRY_WAIT", "PAUSED_EXHAUSTED", "BLOCKED", "CANCELLED"]},
+      "vocabulary": {"state": ["PENDING", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED", "EXHAUSTED"], "recoveryState": ["ACTIVE", "RETRY_WAIT", "PAUSED_EXHAUSTED", "BLOCKED", "CANCELLED"]},
       "rules": [
         {"when": {"recoveryState": "PAUSED_EXHAUSTED|BLOCKED|CANCELLED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
         {"when": {"recoveryState": "PAUSED_EXHAUSTED|BLOCKED|CANCELLED"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "OPERATOR", "message": "Verifica lo stato corrente e il budget della discovery."},
         {"when": {"state|status": "FAILED|CANCELLED|EXHAUSTED", "@analysisId": "?"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "AGENT", "message": "La discovery si è fermata. Consulta source.analysis.read per proseguire con gli altri compiti senza riavviare la richiesta.", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
         {"when": {"state|status": "FAILED|CANCELLED|EXHAUSTED"}, "action": "BLOCKED", "reason": "DISCOVERY_STOPPED", "actor": "OPERATOR", "message": "Verifica lo stato corrente e il budget della discovery."},
-        {"when": {"state": "SUCCEEDED", "candidateCount": "0", "completedCandidateCount": "0", "@analysisId": "?"}, "action": "CALL_TOOL", "reason": "DISCOVERY_NO_CANDIDATES", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
-        {"when": {"state": "SUCCEEDED", "candidateCount": "0", "@analysisId": "?"}, "action": "CALL_TOOL", "reason": "DISCOVERY_EVIDENCE_UNAVAILABLE", "tool": "source.analysis.read", "args": {"analysisId": "@analysisId", "view": "=STATUS"}},
-        {"when": {"state": "SUCCEEDED", "candidateCount": "0"}, "action": "BLOCKED", "reason": "DISCOVERY_NO_CANDIDATES", "message": "Nessun candidato. Scegli una ricerca o una nuova discovery usando l’intento della richiesta e i risultati letti.", "alternatives": [{"tool": "semantic.search", "args": {"q": "#searchQuery"}, "message": "Cerca un termine pubblicato pertinente alla colonna."},{"tool": "semantic.discovery.request", "args": {"intent": "intent|@intent", "requestedArtifactType": "requestedArtifactType|@requestedArtifactType", "preferredLanguages": "preferredLanguages|@preferredLanguages", "idempotencyKey": "#decisionKey"}, "message": "Prepara una nuova discovery con intento, tipo e lingue pertinenti."}]},
+        {"when": {"state": "SUCCEEDED", "completedCandidateCount": "0"}, "action": "CALL_TOOL", "reason": "DISCOVERY_NO_CANDIDATES", "tool": "semantic.discovery.candidates", "args": {"analysisId": "@analysisId", "requestId": "requestId|@requestId", "includeState": "#true"}},
+        {"when": {"state": "SUCCEEDED", "candidateCount": "0"}, "action": "CALL_TOOL", "reason": "DISCOVERY_NO_CANDIDATES", "tool": "semantic.discovery.candidates", "args": {"analysisId": "@analysisId", "requestId": "requestId|@requestId", "includeState": "#true"}},
+        {"when": {"recoveryState": "RETRY_WAIT", "state|status": "PENDING|RUNNING|RETRY_WAIT|-"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
+        {"when": {"state|status": "-", "allowedActions": "-", "#ownerTiming": "true"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
+        {"when": {"state|status": "RETRY_WAIT"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"allowedActions": "POLL_DISCOVERY"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"allowedActions": "-", "state|status": "PENDING|RUNNING|RETRY_WAIT"}, "action": "POLL", "reason": "DISCOVERY_PENDING", "tool": "semantic.discovery.status", "args": {"requestId": "requestId|@requestId", "analysisId": "@analysisId"}, "terminal": ["SUCCEEDED", "FAILED", "CANCELLED"]},
         {"when": {"allowedActions": "LIST_CANDIDATES", "state": "SUCCEEDED"}, "action": "CALL_TOOL", "reason": "DISCOVERY_COMPLETE", "tool": "semantic.discovery.candidates", "args": {"requestId": "requestId|@requestId", "includeState": "#true", "analysisId": "@analysisId"}},
@@ -99,6 +102,7 @@
       "read": "semantic.discovery.status",
       "vocabulary": {"state": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]},
       "rules": [
+        {"when": {"state": "SUCCEEDED", "#emptyCandidates": "true"}, "action": "BLOCKED", "reason": "DISCOVERY_NO_CANDIDATES", "actor": "AGENT", "message": "Scegli come proseguire per la colonna."},
         {"when": {"candidates|legacyList": "?"}, "action": "CALL_TOOL", "reason": "CANDIDATE_SELECTION_REQUIRED", "tool": "source.analysis.read", "args": {"analysisId": "analysisId|@analysisId", "view": "=STATUS"}}
       ]
     },
@@ -6904,7 +6908,7 @@
         "maxRetryAttempts": 128,
         "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Column intentHint is advisory preview metadata. Supply a descriptive Italian intent. To reformulate an empty discovery, supply replanOf, requestId, column, intent and a commandKey. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
         "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
@@ -6933,10 +6937,14 @@
         "type": "object",
         "additionalProperties": false,
         "oneOf": [
-          {"required": ["assetId", "profileId", "expectedRevision", "work"], "not": {"required": ["replanOf"]}},
-          {"required": ["replanOf", "commandKey"], "maxProperties": 2}
+          {"required": ["assetId", "profileId", "expectedRevision", "work"], "not": {"anyOf": [{"required": ["replanOf"]}, {"required": ["column"]}, {"required": ["requestId"]}, {"required": ["intent"]}]}},
+          {"required": ["replanOf", "commandKey"], "maxProperties": 2},
+          {"required": ["replanOf", "commandKey", "requestId", "column", "intent"], "maxProperties": 5}
         ],
         "properties": {
+          "requestId": {"type": "string", "format": "uuid"},
+          "column": {"type": "integer", "minimum": 0, "maximum": 1023},
+          "intent": {"type": "string", "minLength": 1, "maxLength": 2000},
           "replanOf": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "commandKey": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
           "assetId": {
@@ -6974,8 +6982,18 @@
                     "semantic.discovery.candidates"
                   ]
                 },
+                "intentHint": {
+                  "type": "object", "additionalProperties": false, "required": ["originalName"],
+                  "properties": {
+                    "originalName": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "dataType": {"type": "string", "maxLength": 80},
+                    "distinctCount": {"type": "integer", "minimum": 0},
+                    "distinctValues": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "number"}, {"type": "boolean"}]}}
+                  }
+                },
                 "arguments": {
-                  "type": "object"
+                  "type": "object",
+                  "properties": {"intent": {"type": "string", "minLength": 1, "maxLength": 2000}}
                 },
                 "columns": {
                   "type": "array",
@@ -7018,6 +7036,7 @@
         "previewPageSize": 128,
         "summaryPageBytes": 65536,
         "summaryCursorSeconds": 900,
+        "maxColumnReformulations": 2,
         "maxColumns": 1024,
         "maxTasks": 16384,
         "maxPlanBatch": 128,
@@ -7565,7 +7584,7 @@
       "toolName": "ouf.wait",
       "nextPolicy": "ouf.wait",
       "capabilityId": "ouf.wait",
-      "purpose": "Wait for a change to an authorized owner observation",
+      "purpose": "Wait on the server until the bound owner observation or retry is due",
       "useWhen": [
         "next supplies an opaque waitRef"
       ],
@@ -7579,7 +7598,7 @@
         "minIntervalSeconds": 5,
         "maxDurationSeconds": 45
       },
-      "resultSemantics": "Changed flag, current observation and next action",
+      "resultSemantics": "Call immediately with the supplied arguments. The server waits up to one tranche, returns another wait while the observation is premature, then reads the owner or returns the due command with its original arguments.",
       "securityNotes": [
         "Every observation requires current delegated read authority"
       ],
@@ -7605,6 +7624,7 @@
           "waitRef"
         ],
         "properties": {
+          "resumeArguments": {"type": "object"},
           "waitRef": {
             "type": "string",
             "minLength": 32, "maxLength": 1024, "pattern": "^[A-Za-z0-9_-]+$"

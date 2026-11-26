@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -27,6 +28,10 @@ func TestSummaryLimitsAndErrors(t *testing.T) {
 			}
 		})
 	}
+	s, err := newWorkflowServer(nil, m, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		err    error
 		code   string
@@ -41,7 +46,7 @@ func TestSummaryLimitsAndErrors(t *testing.T) {
 		{errors.New("private database detail"), "ANALYSIS_STORE_UNAVAILABLE", 503},
 	} {
 		id := strings.Repeat("b", 64)
-		r := summaryFailure(test.err, id)
+		r := s.summaryFailure(context.Background(), test.err, id)
 		body := ownerObject(r)
 		if !r.IsError || len(body) != 2 || body["code"] != test.code || r.Meta["ouf/httpStatus"] != test.status {
 			t.Fatal(body, r.Meta)

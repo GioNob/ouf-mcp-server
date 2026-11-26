@@ -103,6 +103,18 @@ fi
 if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
   [[ "$before" == 16 && "$after" == 17 ]]
 fi
+if [[ "${PREDECESSOR:-}" == 2a25eb48566d06ae2952e2feb9fc619592fc7570 ]]; then
+  [[ "$before" == 17 && "$after" == 22 ]]
+  # #120 seeded these rows before the new evidence flag existed.
+  [[ "$(sql -c 'select count(*) > 0 and bool_and(not empty_candidate_page) from ouf_mcp.analysis_column')" == t ]]
+  migrate "$NEW_IMAGE"
+  sql < "$dir/../../internal/adapter/postgres/migrations/018_analysis_reformulation.sql"
+  sql < "$dir/../../internal/adapter/postgres/migrations/019_analysis_owner_due.sql"
+  sql < "$dir/../../internal/adapter/postgres/migrations/020_owner_observation.sql"
+  sql < "$dir/../../internal/adapter/postgres/migrations/021_empty_candidate_resume.sql"
+  sql < "$dir/../../internal/adapter/postgres/migrations/022_expired_candidate_decision.sql"
+  [[ "$(schema)" == 22 ]]
+fi
 start "$NEW_IMAGE" candidate
 if [[ "${PREDECESSOR:-}" == ea4033ef04579e5bbd59b897133bffa09bc0a803 ]]; then
   # MCP-50T-09: candidate must execute the exact ea4033e plan before return.

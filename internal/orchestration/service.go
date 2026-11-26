@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"sort"
 	"time"
 
@@ -96,6 +97,7 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
+	ColumnDecision                                                                  *ColumnDecision
 	CallsPerMinute                                                                  int
 	StatusRead                                                                      bool
 	InternalWaitRead                                                                bool
@@ -112,17 +114,24 @@ type AdmissionRequest struct {
 	Maximum                                                                         Cost
 }
 type AdmissionDecision struct {
-	AttemptState string
-	ResultID     *uuid.UUID
-	AttemptID    uuid.UUID
-	LockVersion  int64
-	Replay       bool
+	Observation         OwnerObservation
+	AdoptionRefusalCode string
+	AttemptState        string
+	ResultID            *uuid.UUID
+	AttemptID           uuid.UUID
+	LockVersion         int64
+	Replay              bool
 }
 type AttemptOutcome struct {
-	ResultID         *uuid.UUID
-	Code             string
-	Success          bool
-	BackendRequestID string
+	Observation         OwnerObservation
+	Uncertain           bool
+	ObservationSelector string
+	ColumnDecision      *ColumnDecision
+	AdoptionRefusalCode string
+	ResultID            *uuid.UUID
+	Code                string
+	Success             bool
+	BackendRequestID    string
 }
 type AdmissionPort interface {
 	Reserve(context.Context, AdmissionRequest) (AdmissionDecision, error)
@@ -165,6 +174,7 @@ type Problem struct {
 	PolicyVersion             *int64 `json:"policyVersion,omitempty"`
 }
 type GatewayResponse struct {
+	RetryAfter       string
 	Status           int
 	Body             []byte
 	BackendRequestID string
@@ -198,6 +208,7 @@ type Invocation struct {
 	MaxRequestBytes  int
 	CheckDecision    func(AuthorizationDecision) error
 	InternalWaitRead bool
+	MachineWaitRead  bool
 	// Trusted manifest binding, never taken from tool arguments. Transport,
 	// fingerprints and budget identity continue to use CapabilityID.
 	AuthorizationCapabilityID                                                string
@@ -214,12 +225,15 @@ type Invocation struct {
 	Upload                                                                   *UploadStream
 }
 type Result struct {
-	AttemptState string
-	ResultID     *uuid.UUID
-	Body         []byte
-	Problem      *Problem
-	AttemptID    uuid.UUID
-	Replay       bool
+	Observation         OwnerObservation
+	RetryAfter          string
+	AdoptionRefusalCode string
+	AttemptState        string
+	ResultID            *uuid.UUID
+	Body                []byte
+	Problem             *Problem
+	AttemptID           uuid.UUID
+	Replay              bool
 }
 
 type Service struct {
@@ -361,12 +375,18 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 	}
 	statusRead := isPollRead(in)
+	// The outer wait already paid the ordinary call charge. Dedicated owner
+	// budgets still apply independently, including the discovery window.
+	if in.MachineWaitRead && statusRead && in.BudgetProfile == "" {
+		in.InternalWaitRead = true
+	}
 	if in.InternalWaitRead && !statusRead {
 		return Result{}, errors.New("invalid internal wait read")
 	}
+	choice := columnDecision(in)
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
 		CallsPerMinute: s.AdmissionCallsPerMinute, StatusRead: statusRead, InternalWaitRead: in.InternalWaitRead,
-		Reprocessing: permit, AttemptTimeout: in.Timeout,
+		Reprocessing: permit, AttemptTimeout: in.Timeout, ColumnDecision: choice,
 		BudgetProfile: in.BudgetProfile,
 		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
@@ -374,10 +394,10 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		FingerprintVersion: "v1", CorrelationID: in.CorrelationID, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum,
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{Observation: admitted.Observation, AttemptID: admitted.AttemptID}, err
 	}
 	if admitted.Replay {
-		return Result{AttemptID: admitted.AttemptID, Replay: true, AttemptState: admitted.AttemptState, ResultID: admitted.ResultID}, nil
+		return Result{Observation: admitted.Observation, AttemptID: admitted.AttemptID, Replay: true, AttemptState: admitted.AttemptState, ResultID: admitted.ResultID, AdoptionRefusalCode: admitted.AdoptionRefusalCode}, nil
 	}
 	if permit != nil {
 		if err := s.ReprocessingGuard(); err != nil {
@@ -399,6 +419,10 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		MaxResultBytes: in.Maximum.ResultBytes, MaxRequestBytes: in.MaxRequestBytes,
 		Upload: in.Upload,
 	}, in.Timeout)
+	observation := ObserveOwner(response, callErr, time.Now())
+	selector := observationSelector(s.FingerprintKey, in.CapabilityID, in.OperationClass, in.Arguments)
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
 	uncertainCommand := in.CapabilityID == "ouf.semantic.discovery.adopt" || in.CapabilityID == HandoffIssueCapability
 	if uncertainCommand && callErr == nil && response.Status >= 500 {
 		// A Gateway failure after forwarding cannot establish whether the owner committed.
@@ -411,9 +435,14 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		if permit != nil && s.Audit != nil {
 			_ = s.Audit.Audit(ctx, AuditEvent{EventType: "SEMANTIC_REPROCESSING_OUTCOME_UNCERTAIN", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: "OWNER_OUTCOME_UNCERTAIN", AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel})
 		}
-		return Result{AttemptID: admitted.AttemptID}, callErr
+		if in.CapabilityID == "ouf.semantic.discovery.adopt" {
+			if err := s.Admission.Reconcile(finishCtx, admitted.AttemptID, Cost{}, AttemptOutcome{Uncertain: true, Observation: observation, ObservationSelector: selector}); err != nil {
+				return Result{Observation: observation, AttemptID: admitted.AttemptID}, err
+			}
+		}
+		return Result{Observation: observation, AttemptID: admitted.AttemptID}, callErr
 	}
-	outcome := AttemptOutcome{Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
+	outcome := AttemptOutcome{Observation: observation, ObservationSelector: selector, Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {
 		outcome.BackendRequestID = backendRequestID
 	}
@@ -457,7 +486,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 			}
 		}
 		response.Body = nil
-		response.Problem = &Problem{Status: response.Status, Code: code, Title: code}
+		response.Problem = &Problem{Status: response.Status, Code: code, Title: code, RetryAfter: response.RetryAfter}
 	}
 	if callErr == nil && response.Problem == nil && response.Status >= 200 && response.Status < 300 {
 		outcome.Success, outcome.Code = true, "SUCCEEDED"
@@ -466,30 +495,60 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		callErr, outcome.Code = ErrResultLimit, "RESULT_LIMIT_EXCEEDED"
 		outcome.Success = false
 	}
+	if in.CapabilityID == "ouf.semantic.discovery.adopt" && callErr == nil && response.Problem != nil && response.Status != http.StatusForbidden && AdoptionRefusal(response.Status, outcome.Code) != "" {
+		outcome.AdoptionRefusalCode = outcome.Code
+	}
 	if outcome.Success {
+		outcome.ColumnDecision = choice
 		outcome.ResultID = replayResultID(in, response.Body)
 	}
-	if err := s.Admission.Reconcile(ctx, admitted.AttemptID, actual, outcome); err != nil {
-		return Result{}, err
+	if err := s.Admission.Reconcile(finishCtx, admitted.AttemptID, actual, outcome); err != nil {
+		return Result{Observation: observation, AttemptID: admitted.AttemptID}, err
 	}
 	if s.Audit != nil {
-		if err := s.Audit.Audit(ctx, AuditEvent{EventType: "TOOL_ATTEMPT_RECONCILED", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: outcome.Code, AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel, Redacted: redacted}); err != nil {
-			return Result{}, err
+		if err := s.Audit.Audit(finishCtx, AuditEvent{EventType: "TOOL_ATTEMPT_RECONCILED", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: outcome.Code, AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel, Redacted: redacted}); err != nil {
+			return Result{Observation: observation, AttemptID: admitted.AttemptID}, err
 		}
 	}
 	if callErr != nil {
-		return Result{AttemptID: admitted.AttemptID}, callErr
+		return Result{Observation: observation, AttemptID: admitted.AttemptID}, callErr
 	}
-	return Result{Body: response.Body, Problem: response.Problem, AttemptID: admitted.AttemptID}, nil
+	return Result{Observation: observation, Body: response.Body, RetryAfter: response.RetryAfter, Problem: response.Problem, AttemptID: admitted.AttemptID}, nil
 }
 
+// AdoptionRefusal lists definitive candidate rejections for an owner 4xx.
+// Timeout, transport failure, 5xx and every unlisted code require receipt reconciliation.
+var adoptionRefusals = map[string]string{
+	"IDEMPOTENCY_KEY_REUSE":           "La chiave di adozione è già associata a una richiesta diversa.",
+	"CANDIDATE_PUBLISHER_MISSING":     "Nel candidato manca l’indicazione dell’editore.",
+	"CANDIDATE_RDF_INVALID":           "Il documento RDF del candidato non è valido.",
+	"CANDIDATE_RDF_BOUND":             "Il documento RDF supera i limiti ammessi.",
+	"CANDIDATE_EXPIRED":               "Il candidato è scaduto.",
+	"SEMANTIC_CANDIDATE_NOT_FOUND":    "Il candidato non è disponibile per questa richiesta.",
+	"CANDIDATE_ALREADY_ADOPTED":       "Il candidato è già stato adottato.",
+	"SEMANTIC_ID_CONFLICT":            "L’identificatore semantico è già in uso.",
+	"CANDIDATE_METADATA_AMBIGUOUS":    "I metadati del candidato sono ambigui.",
+	"CANDIDATE_METADATA_UNRESOLVED":   "I metadati del candidato sono incompleti.",
+	"CANDIDATE_REFERENCE_UNRESOLVED":  "Il riferimento del candidato non è risolvibile.",
+	"CANDIDATE_VOCABULARY_UNRESOLVED": "Il vocabolario del candidato non è risolvibile.",
+}
+
+func AdoptionRefusal(status int, code string) string {
+	if status >= 400 && status < 500 && status != 408 && status != 429 {
+		return adoptionRefusals[code]
+	}
+	return ""
+}
+
+// RecordedAdoptionRefusal returns the approved message for a durable candidate refusal.
+func RecordedAdoptionRefusal(code string) string { return adoptionRefusals[code] }
+
 func adoptionProblemCode(code string) string {
+	if _, known := adoptionRefusals[code]; known {
+		return code
+	}
 	switch code {
-	case "SEM_PROPOSAL_RECEIPT_INVALID", "SEM_CAPABILITY_REQUIRED:ouf.semantic.discovery.adopt",
-		"SEMANTIC_CANDIDATE_NOT_FOUND", "CANDIDATE_EXPIRED", "IDEMPOTENCY_KEY_REUSE",
-		"CANDIDATE_ALREADY_ADOPTED", "SEMANTIC_ID_CONFLICT", "CANDIDATE_PUBLISHER_MISSING",
-		"CANDIDATE_METADATA_AMBIGUOUS", "CANDIDATE_METADATA_UNRESOLVED",
-		"CANDIDATE_REFERENCE_UNRESOLVED", "CANDIDATE_VOCABULARY_UNRESOLVED":
+	case "SEM_PROPOSAL_RECEIPT_INVALID", "SEM_CAPABILITY_REQUIRED:ouf.semantic.discovery.adopt":
 		return code
 	}
 	return "SEMANTIC_ADOPTION_REJECTED"

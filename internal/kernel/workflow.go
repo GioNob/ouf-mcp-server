@@ -188,10 +188,10 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 					analysis.ValidateID(id) == nil && (len(token) < 32 || len(token) > 1024) {
 					inputErr = analysis.ErrCursor
 				}
-				result = summaryFailure(inputErr, id)
+				result = s.summaryFailure(ctx, inputErr, id)
 			}
 		} else if (summaryInput(name, args) || name == "source.analysis.plan") && !validJCSInput(req.Params.Arguments) {
-			result = summaryFailure(analysis.ErrInvalid, "")
+			result = s.summaryFailure(ctx, analysis.ErrInvalid, "")
 		} else {
 			var err error
 			if name == "source.analysis.step" && s.analysisService != nil {
@@ -241,6 +241,12 @@ func (s *workflowServer) validateNext(name string, result *mcp.CallToolResult) *
 	raw, err := json.Marshal(body["next"])
 	var next nextstep.Object
 	if err == nil && json.Unmarshal(raw, &next) == nil && next != nil && s.nextSchema.Validate(next) == nil {
+		if next["action"] == "CALL_TOOL" {
+			original, _ := body["next"].(nextstep.Object)
+			if !nextstep.CheckedOwnerCall(original) {
+				return workflowError(nextstep.Object{"code": "OWNER_CLOCK_UNCHECKED", "next": nextstep.ManualBlock("OWNER_CLOCK_UNCHECKED", "Verifica il percorso di osservazione.", "OPERATOR")})
+			}
+		}
 		// Preserve exact integers in any retained command arguments.
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
@@ -283,6 +289,22 @@ func workflowError(body nextstep.Object) *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
 }
 
+func attachObservation(out *mcp.CallToolResult, obs orchestration.OwnerObservation) {
+	if out == nil || obs.Reason == "" {
+		return
+	}
+	if out.Meta == nil {
+		out.Meta = mcp.Meta{}
+	}
+	if previous, ok := out.Meta["ouf/ownerObservation"].(orchestration.OwnerObservation); ok && previous.Due.After(obs.Due) {
+		return
+	}
+	out.Meta["ouf/ownerObservation"] = obs
+	if !obs.Due.IsZero() {
+		out.Meta["ouf/ownerNotBefore"] = obs.Due.UTC().Format(time.RFC3339Nano)
+	}
+}
+
 func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 	var raw []byte
 	if result.StructuredContent != nil {
@@ -308,13 +330,59 @@ func ownerObject(result *mcp.CallToolResult) nextstep.Object {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if decoder.Decode(&obj) == nil {
+		if at, ok := result.Meta["ouf/ownerNotBefore"].(string); ok && obj != nil {
+			obj["transportNotBefore"] = at
+		}
 		return obj
 	}
 	return nil
 }
 
 func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
-	return nextstep.Engine{PublishedLanguages: s.publishedLanguages, WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
+	return nextstep.Engine{SavedObservation: func(tool string, args nextstep.Object) (orchestration.OwnerObservation, error) {
+		if s.analysisService == nil {
+			return orchestration.OwnerObservation{}, nil
+		}
+		c := s.tools[tool].capability
+		if c.OperationClass != "READ" && c.OperationClass != "SEARCH" {
+			return orchestration.OwnerObservation{}, nil
+		}
+		identity, _ := ctx.Value(identityKey{}).(requestIdentity)
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return orchestration.OwnerObservation{}, err
+		}
+		return s.analysisService.SavedObservation(ctx, identity.Identity, c.CapabilityID, c.OperationClass, raw)
+	}, Signer: s.waits.signer, Binding: waitBinding(ctx), CanPropose: func() bool {
+		return s.canProposeSemantic(ctx)
+	}, DecisionKeys: func(id, request string) (string, string, error) {
+		if s.analysisService != nil {
+			if store, ok := s.analysisService.Admission.(analysis.DecisionKeyStore); ok {
+				identity, _ := ctx.Value(identityKey{}).(requestIdentity)
+				checksum, err := s.manifest.Checksum()
+				if err != nil {
+					return "", "", err
+				}
+				return store.DecisionKeys(ctx, analysis.IdentityScope(identity.Identity), id, checksum, request)
+			}
+		}
+		return uuid.NewString(), uuid.NewString(), nil
+	}, ReformulationColumn: func(id, request string) (int, bool) {
+		if s.analysisService == nil {
+			return 0, false
+		}
+		store, ok := s.analysisService.Admission.(analysis.ReformulationStore)
+		if !ok {
+			return 0, false
+		}
+		identity, _ := ctx.Value(identityKey{}).(requestIdentity)
+		checksum, err := s.manifest.Checksum()
+		if err != nil {
+			return 0, false
+		}
+		column, available, err := store.ReformulationColumn(ctx, analysis.IdentityScope(identity.Identity), id, checksum, request, s.summaryLimits.MaxColumnReformulations)
+		return column, available && err == nil
+	}, PublishedLanguages: s.publishedLanguages, WaitMaxSeconds: s.waits.maxSeconds, PollIntervalSeconds: int(s.waits.interval / time.Second), Errors: s.manifest.NextErrors, Valid: s.valid, Now: time.Now, Issue: func(r manifest.Rule, args, obs nextstep.Object) nextstep.Object {
 		t, ok := s.tools[r.Tool]
 		if !ok || t.capability.OperationClass != "READ" || r.Tool == "ouf.wait" {
 			return nextstep.Block("WAIT_READ_REQUIRED", r.Tool, "Controlla la lettura associata alla decisione.")
@@ -359,6 +427,12 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 	}}
 }
 
+func (s *workflowServer) observedEngine(ctx context.Context, result *mcp.CallToolResult) nextstep.Engine {
+	engine := s.engine(ctx)
+	engine.Observed, _ = result.Meta["ouf/ownerObservation"].(orchestration.OwnerObservation)
+	return engine
+}
+
 func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args map[string]any, result *mcp.CallToolResult) *mcp.CallToolResult {
 	c := t.capability
 	p := s.manifest.NextPolicies[c.NextPolicy]
@@ -366,6 +440,12 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	structured := map[string]any{}
 	for k, v := range obs {
 		structured[k] = v
+	}
+	// The transport clock guides next without changing the owner output schema.
+	engine := s.observedEngine(ctx, result)
+	delete(result.Meta, "ouf/ownerObservation")
+	if result.Meta["ouf/ownerNotBefore"] != nil {
+		delete(structured, "transportNotBefore")
 	}
 	if result.IsError && obs["reasonCode"] == "NO_APPLICABLE_GRANT" {
 		if structured["requiredCapability"] == nil {
@@ -386,7 +466,7 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	if result.IsError && obs["code"] == "INVALID_TOOL_ARGUMENTS" {
 		structured["allowedForms"] = t.forms
 	}
-	next := s.engine(ctx).Evaluate(c, p, args, obs, result.IsError)
+	next := engine.Evaluate(c, p, args, obs, result.IsError)
 	if !result.IsError {
 		next = s.publishedNext(ctx, c.ToolName, args, obs, next)
 	}

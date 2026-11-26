@@ -13,6 +13,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
@@ -445,5 +446,73 @@ func TestProfileAnalysisDiscoveryCandidateExecutionAndPollPacing(t *testing.T) {
 	}
 	if second.NotBefore.Sub(first.CompletedAt) != 31*time.Second {
 		t.Fatal("poll pacing changed", second.NotBefore, first.CompletedAt)
+	}
+}
+
+func TestLostPlannedObservationResumesAtRequestDeadline(t *testing.T) {
+	ctx, s, c, identity, _, _, profile := coordinatorFixture(t, 2)
+	scope := analysis.IdentityScope(identity)
+	args := json.RawMessage(fmt.Sprintf(`{"requestId":%q}`, uuid.NewString()))
+	other := json.RawMessage(fmt.Sprintf(`{"requestId":%q}`, uuid.NewString()))
+	p, err := analysis.Build(scope, profile, c.Manifest, 0, []analysis.Work{
+		{Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 1},
+		{Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 2},
+		{Tool: "semantic.discovery.status", Arguments: other, Columns: []int{1}, Observation: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.PlanAnalysis(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClaimAnalysisTask(ctx, scope, p.ID, p.Tasks[0].ID, p.Manifest)
+	if err != nil || first.Fence == "" {
+		t.Fatal(first, err)
+	}
+	observed := time.Now().UTC().Truncate(time.Microsecond)
+	body := []byte(`{"state":"RUNNING","pollAfterSeconds":72}`)
+	obs := orchestration.ObserveOwner(orchestration.GatewayResponse{Status: 200, Body: body}, nil, observed)
+	if _, err = s.FinishAnalysisTask(ctx, scope, p.ID, first.ID, first.Fence, analysis.Finish{
+		State: "SUCCEEDED", Calls: 1, Body: body, Observation: obs, NotBefore: obs.Due,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Lose the reply. The resumed page does not even contain observation one.
+	v, err := c.Read(ctx, identity, p.ID, 1, 2)
+	if err != nil || len(v.Tasks) != 2 || !v.Tasks[1].NotBefore.IsZero() {
+		t.Fatal(v, err)
+	}
+	wire, err := json.Marshal(v)
+	var page nextstep.Object
+	if err != nil || json.Unmarshal(wire, &page) != nil {
+		t.Fatal("invalid plan page", err)
+	}
+	read, _ := analysis.Find(c.Manifest, "source.analysis.read")
+	signer, err := nextstep.NewSigner(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := observed.Add(41 * time.Second)
+	engine := nextstep.Engine{Signer: signer, Binding: []byte("reader"), Now: func() time.Time { return now },
+		Valid: func(string, nextstep.Object) bool { return true }}
+	input := nextstep.Object{"analysisId": p.ID, "offset": 1}
+	build := func() nextstep.Object {
+		return engine.Evaluate(read, c.Manifest.NextPolicies[read.NextPolicy], input, page, false)
+	}
+	next := build()
+	wait, _ := next["arguments"].(nextstep.Object)
+	token, _ := wait["waitRef"].(string)
+	ref, err := signer.Open(token, engine.Binding)
+	if err != nil || next["tool"] != "ouf.wait" || ref.Read != "source.analysis.step" ||
+		ref.NotBefore != observed.Add(72*time.Second).Format(time.RFC3339Nano) || ref.Args["taskId"] != p.Tasks[1].ID {
+		t.Fatal(next, ref, err)
+	}
+	now = obs.Due
+	if next := build(); next["tool"] != "source.analysis.step" || next["arguments"].(nextstep.Object)["taskId"] != p.Tasks[1].ID {
+		t.Fatal("wrong task at expiry", next)
+	}
+	held, err := s.ClaimAnalysisTask(ctx, scope, p.ID, p.Tasks[1].ID, p.Manifest)
+	if err != nil || held.State != "WAITING" || held.Attempts != 0 || held.Fence != "" || !held.NotBefore.Equal(obs.Due) {
+		t.Fatal("direct step ignored the request clock", held, err)
 	}
 }

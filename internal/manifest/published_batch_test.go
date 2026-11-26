@@ -56,10 +56,10 @@ func TestAnalysisManifestCompatibilityIsPinnedPerPublicationState(t *testing.T) 
 		if c.ToolName != "semantic.search.batch" {
 			continue
 		}
-		for _, tc := range []struct{ state, predecessor string }{
-			{"ACTIVE", "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"},
-			{"INACTIVE", "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f"},
-			{"ABSENT", "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab"},
+		for _, tc := range []struct{ state, service, predecessor string }{
+			{"ACTIVE", servicePredecessorActive, "0c624454825ebc571690961be309c38d27d78e96ab64e7903ea99c359c4f8daa"},
+			{"INACTIVE", "6148bea615ac223c448c17930a181ca8ea7b93a124d55bcbcc4331712ee4a8cb", "42cdc29936d851ef039488b4ba3488be3aadcb4e03b45906e4de9ae22b424e2f"},
+			{"ABSENT", "5350664e3cca34f63afe279ff1d3a1e4a0ed25025886b5e428bd651bed35474e", "e7ee7a2c2ed3030133a96f20a7c416bd158c38cc9775cb1b59503842c2f008ab"},
 		} {
 			if tc.state == "ABSENT" {
 				m.Capabilities = append(m.Capabilities[:i], m.Capabilities[i+1:]...)
@@ -67,7 +67,7 @@ func TestAnalysisManifestCompatibilityIsPinnedPerPublicationState(t *testing.T) 
 				m.Capabilities[i].PublicationState = tc.state
 			}
 			sum, err := m.Checksum()
-			want := []string{sum, tc.predecessor, "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"}
+			want := []string{sum, tc.service, tc.predecessor, "01d00a53be5614115924b4775e0d098938ebae2e8e713ef8dd5b4c772e520c24"}
 			if err != nil || !reflect.DeepEqual(AnalysisManifests(sum), want) {
 				t.Fatal(tc.state, sum, err)
 			}

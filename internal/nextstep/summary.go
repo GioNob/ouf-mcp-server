@@ -7,15 +7,35 @@ import (
 	"github.com/google/uuid"
 )
 
+func (e Engine) ExpiredSummary(id string) Object {
+	next := e.ownerCall(analysis.ErrExpired.Error(), "source.analysis.read", Object{"analysisId": id, "view": "SUMMARY"}, nil)
+	if next["action"] == "CALL_TOOL" {
+		next["userMessage"] = "Il cursore è scaduto. Leggi il riepilogo corrente dalla prima pagina."
+	}
+	return next
+}
+
+func (e Engine) PreviewColumn(h analysis.Hint) Object {
+	args := Object{"assetId": h.AssetID, "profileId": h.ProfileID, "view": "COLUMNS", "offset": h.Ordinal, "limit": 1}
+	if !e.Valid("source.file.preview", args) {
+		return nil
+	}
+	next := e.ownerCall("ANALYSIS_COLUMN_PREVIEW", "source.file.preview", args, h.Timing())
+	if next["action"] == "CALL_TOOL" {
+		next["userMessage"] = "Leggi i metadati della colonna da pianificare."
+	}
+	return next
+}
+
 func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object {
 	read := Object{"analysisId": id, "view": "SUMMARY"}
 	if cursor != "" {
 		read["cursor"] = cursor
-		return call("CALL_TOOL", "ANALYSIS_NEXT_PAGE", "source.analysis.read", read)
+		return e.ownerCall("ANALYSIS_NEXT_PAGE", "source.analysis.read", read, nil)
 	}
 	state := s.State()
 	if view == "STATUS" && state != "RUNNING" && !analysis.PermissionHold(s.Hint.Reason) {
-		return call("CALL_TOOL", "ANALYSIS_SUMMARY", "source.analysis.read", read)
+		return e.ownerCall("ANALYSIS_SUMMARY", "source.analysis.read", read, nil)
 	}
 	h := s.Hint
 	if state == "PARTIAL" && h.Reason != "" {
@@ -30,7 +50,8 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 		case "source.analysis.plan":
 			args = Object{"assetId": h.AssetID, "profileId": h.ProfileID, "expectedRevision": h.Revision,
 				"work": []Object{{"tool": "semantic.discovery.request", "columns": []int{h.Ordinal},
-					"arguments": Object{"intent": h.Header, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY"}}}}
+					"intentHint": Object{"originalName": h.Header},
+					"arguments":  Object{"intent": analysis.ColumnIntent(h.Header), "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY"}}}}
 		case "semantic.discovery.status", "semantic.discovery.candidates":
 			args = Object{"analysisId": id, "requestId": h.RequestID}
 			if h.Tool == "semantic.discovery.candidates" {
@@ -41,7 +62,18 @@ func (e Engine) SummaryNext(id, view, cursor string, s analysis.Summary) Object 
 			args["commandKey"] = e.CommandKey(h.Tool, args, nil, nil)
 		}
 		if e.Valid(h.Tool, args) {
-			return call("CALL_TOOL", "ANALYSIS_CONTINUE", h.Tool, args)
+			reason := "ANALYSIS_CONTINUE"
+			if h.DecisionRequired {
+				reason = analysis.DiscoveryDecisionRequired
+			}
+			next := e.ownerCall(reason, h.Tool, args, h.Timing())
+			if h.DecisionRequired && next["action"] == "CALL_TOOL" {
+				next["userMessage"] = fmt.Sprintf("Decisione richiesta per la colonna di ordinale %d. Leggi la pagina dei candidati per scegliere come proseguire.", h.Ordinal)
+			}
+			if h.Tool == "source.analysis.plan" && next["action"] == "CALL_TOOL" {
+				next["userMessage"] = planIntentMessage
+			}
+			return next
 		}
 		return ManualBlock("ANALYSIS_HELD", "Verifica la prosecuzione autorizzata dell’analisi.", "OPERATOR")
 	case "COMPLETE":

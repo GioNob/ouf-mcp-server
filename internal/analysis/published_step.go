@@ -153,9 +153,7 @@ func (c Coordinator) batchFinish(task Task, id string, r orchestration.Result, c
 		var b Batch
 		_ = json.Unmarshal(task.Arguments, &b)
 		for _, i := range b.Intents {
-			for _, n := range task.Groups[i.ID] {
-				f.Children = append(f.Children, ResidualTask(id, i, []int{n}, MaxResultBytes, true))
-			}
+			f.Children = append(f.Children, task.ResidualTasks(id, i, true)...)
 		}
 	case p.Status == 429 && p.Code != "SEM_BATCH_RATE_LIMITED", p.Status == 503 && p.Code != "SEM_BATCH_UNAVAILABLE":
 		f.State, f.Code, f.NotBefore = "HELD", "OWNER_REQUEST_REJECTED", time.Time{}

@@ -19,6 +19,7 @@ type publishedFailureOwner struct {
 	code    string
 	batches int
 	version *int64
+	due     time.Time
 }
 
 func (g *publishedFailureOwner) Execute(ctx context.Context, r orchestration.GatewayRequest, d time.Duration) (orchestration.GatewayResponse, error) {
@@ -30,7 +31,16 @@ func (g *publishedFailureOwner) Execute(ctx context.Context, r orchestration.Gat
 	}
 	g.batches++
 	if g.status != 200 {
-		return orchestration.GatewayResponse{Status: g.status, Problem: &orchestration.Problem{Status: g.status, Code: g.code, PolicyVersion: g.version, RetryAfter: "7200"}}, nil
+		var body []byte
+		if g.status == 429 || g.status == 503 {
+			g.due = time.Now().UTC().Add(3 * time.Hour).Truncate(time.Second)
+			first, last := g.due.Add(-time.Minute), g.due
+			if g.status == 503 {
+				first, last = last, first
+			}
+			body, _ = json.Marshal(map[string]time.Time{"nextAttemptAt": first, "notBefore": last})
+		}
+		return orchestration.GatewayResponse{Status: g.status, Body: body, Problem: &orchestration.Problem{Status: g.status, Code: g.code, PolicyVersion: g.version, RetryAfter: "7200"}}, nil
 	}
 	return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"contract":"ouf.semantic.published-batch.v1","results":[]}`)}, nil
 }
@@ -133,6 +143,9 @@ func TestPublishedDurableFailuresAndCompatibility(t *testing.T) { // MCP-50T-07
 				t.Fatal(again, err)
 			}
 			if tc.state == "WAITING" {
+				if !owner.due.IsZero() && !again.NotBefore.Equal(owner.due) {
+					t.Fatal("owner error deadline lost across restart", again.NotBefore, owner.due)
+				}
 				if again.NotBefore.Sub(again.FirstAttemptAt) < 2*time.Hour || again.Attempts != 1 {
 					t.Fatal("Retry-After or attempts lost", again)
 				}

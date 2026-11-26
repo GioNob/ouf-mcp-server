@@ -178,22 +178,40 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		if existingHash != in.RequestHash {
 			return orchestration.AdmissionDecision{}, ErrIdempotencyConflict
 		}
-		var state string
+		var state, outcomeCode string
 		var resultID *uuid.UUID
-		if err = tx.QueryRow(ctx, `select state,replay_result_id from ouf_mcp.tool_attempt where attempt_id=$1`, existingID).Scan(&state, &resultID); err != nil {
+		var obs orchestration.OwnerObservation
+		var due *time.Time
+		if err = tx.QueryRow(ctx, `select state,replay_result_id,coalesce(outcome_code,''),owner_due,owner_due_reason,owner_code,owner_status
+			from ouf_mcp.tool_attempt where attempt_id=$1`, existingID).Scan(&state, &resultID, &outcomeCode, &due, &obs.Reason, &obs.Code, &obs.Status); err != nil {
 			return orchestration.AdmissionDecision{}, err
+		}
+		if due != nil {
+			obs.Due = *due
 		}
 		if state == "UNKNOWN" || state == "UNRESOLVED" {
 			// Keep a proven legacy alias even when the outcome is uncertain.
 			if err := tx.Commit(ctx); err != nil {
 				return orchestration.AdmissionDecision{}, err
 			}
-			return orchestration.AdmissionDecision{}, ErrIdempotencyOutcomeUnknown
+			return orchestration.AdmissionDecision{AttemptID: existingID, Observation: obs}, ErrIdempotencyOutcomeUnknown
 		}
 		if in.Reprocessing != nil {
 			return s.reserveSemanticReprocessing(ctx, tx, in, existingID)
 		}
-		return orchestration.AdmissionDecision{AttemptID: existingID, Replay: true, AttemptState: state, ResultID: resultID}, tx.Commit(ctx)
+		replay := orchestration.AdmissionDecision{Observation: obs, AttemptID: existingID, Replay: true, AttemptState: state, ResultID: resultID}
+		// A predecessor could save the successful command while its column
+		// was still blocked on the empty page. The matching request hash
+		// above proves the replay carries the original mapping fields.
+		if state == "SUCCEEDED" && in.ColumnDecision != nil {
+			if err := finishColumnDecision(ctx, tx, existingID, *in.ColumnDecision); err != nil {
+				return orchestration.AdmissionDecision{}, err
+			}
+		}
+		if in.CapabilityID == "ouf.semantic.discovery.adopt" && state == "FAILED" && orchestration.RecordedAdoptionRefusal(outcomeCode) != "" {
+			replay.AdoptionRefusalCode = outcomeCode
+		}
+		return replay, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return orchestration.AdmissionDecision{}, err
@@ -299,6 +317,20 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 	if state == "RECONCILED" {
 		return tx.Commit(ctx)
 	}
+	if obs := outcome.Observation; obs.Reason != "" {
+		var due *time.Time
+		if !obs.Due.IsZero() {
+			due = &obs.Due
+		}
+		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set owner_due=$2,owner_due_reason=$3,owner_code=$4,owner_status=$5,owner_selector=nullif($6,'')
+			where attempt_id=$1`, id, due, obs.Reason, obs.Code, obs.Status, outcome.ObservationSelector); err != nil {
+			return err
+		}
+	}
+	if outcome.Uncertain {
+		// Keep the dispatch lease and all reservations for UNKNOWN recovery.
+		return tx.Commit(ctx)
+	}
 	final := "FAILED"
 	if outcome.Success {
 		final = "SUCCEEDED"
@@ -311,12 +343,29 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 		_, err = tx.Exec(ctx, `update ouf_mcp.budget_reservation set state='RECONCILED',actual_tool_calls=$2,actual_result_bytes=$3,actual_distinct_objects=$4,reconciled_at=transaction_timestamp() where attempt_id=$1`, id, actual.ToolCalls, actual.ResultBytes, actual.DistinctObjects)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),replay_result_id=$4,lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID, outcome.ResultID)
+		_, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set state=$2,dispatch_state='ACKNOWLEDGED',backend_request_id=coalesce(backend_request_id,$3),replay_result_id=$4,outcome_code=coalesce(nullif($5,''),outcome_code),lease_until=null,completed_at=transaction_timestamp(),lock_version=lock_version+1 where attempt_id=$1`, id, final, outcome.BackendRequestID, outcome.ResultID, outcome.AdoptionRefusalCode)
 	}
 	if err != nil {
 		return err
 	}
+	if outcome.Success && outcome.ColumnDecision != nil {
+		if err = finishColumnDecision(ctx, tx, id, *outcome.ColumnDecision); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+func (s *Store) ReadOwnerObservation(ctx context.Context, identity orchestration.Identity, selector string) (orchestration.OwnerObservation, error) {
+	var obs orchestration.OwnerObservation
+	err := s.pool.QueryRow(ctx, `select owner_due,owner_due_reason,owner_code,owner_status from ouf_mcp.tool_attempt
+		where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner_selector=$4
+		and owner_due is not null order by owner_due desc,attempt_id limit 1`,
+		identity.ServicePrincipalID, identity.PrincipalID, identity.TenantID, selector).Scan(&obs.Due, &obs.Reason, &obs.Code, &obs.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return obs, nil
+	}
+	return obs, err
 }
 
 func (s *Store) Dispatch(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) error {

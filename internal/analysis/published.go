@@ -161,7 +161,7 @@ func (i *Intent) identify() error {
 	return nil
 }
 
-func batchTask(list []Intent, limit int, columns map[string][]int, responseBytes int64) Task {
+func batchTask(list []Intent, limit int, columns map[string][]int, discoveryText map[int]string, responseBytes int64) Task {
 	args, _ := json.Marshal(Batch{BatchContract, limit, list})
 	groups := make(map[string][]int, len(list))
 	var ordinals []int
@@ -170,7 +170,13 @@ func batchTask(list []Intent, limit int, columns map[string][]int, responseBytes
 		ordinals = append(ordinals, columns[v.ID]...)
 	}
 	sort.Ints(ordinals)
-	return Task{ID: Digest([]any{BatchTool, args}), Work: Work{Tool: BatchTool, Arguments: args, Columns: ordinals}, Groups: groups,
+	texts := map[int]string{}
+	for _, n := range ordinals {
+		if text, ok := discoveryText[n]; ok {
+			texts[n] = text
+		}
+	}
+	return Task{DiscoveryText: texts, ID: Digest([]any{BatchTool, args}), Work: Work{Tool: BatchTool, Arguments: args, Columns: ordinals}, Groups: groups,
 		State: "READY", MaxBytes: responseBytes, MaxTimeMS: 3000, MaxObjects: int64(len(list) * limit)}
 }
 
@@ -198,6 +204,15 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 	}
 	var ordered []Intent
 	columns := map[string][]int{}
+	discoveryText := map[int]string{}
+	previewNames := map[int]string{}
+	for _, w := range work {
+		if w.PreviewName != "" {
+			for _, n := range w.Columns {
+				previewNames[n] = w.PreviewName
+			}
+		}
+	}
 	overrides, err := intentOverrides(work, len(headers))
 	if err != nil {
 		return Plan{}, err
@@ -208,10 +223,12 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 		}
 		i, ok := overrides[n]
 		if !ok {
+			// Without a client-supplied intent, look up the original label.
+			// Word splitting here changes exact matches and the norm-v1 group.
 			i = Intent{Text: name, Languages: l.Languages, Type: "PROPERTY"}
 		}
 		if err := i.identify(); err != nil {
-			if ok && i.Text != name {
+			if ok && i.Text != name && i.Text != ColumnIntent(name) {
 				return Plan{}, err
 			}
 			// Only an unusable profile term is isolated. Invalid options are input errors.
@@ -223,6 +240,15 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 			p.Headers[n] = ""
 			continue
 		}
+		// Preview-generated wording describes remote discovery. The verified
+		// original label is the exact published lookup for this ordinal.
+		if ok && i.Text != name && (i.Text == ColumnIntent(name) || previewNames[n] == name) {
+			lookup := i
+			lookup.Text = name
+			if lookup.identify() == nil {
+				discoveryText[n], i = i.Text, lookup
+			}
+		}
 		if _, seen := columns[i.ID]; !seen {
 			ordered = append(ordered, i)
 		}
@@ -231,7 +257,7 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 	var chunk []Intent
 	flush := func() {
 		if len(chunk) > 0 {
-			p.Tasks = append(p.Tasks, batchTask(chunk, l.Hits, columns, l.ResponseBytes))
+			p.Tasks = append(p.Tasks, batchTask(chunk, l.Hits, columns, discoveryText, l.ResponseBytes))
 			chunk = nil
 		}
 	}
@@ -242,7 +268,7 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 			flush()
 			body, _ = json.Marshal(Batch{BatchContract, l.Hits, []Intent{i}})
 			if len(body)+envelopeBytes > l.RequestBytes {
-				t := batchTask([]Intent{i}, l.Hits, columns, l.ResponseBytes)
+				t := batchTask([]Intent{i}, l.Hits, columns, discoveryText, l.ResponseBytes)
 				t.State, t.Code = "HELD", "SEM_BATCH_REQUEST_TOO_LARGE"
 				p.Tasks = append(p.Tasks, t)
 				continue
@@ -252,6 +278,29 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 	}
 	flush()
 	return p, nil
+}
+
+// ResidualTasks restores discovery wording after the published lookup.
+// Legacy batches contain only the published intent.
+func (t Task) ResidualTasks(planID string, i Intent, fallback bool) []Task {
+	var tasks []Task
+	byText := map[string]int{}
+	for _, n := range t.Groups[i.ID] {
+		text := t.DiscoveryText[n]
+		if index, ok := byText[text]; ok && !fallback {
+			child := &tasks[index]
+			child.Columns = append(child.Columns, n)
+			continue
+		}
+		remote := i
+		if text != "" {
+			remote.Text = text
+			remote.ID = Digest([]string{i.ID, text})
+		}
+		byText[text] = len(tasks)
+		tasks = append(tasks, ResidualTask(planID, remote, []int{n}, MaxResultBytes, fallback))
+	}
+	return tasks
 }
 
 func ResidualTask(planID string, i Intent, columns []int, maxBytes int64, fallback bool) Task {

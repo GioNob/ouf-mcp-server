@@ -16,7 +16,7 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"source.analysis.plan":              {"(assetId, expectedRevision, profileId, work)", "(commandKey, replanOf)"},
+		"source.analysis.plan":              {"(assetId, expectedRevision, profileId, work)", "(commandKey, replanOf)", "(column, commandKey, intent, replanOf, requestId)"},
 		"source.analysis.read":              {"(analysisId)", "(analysisId, view=STATUS)", "(analysisId, view=SUMMARY)", "(analysisId, cursor, view=SUMMARY)"},
 		"ouf.operations.incidents":          {"()", "(snapshot=true)", "(cursor)", "(coverage=true, snapshot=true)", "(coverage=true, cursor)", "(resumeFrom)"},
 		"authorization.permissions.read":    {"(view=ROLES)", "(view=CAPABILITIES)", "(subjectId)", "(externalRoleRef)"},
@@ -110,6 +110,8 @@ func TestAnalysisPlanInputFormsAreExclusive(t *testing.T) {
 			want bool
 		}{
 			{map[string]any{"replanOf": id, "commandKey": key}, true},
+			{map[string]any{"replanOf": id, "commandKey": key, "column": 0, "requestId": key, "intent": strings.Repeat("è", 2000)}, true},
+			{map[string]any{"replanOf": id, "commandKey": key, "column": 0, "requestId": key, "intent": strings.Repeat("è", 2001)}, false},
 			{map[string]any{"replanOf": id}, false},
 			{map[string]any{"replanOf": id, "commandKey": "invalid"}, false},
 			{map[string]any{"replanOf": id, "commandKey": key, "assetId": key}, false},

@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DiscoveryDecisionRequired = "DISCOVERY_DECISION_REQUIRED"
+
 const SummaryContract = "ouf.analysis.summary.v2"
 
 var ErrProfile = errors.New("ANALYSIS_PROFILE_CHANGED")
@@ -24,15 +26,17 @@ var ErrCursor = errors.New("ANALYSIS_CURSOR_INVALID")
 var ErrExpired = errors.New("ANALYSIS_CURSOR_EXPIRED")
 
 type Limits struct {
-	PreviewPageSize      int
-	SummaryPageBytes     int
-	SummaryCursorSeconds int
+	MaxColumnReformulations int
+	PreviewPageSize         int
+	SummaryPageBytes        int
+	SummaryCursorSeconds    int
 }
 
 func SummaryLimits(m *manifest.Snapshot) (Limits, error) {
 	c, ok := Find(m, "source.analysis.read")
 	var l Limits
-	if !ok || json.Unmarshal(c.OperationalLimits, &l) != nil || l.PreviewPageSize < 1 || l.PreviewPageSize > 128 ||
+	if !ok || json.Unmarshal(c.OperationalLimits, &l) != nil || l.MaxColumnReformulations < 0 || l.MaxColumnReformulations > 16 ||
+		l.PreviewPageSize < 1 || l.PreviewPageSize > 128 ||
 		l.SummaryPageBytes < 4096 || l.SummaryPageBytes > 1<<20 || l.SummaryCursorSeconds < 1 || l.SummaryCursorSeconds > 86400 {
 		return Limits{}, ErrInvalid
 	}
@@ -111,6 +115,7 @@ type PublishedMatch struct {
 
 // Ordinal and changedSeq are supplied by the immutable version key.
 type Outcome struct {
+	NotBefore     time.Time       `json:"-"`
 	PolicyVersion *int64          `json:"policyVersion,omitempty"`
 	Match         *PublishedMatch `json:"match,omitempty"`
 	State         string          `json:"state"`
@@ -146,6 +151,22 @@ func discoveryEnvelope(request string, raw []byte) (map[string]json.RawMessage, 
 	return fields, true
 }
 
+// EmptyCandidatePage describes a live owner list, independently of completion evidence.
+func EmptyCandidatePage(request string, raw []byte) bool {
+	fields, ok := discoveryEnvelope(request, raw)
+	var state string
+	var items []json.RawMessage
+	if !ok || json.Unmarshal(fields["state"], &state) != nil || state != "SUCCEEDED" ||
+		json.Unmarshal(fields["candidates"], &items) != nil || items == nil || len(items) != 0 {
+		return false
+	}
+	if count, present := fields["candidateCount"]; present {
+		var n int
+		return json.Unmarshal(count, &n) == nil && n == 0
+	}
+	return true
+}
+
 func CompletedCount(request string, raw []byte) *int {
 	fields, ok := discoveryEnvelope(request, raw)
 	var state string
@@ -161,15 +182,29 @@ func CompletedCount(request string, raw []byte) *int {
 	return &count
 }
 
+// DiscoveryContinuation freezes a relative owner delay at observation time.
+func DiscoveryContinuation(request string, raw []byte, now, floor time.Time, next string) (Outcome, string) {
+	var obs map[string]any
+	if json.Unmarshal(raw, &obs) == nil {
+		if due, ok := orchestration.OwnerDue(obs, now, floor, ""); ok {
+			pending := Outcome{State: "PENDING", RequestID: request}
+			if due.After(now) {
+				pending.NotBefore = due
+			}
+			return pending, next
+		}
+	}
+	return Outcome{State: "BLOCKED", RequestID: request, Reason: "RETRY_WINDOW_UNAVAILABLE"}, ""
+}
+
 // DiscoveryEvidence consumes an authorized owner read of exactly requestID.
-// A status with positive live candidates still needs the candidate list.
+// A live count alone still needs the candidate list, including a live zero.
 func DiscoveryEvidence(tool, requestID string, raw []byte, now time.Time) (Outcome, string) {
-	return DiscoveryEvidenceWithCompletion(tool, requestID, raw, nil, now)
+	return DiscoveryEvidenceWithCompletion(tool, requestID, raw, nil, now, time.Time{})
 }
 
 // Completion is immutable owner evidence from an earlier read of this same job.
-func DiscoveryEvidenceWithCompletion(tool, requestID string, raw []byte, completion *int, now time.Time) (Outcome, string) {
-	pending := Outcome{State: "PENDING", RequestID: requestID}
+func DiscoveryEvidenceWithCompletion(tool, requestID string, raw []byte, completion *int, now, floor time.Time) (Outcome, string) {
 	unavailable := Outcome{State: "BLOCKED", RequestID: requestID, Reason: "DISCOVERY_EVIDENCE_UNAVAILABLE"}
 	var r struct {
 		RequestID                               string
@@ -194,7 +229,7 @@ func DiscoveryEvidenceWithCompletion(tool, requestID string, raw []byte, complet
 		if r.RecoveryState == "BLOCKED" || r.RecoveryState == "PAUSED_EXHAUSTED" || r.RecoveryState == "CANCELLED" {
 			return Outcome{State: "BLOCKED", RequestID: requestID, Reason: "DISCOVERY_STOPPED"}, ""
 		}
-		return pending, "semantic.discovery.status"
+		return DiscoveryContinuation(requestID, raw, now, floor, "semantic.discovery.status")
 	case "SUCCEEDED":
 		if r.CompletedCandidateCount == nil {
 			r.CompletedCandidateCount = completion
@@ -208,14 +243,17 @@ func DiscoveryEvidenceWithCompletion(tool, requestID string, raw []byte, complet
 	evidence := func(state string, n int) Outcome {
 		return Outcome{State: state, RequestID: requestID, Count: &n, ObservedAt: now.UTC().Format(time.RFC3339Nano)}
 	}
-	if r.CompletedCandidateCount != nil && *r.CompletedCandidateCount == 0 {
-		if len(r.Candidates) != 0 || (r.CandidateCount != nil && *r.CandidateCount != 0) {
-			return unavailable, ""
-		}
-		return evidence("NO_CANDIDATES", 0), ""
+	if tool == "semantic.discovery.candidates" && EmptyCandidatePage(requestID, raw) {
+		return Outcome{State: "BLOCKED", RequestID: requestID, Reason: DiscoveryDecisionRequired}, "semantic.discovery.candidates"
 	}
-	if tool == "semantic.discovery.status" && (r.CandidateCount == nil || *r.CandidateCount > 0) {
-		return pending, "semantic.discovery.candidates"
+	if r.CompletedCandidateCount != nil && *r.CompletedCandidateCount == 0 {
+		if tool == "semantic.discovery.status" && len(r.Candidates) == 0 && (r.CandidateCount == nil || *r.CandidateCount == 0) {
+			return Outcome{State: "BLOCKED", RequestID: requestID, Reason: DiscoveryDecisionRequired}, "semantic.discovery.candidates"
+		}
+		return unavailable, ""
+	}
+	if tool == "semantic.discovery.status" {
+		return DiscoveryContinuation(requestID, raw, now, floor, "semantic.discovery.candidates")
 	}
 	if tool != "semantic.discovery.candidates" || len(r.Candidates) == 0 ||
 		r.CompletedCandidateCount == nil || *r.CompletedCandidateCount != len(r.Candidates) ||
@@ -282,10 +320,21 @@ func OpenPosition(token string, key []byte, scope Scope, id string, now time.Tim
 }
 
 type Hint struct {
+	DecisionRequired                                            bool   `json:",omitempty"`
+	OwnerReason                                                 string `json:",omitempty"`
+	NotBefore                                                   string `json:",omitempty"`
 	Tool, TaskID, RequestID, AssetID, ProfileID, Header, Reason string
 	Ordinal                                                     int
 	Revision                                                    int64
 }
+
+func (h Hint) Timing() map[string]any {
+	if h.NotBefore == "" {
+		return nil
+	}
+	return map[string]any{"notBefore": h.NotBefore, "ownerDueReason": h.OwnerReason}
+}
+
 type Summary struct {
 	Epoch               string
 	Visibility          string
@@ -302,6 +351,9 @@ func (s Summary) State() string {
 	if s.Stopped {
 		return "BLOCKED"
 	}
+	if s.Hint.DecisionRequired && s.Hint.Tool == "semantic.discovery.candidates" {
+		return "RUNNING"
+	}
 	return s.Counts.State()
 }
 
@@ -313,7 +365,7 @@ type PreviewStore interface {
 type SummaryStore interface {
 	ReadSummary(context.Context, Scope, string, string, Position, bool) (Summary, error)
 	AuditSummary(context.Context, Scope, string, string, int64, int, int, uuid.UUID, *Hint) error
-	ObserveDiscovery(context.Context, Scope, string, string, string, string, []byte) error
+	RecordDiscovery(context.Context, Scope, string, string, string, string, []byte, orchestration.OwnerObservation) (orchestration.OwnerObservation, error)
 }
 
 func (c Coordinator) SummaryAccess(ctx context.Context, i orchestration.Identity) (string, string, error) {

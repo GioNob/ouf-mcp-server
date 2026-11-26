@@ -9,6 +9,7 @@ import (
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	manifestpkg "github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -33,9 +34,26 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	}
 	return p, rev, nil
 }
+
+// Project the same request clock in a plan page and under the claim's header
+// lock. The predecessor may be outside the page returned to the client.
+const plannedReadClocks = ` from ouf_mcp.profile_analysis_task t
+	left join ouf_mcp.analysis_owner_due w on w.analysis_id=t.analysis_id
+		and w.request_id=case when t.task->>'tool' in ('semantic.discovery.status','semantic.discovery.candidates')
+			then (t.task->'arguments'->>'requestId')::uuid end
+	left join ouf_mcp.profile_analysis_task prior on prior.analysis_id=t.analysis_id
+		and t.task->>'tool'='semantic.discovery.status' and (t.task->>'observation')::int>1
+		and prior.task->>'tool'=t.task->>'tool' and prior.task->'arguments'=t.task->'arguments'
+		and (prior.task->>'observation')::int=(t.task->>'observation')::int-1
+		and prior.task->>'state'='SUCCEEDED' `
+
+const plannedReadDue = `greatest(w.not_before,(prior.task->>'notBefore')::timestamptz,
+	(prior.task->>'completedAt')::timestamptz + interval '31 seconds')`
+
 func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, error) {
 	// Never load potentially large evidence bodies or intent arguments for totals.
-	rows, err := tx.Query(ctx, `select task-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey'-'policyEpoch'-'ownerIntent' from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal`, id)
+	rows, err := tx.Query(ctx, `select t.task-'discoveryText'-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey'-'policyEpoch'-'ownerIntent',
+		`+plannedReadDue+plannedReadClocks+`where t.analysis_id=$1 order by t.ordinal`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -44,11 +62,15 @@ func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, 
 	for rows.Next() {
 		var raw []byte
 		var t analysis.Task
-		if err = rows.Scan(&raw); err != nil {
+		var due *time.Time
+		if err = rows.Scan(&raw, &due); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(raw, &t); err != nil {
 			return nil, err
+		}
+		if due != nil && due.After(t.NotBefore) && (t.State == "READY" || t.State == "WAITING") {
+			t.NotBefore = *due
 		}
 		tasks = append(tasks, t)
 	}
@@ -123,6 +145,11 @@ func planAnalysis(ctx context.Context, tx pgx.Tx, p analysis.Plan) (analysis.Vie
 	tasks, e := analysisTasks(ctx, tx, p.ID)
 	if e != nil {
 		return analysis.View{}, e
+	}
+	if !p.Replan {
+		if err := reservePlanReformulations(ctx, tx, p, tasks); err != nil {
+			return analysis.View{}, err
+		}
 	}
 	indices := map[string]int{}
 	for n, t := range tasks {
@@ -342,13 +369,30 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
 				return t, e
 			}
-			if e = finishSummary(ctx, tx, id, t, now); e != nil {
+			if e = finishSummary(ctx, tx, id, t, now, orchestration.OwnerObservation{}); e != nil {
 				return t, e
 			}
 		}
 		// Never return another worker's fencing token to a concurrent executor.
 		t.Fence = ""
 		return t, tx.Commit(ctx)
+	}
+	if t.Tool == "semantic.discovery.status" || t.Tool == "semantic.discovery.candidates" {
+		var due *time.Time
+		var predecessorReady bool
+		if e = tx.QueryRow(ctx, `select `+plannedReadDue+`,prior.task_id is not null`+plannedReadClocks+
+			`where t.analysis_id=$1 and t.task_id=$2`, id, taskID).Scan(&due, &predecessorReady); e != nil {
+			return t, e
+		}
+		if t.Observation > 1 && !predecessorReady {
+			return t, analysis.ErrConflict
+		}
+		if due != nil && due.After(now) && due.After(t.NotBefore) {
+			t.State, t.Code, t.NotBefore = "WAITING", "OBSERVATION_INTERVAL", *due
+			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
+				return t, e
+			}
+		}
 	}
 	if now.Before(t.NotBefore) {
 		return t, tx.Commit(ctx)
@@ -359,29 +403,10 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 		if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
 			return t, e
 		}
-		if e = finishSummary(ctx, tx, id, t, now); e != nil {
+		if e = finishSummary(ctx, tx, id, t, now, orchestration.OwnerObservation{}); e != nil {
 			return t, e
 		}
 		return t, tx.Commit(ctx)
-	}
-	// Poll observations are sequential, spaced and durably linked. New caller
-	// IDs cannot turn the same observation into additional execution capacity.
-	if t.Tool == "semantic.discovery.status" && t.Observation > 1 {
-		priorID := analysis.Digest([]any{t.Tool, json.RawMessage(t.Arguments), t.Observation - 1})
-		prior, err := readAnalysisTask(ctx, tx, id, priorID)
-		if err != nil || prior.State != "SUCCEEDED" {
-			return t, analysis.ErrConflict
-		}
-		earliest := prior.CompletedAt.Add(31 * time.Second)
-		if now.Before(earliest) {
-			t.State = "WAITING"
-			t.Code = "OBSERVATION_INTERVAL"
-			t.NotBefore = earliest
-			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
-				return t, e
-			}
-			return t, tx.Commit(ctx)
-		}
 	}
 	var retained int64
 	if e = tx.QueryRow(ctx, `select coalesce(sum(coalesce((task->>'resultBytes')::bigint,0)+case when task->>'state'='RUNNING' then (task->>'maxBytes')::bigint else 0 end),0) from ouf_mcp.profile_analysis_task where analysis_id=$1`, id).Scan(&retained); e != nil {
@@ -477,7 +502,7 @@ func (s *Store) FinishAnalysisTask(ctx context.Context, scope analysis.Scope, id
 		}
 		return t, tx.Commit(ctx)
 	}
-	if e = finishSummary(ctx, tx, id, t, now); e != nil {
+	if e = finishSummary(ctx, tx, id, t, now, f.Observation); e != nil {
 		if errors.Is(e, analysis.ErrProfile) {
 			return t, holdAnalysis(ctx, tx, id)
 		}

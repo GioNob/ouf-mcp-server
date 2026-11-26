@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
-	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -27,6 +26,13 @@ const Contract = "ouf.next-step.v1"
 const DefaultWaitMaxSeconds = 3600
 
 type Engine struct {
+	Observed            orchestration.OwnerObservation
+	SavedObservation    func(string, Object) (orchestration.OwnerObservation, error)
+	Signer              *Signer
+	Binding             []byte
+	CanPropose          func() bool
+	DecisionKeys        func(string, string) (string, string, error)
+	ReformulationColumn func(string, string) (int, bool)
 	PublishedLanguages  []string
 	WaitMaxSeconds      int
 	PollIntervalSeconds int
@@ -102,6 +108,18 @@ func get(obs, input Object, paths string) any {
 			return required
 		}
 		return nil
+	case "#ownerTiming":
+		now := time.Now()
+		at, valid := orchestration.OwnerDue(obs, now, time.Time{}, "")
+		return !valid || at.After(now)
+	case "#emptyCandidates":
+		items, ok := obs["candidates"].([]any)
+		if !ok || len(items) != 0 {
+			return false
+		}
+		request, _ := input["requestId"].(string)
+		raw, err := json.Marshal(obs)
+		return err == nil && analysis.EmptyCandidatePage(request, raw)
 	case "#incompleteColumn":
 		return incompleteColumn(obs) != nil
 	case "#distinctCursor":
@@ -118,13 +136,26 @@ func get(obs, input Object, paths string) any {
 			return offset + 1
 		}
 		return nil
-	case "#readyTask":
+	case "#readyTask", "#timedTask":
 		tasks, _ := obs["tasks"].([]any)
 		for _, item := range tasks {
 			task, _ := item.(Object)
 			switch task["state"] {
 			case "PLANNED", "READY", "PENDING":
-				return task["taskId"]
+				if paths == "#readyTask" {
+					return task["taskId"]
+				}
+			case "WAITING":
+				if paths == "#timedTask" {
+					id, _ := task["taskId"].(string)
+					if id == "" {
+						continue
+					}
+					due, valid := orchestration.OwnerDue(task, time.Now(), time.Time{}, "")
+					if !valid || !due.IsZero() {
+						return id
+					}
+				}
 			}
 		}
 		return nil
@@ -245,8 +276,12 @@ func (e Engine) discoveryWork(obs Object) any {
 		if !ok || !analysis.UsableColumnName(name) {
 			continue
 		}
-		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{offset + i}, "arguments": Object{
-			"intent": name, "preferredLanguages": langs, "requestedArtifactType": "PROPERTY",
+		intent := analysis.ColumnIntent(name)
+		if intent == "" {
+			continue
+		}
+		work = append(work, Object{"tool": "semantic.discovery.request", "columns": []int{offset + i}, "intentHint": intentHint(obs, column, name), "arguments": Object{
+			"intent": intent, "preferredLanguages": langs, "requestedArtifactType": "PROPERTY",
 		}})
 	}
 	return work
@@ -279,13 +314,6 @@ func (e Engine) project(r manifest.Rule, obs, input Object) Object {
 			// The agent has not authored the intent yet. Allocate a key for
 			// this offered command; retries use the completed arguments.
 			value = uuid.NewString()
-		case "#searchQuery":
-			// Discovery intents can exceed the search schema's query limit.
-			// Only bind the original wording when it is executable as a query.
-			value = nil
-			if intent := get(obs, input, "intent|@intent"); intent != nil && e.Valid(r.Tool, Object{"q": intent}) {
-				value = intent
-			}
 		case "#zero":
 			value = 0
 		case "#discovery":
@@ -312,7 +340,15 @@ func call(action, reason, tool string, args Object) Object {
 }
 
 func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
-	return ensureProgress(c.ToolName, input, e.evaluate(c, policy, input, owner, failed))
+	obs := owner
+	if !failed {
+		obs = observationAt(c.ToolName, input, owner, e.clock())
+		if c.ToolName == "ouf.ingestion.status" {
+			obs = recoveryObservation(obs)
+		}
+	}
+	next := e.evaluate(c, policy, input, obs, failed)
+	return ensureProgress(c.ToolName, input, e.ownerNext(next, policy.Read, obs))
 }
 
 // Compare decoded JSON numbers by value, including 1, 1.0 and 1e0.
@@ -549,11 +585,10 @@ func (e Engine) blockedRule(r manifest.Rule, obs, input Object) Object {
 	return s
 }
 
-func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, owner Object, failed bool) Object {
+func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, obs Object, failed bool) Object {
 	if failed {
-		return e.failure(c, policy, input, owner)
+		return e.failure(c, policy, input, obs)
 	}
-	obs := Observation(c.ToolName, input, owner)
 	if c.ToolName == onboardingRead && input["view"] == "LATEST" {
 		if next := e.afterDraftRecoveryRead(input, obs); next != nil {
 			return next
@@ -572,14 +607,11 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 			return ManualBlock("HANDOFF_DEADLINE_REQUIRED", "Aggiorna l’owner Onboarding per ottenere la scadenza del selettore.", "OPERATOR")
 		}
 		if c.ToolName == "source.file.upload.status" && obs["state"] == "PENDING" && obs["pickerUrl"] == nil {
-			if end, err := time.Parse(time.RFC3339Nano, waitUntil); err == nil && !e.Now().Before(end) {
+			if end, err := time.Parse(time.RFC3339Nano, waitUntil); err == nil && !e.clock().Before(end) {
 				return (WaitRef{Read: c.ToolName, Args: input}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta.")
 			}
 			return Block("HANDOFF_REFERENCE_REQUIRED", "ouf.wait", "Riprendi l’attesa con il waitRef ricevuto all’apertura del selettore.")
 		}
-	}
-	if c.ToolName == "ouf.ingestion.status" {
-		obs = recoveryObservation(obs)
 	}
 	if obs["replay"] == true {
 		tool, _ := obs["readTool"].(string)
@@ -617,6 +649,9 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		switch r.Action {
 		case "BLOCKED":
+			if c.ToolName == "semantic.discovery.candidates" && r.Reason == "DISCOVERY_NO_CANDIDATES" {
+				return e.emptyCandidates(input)
+			}
 			if r.Reason == "EXECUTION_PROPOSAL_REQUIRED" && lookup(obs, "deferredReaderChecks.0.fieldName") != nil {
 				r.Message = "Completa {missingSections} coi quattro pin di semantic.get e usa publicationSetId per semanticPublicationSetRef. L’Onboarding calcola i limiti dal profilo del file. Usa limits solo per restringerli, mai sotto i valori reali. Verifica deferredReaderChecks in preparazione. Per un CSV puoi usare IDENTITY."
 			}
@@ -654,39 +689,116 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 		}
 		if r.Action == "WAIT_FOR_HUMAN" {
 			if e.Issue != nil {
-				next := e.Issue(r, args, obs)
-				// Both semantic review commands bind admission and owner
-				// deduplication to commandKey. Poll the original invocation;
-				// a replay receipt continues with its authorized read.
-				if next["action"] == "POLL" && next["reasonCode"] == "OWNER_REVIEW_LINK_UNAVAILABLE" &&
-					(c.ToolName == "semantic.review.prepare" || c.ToolName == "semantic.approval.request") &&
-					input["commandKey"] != nil && e.Valid(c.ToolName, input) {
-					next["tool"], next["arguments"] = c.ToolName, input
-				}
-				return next
+				return e.Issue(r, args, obs)
 			}
 			return e.blockTarget("WAIT_UNAVAILABLE", r.Tool, args, "Consulta lo stato della decisione.", "HUMAN_THS")
 		}
 		s := call(r.Action, r.Reason, r.Tool, args)
+		if r.Args["work"] == "#discovery" {
+			s["userMessage"] = planIntentMessage
+		}
 		if r.Message != "" {
 			s["userMessage"] = r.Message
 		}
 		if r.Action == "POLL" {
-			return e.machinePoll(s, policy.Read, obs, args, r.Terminal)
+			s["terminalStates"] = r.Terminal
 		}
 		return s
 	}
 	return e.blockTarget("OWNER_STATE_UNKNOWN", policy.Read, readReference(policy.Read, obs, input), "Lo stato ricevuto richiede una nuova lettura.", "")
 }
 
-// A deadline is checked before proposing another delay, including an owner error.
-func (e Engine) machinePoll(next Object, read string, obs, args Object, terminal []string) Object {
-	now := e.Now()
+// This in-process witness serializes as the public contract string. It binds
+// the checked destination and arguments until the final MCP emission boundary.
+type checkedOwnerCall struct {
+	tool, arguments string
+}
+
+func (checkedOwnerCall) MarshalJSON() ([]byte, error) { return json.Marshal(Contract) }
+
+func CheckedOwnerCall(next Object) bool {
+	proof, ok := next["contract"].(checkedOwnerCall)
+	args, valid := next["arguments"].(Object)
+	return ok && valid && next["tool"] == proof.tool && argumentDigest(args) == proof.arguments
+}
+
+// ownerCall constructs a direct continuation using the observation that led to it.
+func (e Engine) ownerCall(reason, tool string, args, obs Object) Object {
+	return e.ownerNext(call("CALL_TOOL", reason, tool, args), tool, obs)
+}
+
+// ownerNext is the emission boundary for automatic continuations. POLL
+// supplies a local floor. A CALL_TOOL needs a wait only for a future bound.
+func (e Engine) ownerNext(next Object, read string, obs Object) Object {
+	action := next["action"]
+	if (action != "POLL" && action != "CALL_TOOL") || next["tool"] == "ouf.wait" {
+		return next
+	}
+	now := e.clock()
+	var floor time.Time
+	if action == "POLL" {
+		floor = now.Add(time.Duration(max(orchestration.PollIntervalSeconds, e.PollIntervalSeconds)) * time.Second)
+	}
+	reason, _ := next["reasonCode"].(string)
+	admission := AdmissionWindowCode(reason) && next["deadline"] != nil
+	if admission {
+		// For admission the window end is a lower bound, not an expiry.
+		floor, _ = time.Parse(time.RFC3339Nano, fmt.Sprint(next["deadline"]))
+		delete(next, "deadline")
+	}
+	args := next["arguments"].(Object)
+	tool, _ := next["tool"].(string)
+	ownerReason, _ := obs["ownerDueReason"].(string)
+	if e.Observed.Reason != "" {
+		ownerReason = e.Observed.Reason
+		if e.Observed.Due.After(floor) {
+			floor = e.Observed.Due
+		}
+	}
+	if e.SavedObservation != nil {
+		saved, err := e.SavedObservation(tool, args)
+		if err != nil {
+			return ManualBlock("OWNER_CLOCK_UNAVAILABLE", "Verifica il termine registrato per la lettura.", "OPERATOR")
+		}
+		if saved.Due.After(floor) {
+			floor, ownerReason = saved.Due, saved.Reason
+		}
+	}
+	origin := e.Observed.At
+	if origin.IsZero() {
+		origin = now
+	}
+	due, valid := orchestration.OwnerDue(obs, origin, floor, "")
+	valid = valid && ownerReason != "RETRY_WINDOW_UNAVAILABLE" && e.Observed.Reason != "RETRY_WINDOW_UNAVAILABLE"
+	if valid && next["tool"] == "source.analysis.step" {
+		// A plan may select one task from a page of independent clocks.
+		tasks, _ := obs["tasks"].([]any)
+		for _, item := range tasks {
+			task, _ := item.(Object)
+			if task["taskId"] != nil && task["taskId"] == args["taskId"] {
+				due, valid = orchestration.OwnerDue(task, now, due, "")
+				break
+			}
+		}
+	}
+	if !valid {
+		return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la finestra di ripresa con il proprietario.", "OPERATOR")
+	}
+	if action == "CALL_TOOL" && !due.After(now) {
+		next["contract"] = checkedOwnerCall{tool: tool, arguments: argumentDigest(args)}
+		return next
+	}
+	if (ownerReason == "OWNER_TIMEOUT" || ownerReason == "TRANSIENT_OWNER_WAIT") && due.After(now) && !admission {
+		next["reasonCode"] = ownerReason
+	}
+	if next["terminalStates"] == nil {
+		next["terminalStates"] = []string{"SUCCEEDED", "FAILED", "CANCELLED"}
+	}
 	end, valid := e.machineDeadline(obs)
 	if !valid {
 		return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la scadenza del lavoro con l’owner.", "OPERATOR")
 	}
-	if !end.IsZero() {
+	if !end.IsZero() && !admission {
 		if !now.Before(end) {
 			if next["tool"] == read {
 				return (WaitRef{Read: read, Args: args}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Rileggi l’esito registrato su richiesta dell’utente.")
@@ -695,12 +807,7 @@ func (e Engine) machinePoll(next Object, read string, obs, args Object, terminal
 		}
 		next["deadline"] = end.UTC().Format(time.RFC3339Nano)
 	}
-	delay, ok := retryDelay(obs, now)
-	if !ok {
-		return e.blockTarget("RETRY_WINDOW_UNAVAILABLE", read, readReference(read, obs, args), "Verifica la finestra di ripresa.", "")
-	}
-	next["pollAfterSeconds"], next["terminalStates"] = max(delay, e.PollIntervalSeconds), terminal
-	return next
+	return e.Signer.issuePoll(e.Binding, next, obs, now, due)
 }
 
 func (e Engine) machineDeadline(obs Object) (time.Time, bool) {
@@ -709,28 +816,42 @@ func (e Engine) machineDeadline(obs Object) (time.Time, bool) {
 		maximum = DefaultWaitMaxSeconds
 	}
 	var earliest time.Time
-	for _, field := range []string{"deadline", "waitUntil", "expiresAt", "decisionDeadline", "budgetDeadline", "activationProgress.budgetExpiresAt", "createdAt", "startedAt"} {
-		raw := lookup(obs, field)
-		if raw == nil {
-			continue
-		}
-		end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
-		if err != nil {
-			return time.Time{}, false
-		}
-		if field == "createdAt" || field == "startedAt" {
-			end = end.Add(time.Duration(maximum) * time.Second)
-		}
-		if earliest.IsZero() || end.Before(earliest) {
-			earliest = end
+	receipt, _ := obs["result"].(Object)
+	for _, source := range []Object{obs, receipt} {
+		for _, field := range []string{"deadline", "waitUntil", "expiresAt", "decisionDeadline", "budgetDeadline", "activationProgress.budgetExpiresAt", "createdAt", "startedAt"} {
+			raw := lookup(source, field)
+			if raw == nil {
+				continue
+			}
+			end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
+			if err != nil {
+				return time.Time{}, false
+			}
+			if field == "createdAt" || field == "startedAt" {
+				end = end.Add(time.Duration(maximum) * time.Second)
+			}
+			if earliest.IsZero() || end.Before(earliest) {
+				earliest = end
+			}
 		}
 	}
 	return earliest, true
 }
 
+func (e Engine) clock() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
+}
+
 // Only a single visible source in a complete page can select a run. Preserve
 // any source filter the caller supplied.
 func Observation(tool string, args, body Object) Object {
+	return observationAt(tool, args, body, time.Now())
+}
+
+func observationAt(tool string, args, body Object, now time.Time) Object {
 	if tool == "ouf.ingestion.status" && body["items"] != nil {
 		items, _ := body["items"].([]any)
 		if len(items) == 1 && body["partial"] != true {
@@ -738,6 +859,15 @@ func Observation(tool string, args, body Object) Object {
 			source, _ := get(row, nil, "sourceId|source_ref").(string)
 			selected, _ := args["sourceId"].(string)
 			if source != "" && (selected == "" || source == selected) {
+				// A collection-level HTTP or body delay applies to the selected row.
+				due, valid := orchestration.OwnerDue(body, now, time.Time{}, "")
+				if !valid || !due.IsZero() {
+					row = maps.Clone(row)
+					row["transportNotBefore"] = due.UTC().Format(time.RFC3339Nano)
+					if !valid {
+						row["transportNotBefore"] = "invalid"
+					}
+				}
 				return row
 			}
 		}
@@ -787,6 +917,35 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 			return ManualBlock(code, "La ricevuta di lettura è invalida. Chiedi all’operatore di verificare la piattaforma.", "OPERATOR")
 		case "CAPABILITY_NOT_DECLARED", "SCOPE_MISSING", "ACTOR_NOT_ALLOWED", "EXPLICIT_DENY":
 			return PermissionDenied(c.RequiredAuthorization, code)
+		}
+	}
+	if c.ToolName == "semantic.discovery.adopt" && obs["authorizationPhase"] == nil {
+		httpStatus, _ := strconv.Atoi(status)
+		message := orchestration.AdoptionRefusal(httpStatus, code)
+		if obs["recordedRefusal"] == true {
+			message = orchestration.RecordedAdoptionRefusal(code)
+		}
+		if message != "" {
+			list := Object{"requestId": args["requestId"], "includeState": true}
+			exclude := Object{"commandKey": uuid.NewString()}
+			propose := Object{"commandKey": uuid.NewString()}
+			if id := args["analysisId"]; id != nil {
+				list["analysisId"], exclude["analysisId"], propose["analysisId"] = id, id, id
+			}
+			options := []Object{
+				alternative("semantic.discovery.candidates", list, code, "Consulta gli altri candidati della stessa richiesta."),
+				alternative(onboardingCreate, exclude, code, "Nel mapping imposta extractionDecision a EXCLUDE per la colonna e motiva la scelta all’utente. Completa gli altri campi con le evidenze del profilo."),
+			}
+			if e.CanPropose != nil && e.CanPropose() {
+				options = append(options, alternative("semantic.propose", propose, code, "Prepara una proposta semantica per la colonna."))
+			}
+			return draftDecision(code, message+" Scegli come proseguire per questa colonna.", options)
+		}
+		if httpStatus != 0 || code == "SEMANTIC_ADOPTION_UNAVAILABLE" {
+			read := readReference(p.Read, obs, args)
+			if e.Valid(p.Read, read) {
+				return call("CALL_TOOL", code, p.Read, read)
+			}
 		}
 	}
 	if next := e.draftFailure(c.ToolName, code, status, args, obs); next != nil {
@@ -868,7 +1027,7 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		}
 		s := call(r.Action, code, target, projected)
 		if r.Action == "POLL" {
-			return e.machinePoll(s, p.Read, obs, projected, r.Terminal)
+			s["terminalStates"] = r.Terminal
 		}
 		return s
 	}
@@ -877,44 +1036,4 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 
 func AdmissionWindowCode(code string) bool {
 	return code == "TOOL_SELECTION_STALL" || strings.HasSuffix(code, "_WINDOW_BUDGET_EXHAUSTED")
-}
-
-func retryDelay(obs Object, now time.Time) (int, bool) {
-	delay := orchestration.PollIntervalSeconds
-	for _, field := range []string{"RetryAfter", "retryAfterSeconds", "pollAfterSeconds"} {
-		raw := get(obs, nil, field)
-		if raw == nil {
-			continue
-		}
-		seconds, err := strconv.Atoi(fmt.Sprint(raw))
-		if err != nil {
-			date, err := http.ParseTime(fmt.Sprint(raw))
-			if err != nil {
-				return 0, false
-			}
-			if date.After(now.Add(time.Hour)) {
-				return 0, false
-			}
-			seconds = max(0, int((date.Sub(now)+time.Second-1)/time.Second))
-		}
-		if seconds < 0 || seconds > 3600 {
-			return 0, false
-		}
-		delay = max(delay, seconds)
-	}
-	if raw := get(obs, nil, "retryAt|next_retry_at|nextAttemptAt|notBefore"); raw != nil {
-		at, err := time.Parse(time.RFC3339Nano, fmt.Sprint(raw))
-		if err == nil && at.After(now.Add(time.Hour)) && obs["tool"] == analysis.BatchTool && obs["code"] == "TRANSIENT_OWNER_WAIT" {
-			// A public poll may inspect the durable wait hourly. The plan
-			// still prohibits owner dispatch before the full Retry-After.
-			return 3600, true
-		}
-		if err != nil || at.After(now.Add(time.Hour)) {
-			return 0, false
-		}
-		if at.After(now) {
-			delay = max(delay, int((at.Sub(now)+time.Second-1)/time.Second))
-		}
-	}
-	return delay, true
 }
