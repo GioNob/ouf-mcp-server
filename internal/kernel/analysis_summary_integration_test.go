@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -21,7 +22,7 @@ import (
 )
 
 func TestLostEmptyCandidateDecisionResumesFromStatus(t *testing.T) {
-	store, m := summaryTestStore(t)
+	store, m := summaryTestStore(t, isolatedSummaryTestDSN(t))
 	ctx := context.Background()
 	const scopes = "ouf.managed-source.preview ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates ouf.semantic.propose ouf.managed-source.onboarding.create"
 	for _, tc := range []struct {
@@ -178,7 +179,7 @@ func (o summaryOwner) Execute(_ context.Context, r orchestration.GatewayRequest,
 func TestSummarySDKPostgresV1EvidenceAndRevocation(t *testing.T) {
 	t.Setenv("OUF_ANALYSIS_SUMMARY_PAGE_BYTES", "4096")
 	ctx := context.Background()
-	store, m := summaryTestStore(t)
+	store, m := summaryTestStore(t, summaryTestDSN(t))
 	owner := summaryOwner{uuid.NewString()}
 	auth := &summaryAuthority{}
 	service := &orchestration.Service{Auth: auth, RequireDelegation: true, Admission: store, Gateway: owner, FingerprintKey: make([]byte, 32)}
@@ -258,12 +259,51 @@ func TestSummarySDKPostgresV1EvidenceAndRevocation(t *testing.T) {
 	}
 }
 
-func summaryTestStore(t *testing.T) (*postgres.Store, *manifest.Snapshot) {
+func summaryTestDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("MCP_TEST_DATABASE_URL required")
 	}
+	return dsn
+}
+
+// The adapter package exercises concurrent SERIALIZABLE admissions during go test ./...
+// Separate principals still write the same tables and can incur serialization failures.
+func isolatedSummaryTestDSN(t *testing.T) string {
+	t.Helper()
+	dsn := summaryTestDSN(t)
+	admin, err := postgres.Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	name := "mcp_summary_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.Pool().Exec(t.Context(), "create database "+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Pool().Exec(context.Background(), "drop database "+name); err != nil {
+			t.Errorf("drop fixture database: %v", err)
+		}
+	})
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatal("invalid MCP_TEST_DATABASE_URL")
+		}
+		u.Path, u.RawPath = "/"+name, ""
+		query := u.Query()
+		query.Del("database")
+		query.Del("dbname")
+		u.RawQuery = query.Encode()
+		return u.String()
+	}
+	return dsn + " dbname=" + name
+}
+
+func summaryTestStore(t *testing.T, dsn string) (*postgres.Store, *manifest.Snapshot) {
+	t.Helper()
 	ctx := context.Background()
 	store, err := postgres.Open(ctx, dsn)
 	if err != nil {
@@ -297,7 +337,7 @@ func (o *interruptedDiscovery) Execute(context.Context, orchestration.GatewayReq
 }
 
 func TestLostDiscoveryErrorResumesFromStoredClock(t *testing.T) {
-	store, m := summaryTestStore(t)
+	store, m := summaryTestStore(t, summaryTestDSN(t))
 	ctx := context.Background()
 	for _, status := range []int{429, 503, 0} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
