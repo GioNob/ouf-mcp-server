@@ -339,7 +339,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shift := time.Now().Sub(observed)
+	shift := time.Since(observed)
 	for _, row := range real[4:6] {
 		for _, key := range []string{"completedAt", "createdAt", "nextAttemptAt", "budgetDeadline"} {
 			if raw, ok := row.Owner[key].(string); ok {
