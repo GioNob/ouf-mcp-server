@@ -38,6 +38,55 @@ func searchWork(n int) analysis.Work {
 	b, _ := json.Marshal(map[string]any{"q": fmt.Sprintf("property-%d", n), "type": "PROPERTY"})
 	return analysis.Work{Tool: "semantic.search", Arguments: b, Columns: []int{n}}
 }
+
+func TestBatchStartRetainsModeAndSharesNoLegacyAnalysis(t *testing.T) {
+	ctx, store, scope, profile, snapshot := analysisFixture(t, 32)
+	checksum, err := snapshot.Checksum()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := analysis.Build(scope, profile, snapshot, 0, []analysis.Work{searchWork(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PlanAnalysis(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	start := analysis.BatchStart{ID: analysis.BatchAnalysisID(scope, profile, ""), Profile: profile}
+	key, intent := uuid.NewString(), analysis.Digest([]string{analysis.BatchMode, profile.AssetID, profile.ProfileID, profile.SchemaHash})
+	if got, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start); err != nil || got != start {
+		t.Fatal(got, err)
+	}
+	reopened, err := Open(ctx, os.Getenv("MCP_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got, found, err := reopened.LookupBatchStartCommand(ctx, scope, checksum, key, intent); err != nil || !found || got != start {
+		t.Fatal(got, found, err)
+	}
+	if _, err := reopened.SaveBatchStart(ctx, scope, checksum, key, analysis.Digest("changed intent"), start); !errors.Is(err, analysis.ErrKeyReuse) {
+		t.Fatal("changed command was accepted", err)
+	}
+	if _, err := reopened.ReadAnalysis(ctx, scope, start.ID, checksum, 0, 128); !errors.Is(err, analysis.ErrScope) {
+		t.Fatal("legacy read opened a batch", err)
+	}
+	other := scope
+	other.Principal = uuid.NewString()
+	if _, err := reopened.ReadBatchStart(ctx, other, start.ID, checksum); !errors.Is(err, analysis.ErrScope) {
+		t.Fatal("another principal read the batch", err)
+	}
+	predecessor := manifest.AnalysisPredecessor(checksum)
+	if _, err := reopened.ReadAnalysis(ctx, scope, legacy.ID, predecessor, 0, 128); err != nil {
+		t.Fatal("predecessor checksum could not read the legacy analysis", err)
+	}
+	var mode, fence string
+	err = reopened.pool.QueryRow(ctx, `select profile->>'mode',manifest_checksum from ouf_mcp.profile_analysis where analysis_id=$1`, start.ID).Scan(&mode, &fence)
+	if err != nil || mode != analysis.BatchMode || fence != checksum || fence == predecessor {
+		t.Fatal("batch is missing its stored mode or candidate fence", mode, fence, err)
+	}
+}
+
 func TestProfileAnalysisWideDurablePlanAndNoReset(t *testing.T) {
 	for _, n := range []int{20, 50, 100, 200, 300, 400, 1024} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {

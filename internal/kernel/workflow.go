@@ -69,6 +69,9 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 		}
 		langs = policy.Languages
 	}
+	if sdk != nil {
+		sdk.AddReceivingMiddleware(workflowResultWire)
+	}
 	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
@@ -103,7 +106,8 @@ func (s *workflowServer) valid(name string, args nextstep.Object) bool {
 	// Validate JSON values, including nested typed slices built by the planner.
 	raw, err := json.Marshal(args)
 	var v map[string]any
-	return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(raw)) && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil
+	return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(raw)) && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil &&
+		(name != "source.analysis.decide" || uniqueDecisionOrdinals(v))
 }
 
 // Keep argument diagnostics inside the tool result. Typed SDK registration
@@ -192,9 +196,17 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		if len(req.Params.Arguments) == 0 {
 			req.Params.Arguments = json.RawMessage("{}")
 		}
-		if exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) || json.Unmarshal(req.Params.Arguments, &args) != nil || args == nil || input.Validate(args) != nil {
+		validArgs := !exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) &&
+			json.Unmarshal(req.Params.Arguments, &args) == nil && args != nil && input.Validate(args) == nil
+		decide := name == "source.analysis.decide"
+		// A schema-invalid decision has no batch envelope. Once the envelope is
+		// valid, ordinal validation is part of the batch command contract.
+		batchEnvelope := !decide || validArgs
+		if !validArgs || (decide && !uniqueDecisionOrdinals(args)) {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
-			if summaryInput(name, args) {
+			if batchEnvelope && s.batchReadSelector(ctx, name, args) {
+				result = markBatchResult(result)
+			} else if summaryInput(name, args) {
 				inputErr := analysis.ErrInvalid
 				id, _ := args["analysisId"].(string)
 				if token, ok := args["cursor"].(string); ok && args["view"] == "SUMMARY" && len(args) == 3 &&
@@ -203,8 +215,12 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 				}
 				result = s.summaryFailure(ctx, inputErr, id)
 			}
-		} else if (summaryInput(name, args) || name == "source.analysis.plan") && !validJCSInput(req.Params.Arguments) {
-			result = s.summaryFailure(ctx, analysis.ErrInvalid, "")
+		} else if (summaryInput(name, args) || name == "source.analysis.plan" || name == "source.analysis.decide") && !validJCSInput(req.Params.Arguments) {
+			if s.batchReadSelector(ctx, name, args) {
+				result = markBatchResult(errorResult("ANALYSIS_INPUT_INVALID", false))
+			} else {
+				result = s.summaryFailure(ctx, analysis.ErrInvalid, "")
+			}
 		} else {
 			var err error
 			if name == "source.analysis.step" && s.analysisService != nil {
@@ -230,6 +246,14 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
+		}
+		batch := (batchEnvelope && batchInput(name, args)) || result.Meta[batchResultMeta] == true
+		delete(result.Meta, batchResultMeta)
+		if batch {
+			if name != "ouf.wait" || result.StructuredContent == nil {
+				result = s.decorateResult(ctx, t, args, result, true)
+			}
+			return markBatchResult(s.finalizeBatch(name, result)), nil
 		}
 		if (name == "ouf.wait" || summaryInput(name, args)) && result.StructuredContent != nil {
 			result = s.boundedResult(result, t)
@@ -446,9 +470,19 @@ func (s *workflowServer) observedEngine(ctx context.Context, result *mcp.CallToo
 	return engine
 }
 
+func (s *workflowServer) evaluateNext(engine nextstep.Engine, c manifest.Capability, args, obs nextstep.Object, failed, batch bool) nextstep.Object {
+	if batch {
+		return engine.BatchNext(c.ToolName, args, obs, failed)
+	}
+	return engine.Evaluate(c, s.manifest.NextPolicies[c.NextPolicy], args, obs, failed)
+}
+
 func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args map[string]any, result *mcp.CallToolResult) *mcp.CallToolResult {
+	return s.decorateResult(ctx, t, args, result, false)
+}
+
+func (s *workflowServer) decorateResult(ctx context.Context, t registeredTool, args map[string]any, result *mcp.CallToolResult, batch bool) *mcp.CallToolResult {
 	c := t.capability
-	p := s.manifest.NextPolicies[c.NextPolicy]
 	obs := ownerObject(result)
 	structured := map[string]any{}
 	for k, v := range obs {
@@ -481,15 +515,19 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		}
 	}
 	if result.IsError && obs["code"] == "INVALID_TOOL_ARGUMENTS" {
-		structured["allowedForms"] = t.forms
+		forms := t.forms
+		if !batch {
+			forms = legacyInputForms(forms)
+		}
+		structured["allowedForms"] = forms
 	}
 	var next nextstep.Object
 	if !result.IsError && successorUnavailable {
 		id, _ := args["analysisId"].(string)
 		next = engine.AnalysisSuccessorFallback(id)
 	} else {
-		next = engine.Evaluate(c, p, args, obs, result.IsError)
-		if !result.IsError {
+		next = s.evaluateNext(engine, c, args, obs, result.IsError, batch)
+		if !result.IsError && !batch {
 			next = s.publishedNext(ctx, c.ToolName, args, obs, next)
 		}
 	}
@@ -501,6 +539,9 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 		structured["changed"], structured["observation"] = false, nil
 	}
 	result.StructuredContent = structured
+	if batch {
+		return result
+	}
 	pickerIssued := c.ToolName == "source.file.upload" && obs["pickerUrl"] != nil
 	if result.IsError {
 		// Keep the original public text projection. Only the validated

@@ -1,5 +1,5 @@
 {
-  "version": "1.19.1-next-discovery-v1",
+  "version": "1.20.0-analysis-batch-v1",
   "nextErrors": [
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-", "code": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"}, "action": "BLOCKED", "reason": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE", "actor": "AGENT", "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta."}]},
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-"}, "action": "BLOCKED", "reason": "$code", "actor": "AGENT", "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave."}]},
@@ -3638,6 +3638,7 @@
         "Trusted Human Surface"
       ],
       "operationalLimits": {
+        "batchMaxResultBytes": 8192,
         "maxArtifacts": 1,
         "maxRequestBytes": 65536,
         "profile": "ouf.semantic-proposal-channel.v1"
@@ -3669,32 +3670,26 @@
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "revisionId",
-          "expectedRowVersion",
-          "commandKey",
-          "validationRunId"
-        ],
         "properties": {
-          "analysisId": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Optional MCP analysis context, consumed locally."},
-          "revisionId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "expectedRowVersion": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "commandKey": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
-          },
-          "validationRunId": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
+          "analysisId": {"type":"string","pattern":"^[a-f0-9]{64}$","description":"Optional MCP analysis context, consumed locally."},
+          "revisionId": {"type":"string","format":"uuid"},
+          "expectedRowVersion": {"type":"integer","minimum":0,"maximum":9007199254740991},
+          "commandKey": {"type":"string","pattern":"^[A-Za-z0-9_:.-]{1,128}$"},
+          "validationRunId": {"type":"string","format":"uuid"},
+          "projection": {"const":"BATCH_V1"},
+          "batchAction": {},
+          "reviewContextRef": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+          "item": {},
+          "reviewBatchId": {"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"}
+        },
+        "oneOf": [
+          {"type":"object","additionalProperties":false,"required":["revisionId","expectedRowVersion","commandKey","validationRunId"],"properties":{"analysisId":{},"revisionId":{},"expectedRowVersion":{},"commandKey":{},"validationRunId":{}}},
+          {"type":"object","additionalProperties":false,"required":["revisionId","expectedRowVersion","commandKey","validationRunId","projection","analysisId"],"properties":{"analysisId":{},"revisionId":{},"expectedRowVersion":{},"commandKey":{},"validationRunId":{},"projection":{"const":"BATCH_V1"}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","commandKey","batchAction","reviewContextRef","item"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"commandKey":{},"batchAction":{"const":"ADD"},"reviewContextRef":{},"item":{"type":"object","additionalProperties":false,"required":["revisionId","expectedRowVersion","validationRunId"],"properties":{"revisionId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"expectedRowVersion":{"type":"integer","minimum":0,"maximum":9007199254740991},"validationRunId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"}}}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","commandKey","batchAction","reviewContextRef","item"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"commandKey":{},"batchAction":{"const":"REMOVE"},"reviewContextRef":{},"item":{"type":"object","additionalProperties":false,"required":["revisionId"],"properties":{"revisionId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"}}}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","commandKey","batchAction","reviewContextRef","reviewBatchId"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"commandKey":{},"batchAction":{"const":"SUBMIT"},"reviewContextRef":{},"reviewBatchId":{}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","commandKey","batchAction","reviewContextRef","reviewBatchId"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"commandKey":{},"batchAction":{"const":"RESUBMIT"},"reviewContextRef":{},"reviewBatchId":{}}}
+        ]
       }
     },
     {
@@ -3712,6 +3707,7 @@
         "Trusted Human Surface"
       ],
       "operationalLimits": {
+        "batchMaxResultBytes": 8192,
         "maxArtifacts": 1,
         "maxRequestBytes": 65536,
         "profile": "ouf.semantic-proposal-channel.v1"
@@ -3743,23 +3739,22 @@
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "commandKey"
-        ],
         "properties": {
-          "analysisId": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Optional MCP analysis context, consumed locally."},
-          "commandKey": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
-          },
-          "expectedVersion": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
-          },
-          "includeState": {
-            "type": "boolean"
-          }
-        }
+          "analysisId": {"type":"string","pattern":"^[a-f0-9]{64}$","description":"Optional MCP analysis context, consumed locally."},
+          "commandKey": {"type":"string","pattern":"^[A-Za-z0-9_:.-]{1,128}$"},
+          "expectedVersion": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+          "includeState": {"type":"boolean"},
+          "projection": {"const":"BATCH_V1"},
+          "reviewContextRef": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+          "reviewBatchId": {"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},
+          "itemsOffset": {"type":"integer","minimum":0,"maximum":4095}
+        },
+        "oneOf": [
+          {"type":"object","additionalProperties":false,"required":["commandKey"],"properties":{"analysisId":{},"commandKey":{},"expectedVersion":{},"includeState":{}}},
+          {"type":"object","additionalProperties":false,"required":["commandKey","projection","analysisId"],"properties":{"analysisId":{},"commandKey":{},"expectedVersion":{},"includeState":{},"projection":{"const":"BATCH_V1"}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","reviewContextRef"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"reviewContextRef":{},"expectedVersion":{}}},
+          {"type":"object","additionalProperties":false,"required":["analysisId","projection","reviewBatchId"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"projection":{"const":"BATCH_V1"},"reviewBatchId":{},"expectedVersion":{},"itemsOffset":{}}}
+        ]
       }
     },
     {
@@ -4027,9 +4022,10 @@
       ],
       "operationalLimits": {
         "maxArgumentsBytes": 1024,
+        "batchMaxResultBytes": 8192,
         "maxResultBytes": 1048576
       },
-      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding; COLUMNS view returns immutable schema pages without sample values; follow nextOffset until hasMore=false, preserving profile/version/schemaHash",
+      "resultSemantics": "Redacted preview, bounded profile-job state, or tenant-and-subject-owned asset page with an opaque cursor; ownership is rechecked by Onboarding; COLUMNS view returns immutable schema pages without sample values; follow nextOffset until hasMore=false, preserving profile/version/schemaHash. Set mode=BATCH_V1 with assetId and profileId to receive verified profile metadata and the single batch start continuation.",
       "securityNotes": [
         "HUMAN delegation and exact asset ownership are checked by Gateway and Onboarding",
         "No file bytes, base64, filesystem paths or user-chosen URLs in tool arguments"
@@ -4056,6 +4052,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "mode": {"const":"BATCH_V1"},
           "assetId": {
             "type": "string",
             "format": "uuid"
@@ -4096,6 +4093,7 @@
           }
         },
         "oneOf": [
+          {"type":"object","additionalProperties":false,"required":["mode","assetId","profileId"],"properties":{"mode":{"const":"BATCH_V1"},"assetId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"profileId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"view":{"const":"COLUMNS"}}},
           {
             "type": "object",
             "additionalProperties": false,
@@ -6901,6 +6899,7 @@
       ],
       "operationalLimits": {
         "maxColumns": 1024,
+        "batchMaxResultBytes": 8192,
         "maxTasks": 16384,
         "maxPlanBatch": 128,
         "maxRetainedBytes": 67108864,
@@ -6908,7 +6907,7 @@
         "maxRetryAttempts": 128,
         "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. For the initial plan, use column intentHint to supply an Italian description. The first residual discovery uses the verified header. For each reformulation, use a new term of 1–3 words that expresses the concept. To reformulate an empty discovery, supply replanOf, requestId, column, intent and a commandKey. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. For the initial plan, use column intentHint to supply an Italian description. The first residual discovery uses the verified header. For each reformulation, use a new term of 1–3 words that expresses the concept. To reformulate an empty discovery, supply replanOf, requestId, column, intent and a commandKey. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart. A mode=BATCH_V1 start binds the owner schemaHash and takes no caller-authored work.",
       "securityNotes": [
         "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
@@ -6937,11 +6936,14 @@
         "type": "object",
         "additionalProperties": false,
         "oneOf": [
-          {"required": ["assetId", "profileId", "expectedRevision", "work"], "not": {"anyOf": [{"required": ["replanOf"]}, {"required": ["column"]}, {"required": ["requestId"]}, {"required": ["intent"]}]}},
+          {"properties":{"mode":{"const":"BATCH_V1"}},"required":["mode","assetId","profileId","schemaHash","commandKey"],"maxProperties":5},
+          {"required": ["assetId", "profileId", "expectedRevision", "work"], "not": {"anyOf": [{"required": ["mode"]}, {"required": ["schemaHash"]}, {"required": ["replanOf"]}, {"required": ["column"]}, {"required": ["requestId"]}, {"required": ["intent"]}]}},
           {"required": ["replanOf", "commandKey"], "maxProperties": 2},
           {"required": ["replanOf", "commandKey", "requestId", "column", "intent"], "maxProperties": 5}
         ],
         "properties": {
+          "mode": {"const":"BATCH_V1"},
+          "schemaHash": {"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},
           "requestId": {"type": "string", "format": "uuid"},
           "column": {"type": "integer", "minimum": 0, "maximum": 1023},
           "intent": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -7021,7 +7023,7 @@
       "toolName": "source.analysis.read",
       "nextPolicy": "analysis",
       "capabilityId": "ouf.source.analysis.read",
-      "purpose": "Read durable per-column evidence progress, cumulative consumption and bounded task pages",
+      "purpose": "Read durable per-column evidence progress, bounded legacy tasks or BATCH_V1 status, decision batches, candidates and summary",
       "useWhen": [
         "a managed tabular profile requires repeatable column-property analysis"
       ],
@@ -7038,6 +7040,8 @@
         "summaryCursorSeconds": 900,
         "maxColumnReformulations": 7,
         "maxColumns": 1024,
+        "batchMaxResultBytes": 8192,
+        "maxBatchItems": 8,
         "maxTasks": 16384,
         "maxPlanBatch": 128,
         "maxRetainedBytes": 67108864,
@@ -7073,6 +7077,9 @@
       "outputSchema": {
         "type": "object",
         "$defs": {
+          "batchCandidate": {"type":"object","additionalProperties":false,"required":["candidateId","label","term","score"],"properties":{"candidateId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"label":{"type":"string","minLength":1,"maxLength":4000},"term":{"type":"string","minLength":1,"maxLength":2048},"score":{"type":"number"},"truncatedFields":{"type":"array","uniqueItems":true,"items":{"enum":["label","term"]}}}},
+          "batchItem": {"type":"object","additionalProperties":false,"required":["ordinal","name","dataType","examples","attempt","remainingAttempts","intent","requestId","candidateCount","candidates","allowed"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"name":{"type":"string","minLength":1,"maxLength":2000},"dataType":{"type":"string","minLength":1,"maxLength":80},"examples":{"type":"array","minItems":0,"maxItems":2,"items":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]}},"attempt":{"type":"integer","minimum":1,"maximum":8},"remainingAttempts":{"type":"integer","minimum":0,"maximum":7},"intent":{"type":"string","minLength":1,"maxLength":2000},"requestId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"candidateCount":{"type":"integer","minimum":0},"candidates":{"type":"array","minItems":0,"items":{"$ref":"#/$defs/batchCandidate"}},"candidateCursor":{"type":"string","minLength":32,"maxLength":1024},"allowed":{"type":"array","minItems":1,"maxItems":4,"items":{"enum":["ADOPT","REFORMULATE","EXCLUDE","PROPOSE"]},"uniqueItems":true},"truncatedFields":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["name","intent","examples"]}},"reasonCode":{"type":"string","pattern":"^[A-Z][A-Z0-9_]{2,79}$"}}},
+          "batchSummaryItem": {"type":"object","additionalProperties":false,"required":["ordinal","changedSeq","state"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"changedSeq":{"$ref":"#/$defs/seq"},"state":{"enum":["PENDING","MATCHED_PUBLISHED","CANDIDATES_READY","NO_CANDIDATES","BLOCKED","ADOPTED","PROPOSED","EXCLUDED"]},"action":{"enum":["ADOPT","REFORMULATE","EXCLUDE","PROPOSE"]},"reason":{"type":"string","minLength":1,"maxLength":400},"reasonCode":{"type":"string","pattern":"^[A-Z][A-Z0-9_]{2,79}$"},"requestId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"revisionId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"reviewBatchId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"publicationSetId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"receiptRef":{"type":"string","minLength":1,"maxLength":1024},"publicationState":{"enum":["COLLECTING","UNDER_REVIEW","PUBLISHED","CHANGES_REQUESTED","REJECTED","EXPIRED"]}}},
           "seq": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]{0,18})$"
@@ -7476,7 +7483,11 @@
               "next",
               "items"
             ]
-          }
+          },
+          {"type":"object","additionalProperties":false,"required":["mode","analysisId","revision","phase","counts","next"],"properties":{"mode":{"const":"BATCH_V1"},"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"revision":{"type":"integer","minimum":0,"maximum":9007199254740991},"phase":{"enum":["RUNNING","PARTIAL","BLOCKED","COMPLETE"]},"counts":{"$ref":"#/$defs/counts"},"next":{"type":"object","description":"Validated ouf.next-step.v1 continuation."}}},
+          {"type":"object","additionalProperties":false,"required":["mode","view","analysisId","batchId","expectedRevision","items","next"],"properties":{"mode":{"const":"BATCH_V1"},"view":{"const":"BATCH"},"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"batchId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"expectedRevision":{"type":"integer","minimum":0,"maximum":9007199254740991},"items":{"type":"array","minItems":1,"maxItems":8,"items":{"$ref":"#/$defs/batchItem"}},"next":{"type":"object","description":"Validated ouf.next-step.v1 continuation."}}},
+          {"type":"object","additionalProperties":false,"required":["mode","view","analysisId","batchId","ordinal","attempt","requestId","candidateCount","candidates","next"],"properties":{"mode":{"const":"BATCH_V1"},"view":{"const":"CANDIDATES"},"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"batchId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"ordinal":{"type":"integer","minimum":0,"maximum":1023},"attempt":{"type":"integer","minimum":1,"maximum":8},"requestId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"candidateCount":{"type":"integer","minimum":0},"candidates":{"type":"array","minItems":0,"items":{"$ref":"#/$defs/batchCandidate"}},"nextCursor":{"type":"string","minLength":32,"maxLength":1024},"detail":{"type":"object","additionalProperties":false,"required":["field","offset","text"],"properties":{"field":{"enum":["name","intent","examples","label","term"]},"candidateId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"exampleIndex":{"type":"integer","minimum":0,"maximum":1},"offset":{"type":"integer","minimum":0},"text":{"type":"string","minLength":1}}},"next":{"type":"object","description":"Validated ouf.next-step.v1 continuation."}}},
+          {"type":"object","additionalProperties":false,"required":["mode","view","analysisId","revision","phase","changeSeq","counts","items","next"],"properties":{"mode":{"const":"BATCH_V1"},"view":{"const":"SUMMARY"},"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"revision":{"type":"integer","minimum":0,"maximum":9007199254740991},"phase":{"enum":["RUNNING","PARTIAL","BLOCKED","COMPLETE"]},"changeSeq":{"$ref":"#/$defs/seq"},"counts":{"$ref":"#/$defs/counts"},"items":{"type":"array","minItems":0,"maxItems":8,"items":{"$ref":"#/$defs/batchSummaryItem"}},"nextCursor":{"type":"string","minLength":32,"maxLength":1024},"next":{"type":"object","description":"Validated ouf.next-step.v1 continuation."}}}
         ]
       },
       "inputSchema": {
@@ -7486,13 +7497,17 @@
           "analysisId"
         ],
         "oneOf": [
-          {"not":{"anyOf":[{"required":["view"]},{"required":["cursor"]}]}},
+          {"not":{"anyOf":[{"required":["view"]},{"required":["cursor"]},{"required":["batchId"]},{"required":["ordinal"]}]}},
           {"properties":{"view":{"const":"STATUS"}},"required":["view"],"maxProperties":2},
-          {"properties":{"view":{"const":"SUMMARY"}},"required":["view"],"not":{"anyOf":[{"required":["offset"]},{"required":["cursor"]}]}},
-          {"properties":{"view":{"const":"SUMMARY"}},"required":["view","cursor"],"maxProperties":3}
+          {"properties":{"view":{"const":"SUMMARY"}},"required":["view"],"not":{"anyOf":[{"required":["offset"]},{"required":["cursor"]},{"required":["batchId"]},{"required":["ordinal"]}]}},
+          {"properties":{"view":{"const":"SUMMARY"}},"required":["view","cursor"],"maxProperties":3},
+          {"properties":{"view":{"const":"BATCH"}},"required":["view"],"maxProperties":2},
+          {"properties":{"view":{"const":"CANDIDATES"}},"required":["view","batchId","ordinal","cursor"],"maxProperties":5}
         ],
         "properties": {
-          "view": {"enum":["STATUS","SUMMARY"]},
+          "view": {"enum":["STATUS","SUMMARY","BATCH","CANDIDATES"]},
+          "batchId": {"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},
+          "ordinal": {"type":"integer","minimum":0,"maximum":1023},
           "cursor": {"type":"string","minLength":32,"maxLength":1024},
           "analysisId": {
             "type": "string",
@@ -7510,6 +7525,531 @@
           }
         }
       }
+    },
+    {
+      "toolName": "source.analysis.decide",
+      "nextPolicy": "analysis",
+      "capabilityId": "ouf.source.analysis.decide",
+      "purpose": "Record explicit per-column choices for an offered BATCH_V1 analysis batch and return a durable per-entry receipt",
+      "useWhen": [
+        "BATCH_V1 offers a batch for decision"
+      ],
+      "doNotUseWhen": [
+        "working on a legacy analysis or making a human publication decision"
+      ],
+      "preferredAlternatives": [
+        "source.analysis.read"
+      ],
+      "operationalLimits": {
+        "maxDecisions": 8,
+        "maxResultBytes": 8192
+      },
+      "resultSemantics": "Each submitted ordinal has a RECORDED or REJECTED receipt entry. Recording a choice does not attest the owner effect.",
+      "securityNotes": [
+        "Human delegation and current ownership are required. The analysis, batch, offered revision and evidence must match."
+      ],
+      "mcpClass": "MCP_TOOL",
+      "owner": "mcp",
+      "operationClass": "COMMAND",
+      "publicationState": "ACTIVE",
+      "requiredAuthorizationCapability": "ouf.managed-source.preview",
+      "gatewayBindingRef": "capability://ouf.source.analysis.decide",
+      "baseCostEnvelope": {
+        "hardMaxToolCalls": 0,
+        "hardMaxGraphCalls": 0,
+        "hardMaxDistinctObjects": 8,
+        "hardMaxResultBytes": 8192,
+        "hardMaxElapsedMs": 3000
+      },
+      "conditionalOutcomeCost": {
+        "mismatchCalls": 0,
+        "equivalentRetryCalls": 0
+      },
+      "toolEligible": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["analysisId","batchId","expectedRevision","commandKey","decisions"],
+        "$defs": {
+          "nativeProposal": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "semanticId",
+              "artifactType",
+              "namespace",
+              "localName",
+              "ownerRef",
+              "authorityRef",
+              "semanticVersion",
+              "labels",
+              "commandKey"
+            ],
+            "properties": {
+              "analysisId": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Optional MCP analysis context, consumed locally."},
+              "semanticId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "artifactType": {
+                "enum": [
+                  "CLASS",
+                  "PROPERTY",
+                  "RELATIONSHIP",
+                  "VOCABULARY",
+                  "CONCEPT",
+                  "ONTOLOGY",
+                  "DATATYPE",
+                  "VALUE_MAP"
+                ]
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "localName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "ownerRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "authorityRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "semanticVersion": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$"
+              },
+              "labels": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "it": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "en": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "de": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "sl": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  }
+                },
+                "maxProperties": 4
+              },
+              "rationale": { "$ref": "#/$defs/nativeProposal/$defs/valueMapRationale" },
+              "definition": {
+                "type": "object",
+                "anyOf": [
+                  { "$ref": "#/$defs/nativeProposal/$defs/valueMapDefinition" },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "components": { "$ref": "#/$defs/nativeProposal/$defs/datatypeComponents" },
+                      "description": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "it": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                          },
+                          "en": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                          },
+                          "de": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                          },
+                          "sl": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                          }
+                        },
+                        "maxProperties": 4
+                      },
+                      "domainRefs": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1024
+                        }
+                      },
+                      "rangeRefs": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1024
+                        }
+                      },
+                      "datatype": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "minCardinality": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000
+                      },
+                      "maxCardinality": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000
+                      },
+                      "vocabularyRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "inverseRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      }
+                    }
+                  }
+                ]
+              },
+              "commandKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_:.-]{1,128}$"
+              },
+              "rdfTurtle": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 49152
+              },
+              "mediaType": {
+                "type": "string",
+                "const": "text/turtle"
+              }
+            },
+            "$defs": {
+              "datatypeComponents": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {"type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,63}$"},
+                    "type": {
+                      "oneOf": [
+                        {
+                          "enum": [
+                            "string",
+                            "integer",
+                            "decimal",
+                            "boolean",
+                            "date",
+                            "datetime",
+                            "geometry",
+                            "concept"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$",
+                          "maxLength": 1024
+                        }
+                      ]
+                    },
+                    "cardinality": {"enum": ["ONE", "MANY"]},
+                    "required": {"type": "boolean"},
+                    "labels": {"$ref": "#/$defs/nativeProposal/properties/labels"},
+                    "constraints": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "minInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
+                        "maxInclusive": {"type": "string", "minLength": 1, "maxLength": 1024},
+                        "maxLength": {"type": "integer", "minimum": 0},
+                        "vocabularyRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1024,
+                          "format": "iri",
+                          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+$"
+                        }
+                      }
+                    }
+                  },
+                  "required": ["name", "type", "cardinality", "required"],
+                  "allOf": [
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["string"]}}},
+                      "then": {"properties": {"constraints": {"propertyNames": {"enum": ["maxLength"]}}}}
+                    },
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["concept"]}}},
+                      "then": {"properties": {"constraints": {"propertyNames": {"enum": ["vocabularyRef"]}}}}
+                    },
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["integer"]}}},
+                      "then": {
+                        "properties": {
+                          "constraints": {
+                            "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                            "properties": {
+                              "minInclusive": {"pattern": "^(0|-?[1-9][0-9]*)$"},
+                              "maxInclusive": {"pattern": "^(0|-?[1-9][0-9]*)$"}
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["decimal"]}}},
+                      "then": {
+                        "properties": {
+                          "constraints": {
+                            "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                            "properties": {
+                              "minInclusive": {"pattern": "^(0|-?[1-9][0-9]*|-?(0|[1-9][0-9]*)\\.[0-9]*[1-9])$"},
+                              "maxInclusive": {"pattern": "^(0|-?[1-9][0-9]*|-?(0|[1-9][0-9]*)\\.[0-9]*[1-9])$"}
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["date"]}}},
+                      "then": {
+                        "properties": {
+                          "constraints": {
+                            "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                            "properties": {
+                              "minInclusive": {
+                                "format": "date",
+                                "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)$"
+                              },
+                              "maxInclusive": {
+                                "format": "date",
+                                "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)$"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {"required": ["type"], "properties": {"type": {"enum": ["datetime"]}}},
+                      "then": {
+                        "properties": {
+                          "constraints": {
+                            "propertyNames": {"enum": ["minInclusive", "maxInclusive"]},
+                            "properties": {
+                              "minInclusive": {
+                                "format": "date-time",
+                                "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+                              },
+                              "maxInclusive": {
+                                "format": "date-time",
+                                "pattern": "^([0-9]{4}-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[048]|[2468][048]|[13579][26])00)-02-29)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s@]+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
+                              },
+                              {"enum": ["boolean", "geometry"]}
+                            ]
+                          }
+                        }
+                      },
+                      "then": {"properties": {"constraints": {"maxProperties": 0}}}
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true,
+                "description": "Use unique component names. The Semantic Registry resolves published pins and checks cycles, depth (4) and total leaf components (256)."
+              },
+              "valueMapIri": {
+                "type": "string",
+                "format": "iri",
+                "not": {
+                  "pattern": "[\\x00-\\x1F\\x7F]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+                },
+                "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+$"
+              },
+              "valueMapRationale": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sourceColumn": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "fieldName": {"type": "string", "minLength": 1, "maxLength": 256},
+                      "sourceId": {"type": "string"}
+                    },
+                    "required": ["fieldName"]
+                  }
+                },
+                "required": ["sourceColumn"]
+              },
+              "valueMapDefinition": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "targetVocabulary": {
+                    "type": "string",
+                    "not": {
+                      "pattern": "[\\x00-\\x1F\\x7F]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+                    },
+                    "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:([^\\s\\x00-\\x1F\\x7F<>\\\"{}`|\\\\^%]|%[A-Fa-f0-9]{2})+@[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"
+                  },
+                  "entries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "not": {
+                            "pattern": "[\\x00-\\x1F\\x7F-\\x9F]|^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$"
+                          }
+                        },
+                        "concept": {"$ref": "#/$defs/nativeProposal/$defs/valueMapIri", "maxLength": 512}
+                      },
+                      "required": ["code", "concept"]
+                    },
+                    "minItems": 1,
+                    "maxItems": 2000,
+                    "description": "Codes must be unique and are case sensitive. Concepts may repeat."
+                  },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "it": {"type": "string", "minLength": 1, "maxLength": 4000},
+                      "en": {"type": "string", "minLength": 1, "maxLength": 4000}
+                    }
+                  }
+                },
+                "required": ["targetVocabulary", "entries"]
+              }
+            },
+            "if": { "properties": { "artifactType": { "const": "DATATYPE" } } },
+            "then": {
+              "required": ["definition"],
+              "not": { "required": ["rationale"] },
+              "properties": {
+                "semanticId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$" },
+                "definition": {
+                  "required": ["components"],
+                  "propertyNames": { "enum": ["description", "components"] }
+                }
+              }
+            },
+            "else": {
+              "if": { "properties": { "artifactType": { "const": "VALUE_MAP" } } },
+              "then": {
+                "properties": {
+                  "semanticId": { "$ref": "#/$defs/nativeProposal/$defs/valueMapIri" },
+                  "definition": { "required": ["entries"] }
+                }
+              },
+              "else": {
+                "not": { "required": ["rationale"] },
+                "properties": {
+                  "definition": {
+                    "not": { "anyOf": [{ "required": ["components"] }, { "required": ["entries"] }] }
+                  }
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "definition"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "rdfTurtle"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "mediaType"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "rdfTurtle",
+                  "mediaType"
+                ],
+                "properties": {
+                  "artifactType": {
+                    "const": "ONTOLOGY"
+                  },
+                  "definition": {
+                    "type": "object",
+                    "maxProperties": 0
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "properties": {
+          "analysisId": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+          "batchId": {"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},
+          "expectedRevision": {"type":"integer","minimum":0,"maximum":9007199254740991},
+          "commandKey": {"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+          "decisions": {"type":"array","minItems":1,"maxItems":8,"items":{"oneOf":[{"type":"object","additionalProperties":false,"required":["ordinal","action","requestId","candidateId"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"action":{"const":"ADOPT"},"requestId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"candidateId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"}}},{"type":"object","additionalProperties":false,"required":["ordinal","action","intent"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"action":{"const":"REFORMULATE"},"intent":{"type":"string","minLength":1,"maxLength":2000,"description":"One to three words. Invalid terms are rejected per decision, without rejecting the remaining decisions."}}},{"type":"object","additionalProperties":false,"required":["ordinal","action","reason"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"action":{"const":"EXCLUDE"},"reason":{"type":"string","minLength":1,"maxLength":400,"pattern":"\\S"}}},{"type":"object","additionalProperties":false,"required":["ordinal","action"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"action":{"const":"PROPOSE"},"proposal":{"$ref":"#/$defs/nativeProposal"},"revisionId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"}},"oneOf":[{"required":["proposal"]},{"required":["revisionId"]}],"description":"Submit a native semantic.propose proposal or refer to an owned draft by revisionId."}]},"uniqueItems":true,"description":"Each ordinal may appear at most once."}
+        }
+      },
+      "outputSchema": {"type":"object","additionalProperties":false,"required":["analysisId","batchId","revision","decisions","next"],"properties":{"analysisId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"batchId":{"type":"string","format":"uuid","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"},"revision":{"type":"integer","minimum":0,"maximum":9007199254740991},"decisions":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["ordinal","action","status"],"properties":{"ordinal":{"type":"integer","minimum":0,"maximum":1023},"action":{"enum":["ADOPT","REFORMULATE","EXCLUDE","PROPOSE"]},"status":{"enum":["RECORDED","REJECTED"]},"reasonCode":{"type":"string","pattern":"^[A-Z][A-Z0-9_]{2,79}$"}}}},"next":{"type":"object","description":"Validated ouf.next-step.v1 continuation."}}}
     },
     {
       "toolName": "source.analysis.step",
@@ -7595,6 +8135,7 @@
         "read the bound owner capability"
       ],
       "operationalLimits": {
+        "batchMaxResultBytes": 8192,
         "minIntervalSeconds": 5,
         "maxDurationSeconds": 45
       },

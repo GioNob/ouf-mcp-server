@@ -78,6 +78,7 @@ func TestOfficialClientUsesModernStatelessDiscovery(t *testing.T) {
 		"semantic.propose",
 		"semantic.review.prepare",
 		"semantic.search",
+		"source.analysis.decide",
 		"source.analysis.plan",
 		"source.analysis.read",
 		"source.analysis.step",

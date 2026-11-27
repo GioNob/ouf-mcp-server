@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -374,6 +375,22 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		checksum, _ := snapshot.Checksum()
 		addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			analysisID, _ := input["analysisId"].(string)
+			if batchInput(c.ToolName, input) {
+				if c.ToolName == "source.file.preview" {
+					return server.batchPreview(ctx, c, checksum, input, service)
+				}
+				i, ok := ctx.Value(identityKey{}).(requestIdentity)
+				if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
+					return actorOrDelegationDenial(i, ok), nil, nil
+				}
+				store, _ := service.Admission.(analysis.Store)
+				coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot}
+				start, _, err := batchStartForRead(ctx, coordinator, i.Identity, analysisID)
+				if err != nil {
+					return analysisReadError(err), nil, nil
+				}
+				return batchUnavailable(start.ID), nil, nil
+			}
 			if analysisID != "" && (c.ToolName == "semantic.discovery.status" || c.ToolName == "semantic.discovery.candidates") {
 				request, _ := input["requestId"].(string)
 				if _, _, err := server.publishedHint(ctx, analysisID, request, false); err != nil {

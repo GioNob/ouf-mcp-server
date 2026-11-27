@@ -48,6 +48,12 @@ func (s *Store) ReplanAnalysis(ctx context.Context, command analysis.ReplanComma
 }
 
 func (s *Store) planCommand(ctx context.Context, scope analysis.Scope, checksum, key, intent string, run func(pgx.Tx) (analysis.View, error)) (analysis.View, error) {
+	return s.planCommandWithReplay(ctx, scope, checksum, key, intent, run, func(target string) (analysis.View, error) {
+		return s.ReadAnalysis(ctx, scope, target, checksum, 0, 128)
+	})
+}
+
+func (s *Store) planCommandWithReplay(ctx context.Context, scope analysis.Scope, checksum, key, intent string, run func(pgx.Tx) (analysis.View, error), replay func(string) (analysis.View, error)) (analysis.View, error) {
 	var out analysis.View
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -66,7 +72,7 @@ func (s *Store) planCommand(ctx context.Context, scope analysis.Scope, checksum,
 		if err = tx.Commit(ctx); err != nil {
 			return out, err
 		}
-		return s.ReadAnalysis(ctx, scope, target, checksum, 0, 128)
+		return replay(target)
 	}
 	out, resultErr := run(tx)
 	state, code := "SUCCEEDED", "SUCCEEDED"

@@ -34,7 +34,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 	addWorkflowTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
-			if summaryInput(c.ToolName, input) {
+			if summaryInput(c.ToolName, input) && !batchInput(c.ToolName, input) {
 				return server.summaryFailure(ctx, orchestration.ErrUnauthorized, ""), nil, nil
 			}
 			return actorOrDelegationDenial(i, ok), nil, nil
@@ -44,7 +44,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		replan, _ := input["replanOf"].(string)
 		if railCommand {
 			delete(input, "commandKey")
-			if c.ToolName != "source.analysis.plan" && key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
+			if c.ToolName == "source.analysis.step" && key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
 				return errorResult("IDEMPOTENCY_KEY_REUSE", false), nil, nil
 			}
 		}
@@ -63,6 +63,17 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		var successorUnavailable bool
 		switch c.ToolName {
 		case "source.analysis.plan":
+			if input["mode"] == analysis.BatchMode {
+				asset, _ := input["assetId"].(string)
+				profile, _ := input["profileId"].(string)
+				hash, _ := input["schemaHash"].(string)
+				start, startErr := coordinator.StartBatch(ctx, i.Identity, asset, profile, hash, key)
+				if startErr == nil {
+					return batchStatus(start), nil, nil
+				}
+				err = startErr
+				break
+			}
 			if _, retry := input["requestId"]; retry && replan != "" {
 				var r analysis.Reformulation
 				if json.Unmarshal(raw, &r) != nil {
@@ -92,6 +103,30 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			coordinator.CommandKey = key
 			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, work)
 		case "source.analysis.read":
+			id, _ := input["analysisId"].(string)
+			start, batch, batchErr := batchStartForRead(ctx, coordinator, i.Identity, id)
+			if batch || batchInput(c.ToolName, input) {
+				if batchErr != nil {
+					return markBatchResult(analysisReadError(batchErr)), nil, nil
+				}
+				if !batch {
+					return analysisReadError(analysis.ErrScope), nil, nil
+				}
+				if input["offset"] != nil || input["limit"] != nil {
+					return markBatchResult(analysisReadError(analysis.ErrInvalid)), nil, nil
+				}
+				if len(input) == 1 || input["view"] == "STATUS" {
+					return batchStatus(start), nil, nil
+				}
+				return batchUnavailable(start.ID), nil, nil
+			}
+			if batchErr != nil {
+				if summaryInput(c.ToolName, input) {
+					return server.summaryFailure(ctx, batchErr, id), nil, nil
+				}
+				err = batchErr
+				break
+			}
 			if input["view"] != nil {
 				return server.analysisSummary(ctx, coordinator, i.Identity, input), nil, nil
 			}
@@ -107,6 +142,16 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				args.Limit = 128
 			}
 			out, err = coordinator.Read(ctx, i.Identity, args.AnalysisID, args.Offset, args.Limit)
+		case "source.analysis.decide":
+			id, _ := input["analysisId"].(string)
+			start, batch, batchErr := batchStartForRead(ctx, coordinator, i.Identity, id)
+			if batchErr != nil {
+				return analysisReadError(batchErr), nil, nil
+			}
+			if !batch {
+				return analysisReadError(analysis.ErrScope), nil, nil
+			}
+			return batchUnavailable(start.ID), nil, nil
 		case "source.analysis.step":
 			var args struct {
 				AnalysisID string `json:"analysisId"`

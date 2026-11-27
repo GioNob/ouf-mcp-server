@@ -200,7 +200,7 @@ func (s *workflowServer) registerWait(c manifest.Capability) {
 		})
 }
 
-func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, token string) *mcp.CallToolResult {
+func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, token string) (response *mcp.CallToolResult) {
 	w := s.waits
 	binding := waitBinding(ctx)
 	ref, err := w.signer.Open(token, binding)
@@ -215,6 +215,16 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	if !ok || (!machine && t.capability.OperationClass != "READ") || ref.Read == "ouf.wait" || !s.valid(ref.Read, ref.Args) {
 		return errorResult("WAIT_REFERENCE_INVALID", false)
 	}
+	batch := s.batchReadSelector(ctx, ref.Read, ref.Args)
+	defer func() {
+		if batch {
+			markBatchResult(response)
+			id, _ := ref.Args["analysisId"].(string)
+			if body, ok := response.StructuredContent.(nextstep.Object); ok && analysis.ValidateID(id) == nil {
+				body["analysisId"] = id
+			}
+		}
+	}()
 	stop := func(code string) *mcp.CallToolResult {
 		next := ref.Block(code, "Consulta lo stato aggiornato della decisione.")
 		if machine {
@@ -402,6 +412,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			if response.Err != nil || !ok || result == nil {
 				return finish()
 			}
+			batch = batch || result.Meta[batchResultMeta] == true
 			body := ownerObject(result)
 			obs := nextstep.Observation(ref.Read, ref.Args, body)
 			if result.IsError {
@@ -415,10 +426,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 						return waitError(result, projected)
 					}
 				}
-				next := s.observedEngine(ctx, result).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
+				next := s.evaluateNext(s.observedEngine(ctx, result), t.capability, args, body, true, batch)
 				return waitError(result, next)
 			}
-			if machine && body["next"] != nil && summaryInput(ref.Read, ref.Args) {
+			if machine && body["next"] != nil && (summaryInput(ref.Read, ref.Args) || batch) {
 				structured, _ := result.StructuredContent.(nextstep.Object)
 				if projected, ok := structured["next"].(nextstep.Object); ok {
 					return waitResult(true, obs, projected)
@@ -460,8 +471,10 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 					body = maps.Clone(body)
 					body["pickerUrl"] = ref.URL
 				}
-				next := s.observedEngine(ctx, result).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
-				next = s.publishedNext(ctx, ref.Read, args, body, next)
+				next := s.evaluateNext(s.observedEngine(ctx, result), t.capability, args, body, false, batch)
+				if !batch {
+					next = s.publishedNext(ctx, ref.Read, args, body, next)
+				}
 				return waitResult(changed, obs, next)
 			}
 		}
