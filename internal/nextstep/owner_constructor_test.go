@@ -47,6 +47,11 @@ func init() {
 		return e.Evaluate(manifest.Capability{ToolName: "source.analysis.step"}, manifest.Policy{},
 			Object{"analysisId": "analysis", "taskId": "predecessor"}, Object{"state": "SUCCEEDED"}, false)
 	}})
+	registerOwnerProducer(Engine.BatchNext, ownerProducerCase{"source.analysis.plan", func(e Engine) Object {
+		e.CommandKey = func(string, Object, Object, Object) string { return "key" }
+		return e.BatchNext("source.file.preview", Object{"mode": analysis.BatchMode},
+			Object{"assetId": "asset", "profileId": "profile", "schemaHash": "hash"}, false)
+	}})
 	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
 		return e.AnalysisSuccessorFallback("analysis")
 	}})

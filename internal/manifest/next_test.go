@@ -16,8 +16,8 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"source.analysis.plan":              {"(assetId, expectedRevision, profileId, work)", "(commandKey, replanOf)", "(column, commandKey, intent, replanOf, requestId)"},
-		"source.analysis.read":              {"(analysisId)", "(analysisId, view=STATUS)", "(analysisId, view=SUMMARY)", "(analysisId, cursor, view=SUMMARY)"},
+		"source.analysis.plan":              {"(assetId, commandKey, mode=BATCH_V1, profileId, schemaHash)", "(assetId, expectedRevision, profileId, work)", "(commandKey, replanOf)", "(column, commandKey, intent, replanOf, requestId)"},
+		"source.analysis.read":              {"(analysisId)", "(analysisId, view=STATUS)", "(analysisId, view=SUMMARY)", "(analysisId, cursor, view=SUMMARY)", "(analysisId, view=BATCH)", "(analysisId, batchId, cursor, ordinal, view=CANDIDATES)"},
 		"ouf.operations.incidents":          {"()", "(snapshot=true)", "(cursor)", "(coverage=true, snapshot=true)", "(coverage=true, cursor)", "(resumeFrom)"},
 		"authorization.permissions.read":    {"(view=ROLES)", "(view=CAPABILITIES)", "(subjectId)", "(externalRoleRef)"},
 		"authorization.permissions.propose": {"(grantId, operation, reason)", "(operation=REPLACE_ROLES, reason, roleCatalogue)"},
@@ -25,7 +25,16 @@ func TestInputConstraintMatchesPublishedOneOfBranches(t *testing.T) {
 			"(artifactType, authorityRef, commandKey, definition, labels, localName, namespace, ownerRef, semanticId, semanticVersion)",
 			"(artifactType=ONTOLOGY, authorityRef, commandKey, labels, localName, mediaType=text/turtle, namespace, ownerRef, rdfTurtle, semanticId, semanticVersion)",
 		},
-		"source.file.preview":             {"(assetId, profileId)", "(assetId, jobId)", "(view=ASSETS)", "(assetId, profileId, view=COLUMNS)", "(assetId, distinctValuesCursor, profileId, view=COLUMNS)"},
+		"semantic.approval.request": {
+			"(commandKey, expectedRowVersion, revisionId, validationRunId)",
+			"(analysisId, commandKey, expectedRowVersion, projection=BATCH_V1, revisionId, validationRunId)",
+			"(analysisId, batchAction=ADD, commandKey, item, projection=BATCH_V1, reviewContextRef)",
+			"(analysisId, batchAction=REMOVE, commandKey, item, projection=BATCH_V1, reviewContextRef)",
+			"(analysisId, batchAction=SUBMIT, commandKey, projection=BATCH_V1, reviewBatchId, reviewContextRef)",
+			"(analysisId, batchAction=RESUBMIT, commandKey, projection=BATCH_V1, reviewBatchId, reviewContextRef)",
+		},
+		"semantic.proposal.read":          {"(commandKey)", "(analysisId, commandKey, projection=BATCH_V1)", "(analysisId, projection=BATCH_V1, reviewContextRef)", "(analysisId, projection=BATCH_V1, reviewBatchId)"},
+		"source.file.preview":             {"(assetId, mode=BATCH_V1, profileId)", "(assetId, profileId)", "(assetId, jobId)", "(view=ASSETS)", "(assetId, profileId, view=COLUMNS)", "(assetId, distinctValuesCursor, profileId, view=COLUMNS)"},
 		"source.onboarding.read":          {"(onboardingVersionId, sourceId)", "(sourceId, view=LATEST)"},
 		"source.onboarding.revision.read": {"(onboardingVersionId, sourceId)", "(commandKey, parentVersionId, sourceId)"},
 	}

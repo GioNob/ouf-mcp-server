@@ -462,7 +462,7 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		p.profile->>'assetId',p.profile->>'profileId',p.revision,coalesce(pub.visibility_digest::text,''),coalesce(p.profile->>'policyEpoch','')
 		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_published_plan pub using(analysis_id) cross join lateral
 		(select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id and seq <= $6 order by seq desc limit 1) h
-		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[])`,
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[]) and p.profile->>'mode' is null`,
 		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), pos.Seq}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility, &out.Epoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, analysis.ErrScope

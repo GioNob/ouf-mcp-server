@@ -19,7 +19,7 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	var raw []byte
 	var rev int64
 	var stored string
-	err := tx.QueryRow(ctx, `select profile,revision,manifest_checksum from ouf_mcp.profile_analysis where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 for update`, id, scope.Service, scope.Principal, scope.Tenant).Scan(&raw, &rev, &stored)
+	err := tx.QueryRow(ctx, `select profile,revision,manifest_checksum from ouf_mcp.profile_analysis where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode' is null for update`, id, scope.Service, scope.Principal, scope.Tenant).Scan(&raw, &rev, &stored)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, 0, analysis.ErrScope
 	}
