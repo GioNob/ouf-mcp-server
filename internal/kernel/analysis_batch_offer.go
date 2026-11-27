@@ -41,7 +41,7 @@ func (s *workflowServer) readAnalysisBatch(ctx context.Context, c analysis.Coord
 	engine := s.engine(ctx)
 	expires := time.Now().Add(time.Duration(s.summaryLimits.SummaryCursorSeconds) * time.Second).Unix()
 	var pack func(analysis.BatchOffer) ([]analysis.BatchOfferItem, error)
-	if view != "" {
+	if view == "BATCH" {
 		pack = func(offer analysis.BatchOffer) ([]analysis.BatchOfferItem, error) {
 			return s.packBatchOffer(engine, scope, offer, expires)
 		}
@@ -51,6 +51,9 @@ func (s *workflowServer) readAnalysisBatch(ctx context.Context, c analysis.Coord
 	read, err := store.ReadBatch(ctx, scope, id, checksum, pack)
 	if err != nil {
 		return batchReadFailure(id, err)
+	}
+	if read.BatchStart.Initialized && c.Service.ObserveBatchAuthority != nil {
+		c.Service.ObserveBatchAuthority(id, identity)
 	}
 	var next nextstep.Object
 	if read.Offer.ID != "" {
@@ -63,7 +66,7 @@ func (s *workflowServer) readAnalysisBatch(ctx context.Context, c analysis.Coord
 		}
 		next = offerNext
 	} else {
-		next = engine.BatchStatusNext(id, read.Reason)
+		next = engine.BatchStatusNext(id, read.Reason, read.CreatedAt)
 	}
 	body := nextstep.Object{"analysisId": id, "mode": analysis.BatchMode, "revision": read.Revision, "phase": read.Phase, "counts": read.Counts}
 	return localBatchResult(body, next)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -13,20 +14,22 @@ import (
 
 type batchProfile struct {
 	analysis.Profile
-	Mode  string `json:"mode"`
-	Epoch string `json:"policyEpoch,omitempty"`
+	Mode      string `json:"mode"`
+	Epoch     string `json:"policyEpoch,omitempty"`
+	Authority string `json:"authorityBinding,omitempty"`
 }
 
 func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
 	var raw []byte
 	var stored string
 	var revision int64
+	var createdAt time.Time
 	var initialized bool
-	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision,
+	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision,created_at,
 		exists(select from ouf_mcp.analysis_counts where analysis_id=$1)
 		from ouf_mcp.profile_analysis
 		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode'=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &initialized)
+		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &initialized)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchStart{}, analysis.ErrScope
 	}
@@ -38,7 +41,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		!pin.Profile.Valid() || id != analysis.BatchAnalysisID(scope, pin.Profile, pin.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrProfile
 	}
-	return analysis.BatchStart{ID: id, Profile: pin.Profile, Epoch: pin.Epoch, Revision: revision, Initialized: initialized}, nil
+	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Initialized: initialized}, nil
 }
 
 func (s *Store) ReadBatchStart(ctx context.Context, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
@@ -59,7 +62,7 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		return analysis.BatchStart{}, analysis.ErrInvalid
 	}
 	initialize := func(tx pgx.Tx) (analysis.View, error) {
-		raw, err := json.Marshal(batchProfile{Profile: start.Profile, Mode: analysis.BatchMode, Epoch: start.Epoch})
+		raw, err := json.Marshal(batchProfile{Profile: start.Profile, Mode: analysis.BatchMode, Epoch: start.Epoch, Authority: start.Authority})
 		if err != nil {
 			return analysis.View{}, err
 		}
@@ -80,6 +83,9 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		}
 		if retained.Profile != start.Profile {
 			return analysis.View{}, analysis.ErrProfile
+		}
+		if retained.Authority != "" && retained.Authority != start.Authority {
+			return analysis.View{}, analysis.ErrScope
 		}
 		if !retained.Initialized {
 			if err = initializeBatchColumns(ctx, tx, scope, checksum, start); err != nil {
@@ -104,7 +110,10 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		}
 		return view, err
 	})
-	return analysis.BatchStart{ID: v.ID, Profile: v.Profile, Epoch: v.Epoch, Revision: v.Revision, Initialized: err == nil}, err
+	if err != nil {
+		return analysis.BatchStart{}, err
+	}
+	return s.ReadBatchStart(ctx, scope, v.ID, checksum)
 }
 
 func lockBatchAnalysis(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id string) error {

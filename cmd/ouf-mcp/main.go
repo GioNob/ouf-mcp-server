@@ -17,6 +17,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/hostfiles"
 	httpadapter "github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
 	pg "github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/authorization"
 	"github.com/GioNob/ouf-mcp-server/internal/kernel"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -312,6 +313,8 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
+	authorities := new(analysis.BatchAuthorities)
+	service.ObserveBatchAuthority = authorities.Observe
 	if err := configureReprocessing(service, checksum); err != nil {
 		logger.Error("invalid semantic reprocessing configuration")
 		os.Exit(1)
@@ -347,6 +350,8 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)
 	}
+	worker := analysis.BatchWorker{Store: store, Service: service, Manifest: snapshot, Authorities: authorities}
+	go worker.Run(ctx, logger)
 	metrics := observability.NewRegistry()
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", metrics.Instrument("mcp", handler))

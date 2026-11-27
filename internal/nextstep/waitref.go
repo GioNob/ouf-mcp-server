@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +38,10 @@ type WaitRef struct {
 	LinkOwner string   `json:"o,omitempty"`
 }
 
-type Signer struct{ cipher cipher.AEAD }
+type Signer struct {
+	cipher            cipher.AEAD
+	batchPollNonceKey []byte
+}
 
 func NewSigner(key []byte) (*Signer, error) {
 	if len(key) != 32 {
@@ -50,7 +55,9 @@ func NewSigner(key []byte) (*Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Signer{aead}, nil
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("ouf.next-step.v1/batch-poll/nonce"))
+	return &Signer{cipher: aead, batchPollNonceKey: mac.Sum(nil)}, nil
 }
 
 func Version(obs Object) string {
@@ -266,6 +273,10 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboar
 }
 
 func (s *Signer) seal(ref WaitRef, binding []byte) (string, error) {
+	return s.sealWait(ref, binding, false)
+}
+
+func (s *Signer) sealWait(ref WaitRef, binding []byte, stable bool) (string, error) {
 	if s == nil || len(binding) == 0 {
 		return "", errors.New("missing wait configuration")
 	}
@@ -274,7 +285,15 @@ func (s *Signer) seal(ref WaitRef, binding []byte) (string, error) {
 		return "", err
 	}
 	nonce := make([]byte, s.cipher.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if stable {
+		// Stable batch polls repeat the ciphertext only for identical data and
+		// identity binding. Derive the nonce using a separate key.
+		mac := hmac.New(sha256.New, s.batchPollNonceKey)
+		mac.Write(binary.BigEndian.AppendUint64(nil, uint64(len(binding))))
+		mac.Write(binding)
+		mac.Write(body)
+		copy(nonce, mac.Sum(nil))
+	} else if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
 	token := base64.RawURLEncoding.EncodeToString(s.cipher.Seal(nonce, nonce, body, binding))
@@ -319,16 +338,17 @@ func (s *Signer) issuePoll(binding []byte, next, obs Object, now, due time.Time)
 	}
 	args := next["arguments"].(Object)
 	reason := next["reasonCode"].(string)
+	stable := reason == AnalysisRunning && read == "source.analysis.read" && args["view"] == "STATUS"
 	deadline, _ := next["deadline"].(string)
 	ref := WaitRef{Read: read, Args: args, Reason: reason, Terminal: next["terminalStates"].([]string),
 		NotBefore: due.UTC().Format(time.RFC3339Nano), Deadline: deadline, State: ObservedState(obs), Version: PollVersion(obs)}
 	if read == "ouf.ingestion.status" {
 		ref.Resource = Resource(obs)
 	}
-	token, err := s.seal(ref, binding)
+	token, err := s.sealWait(ref, binding, stable)
 	if err != nil && s != nil && len(binding) != 0 {
 		ref.ArgsHash, ref.Args = argumentDigest(args), nil
-		token, err = s.seal(ref, binding)
+		token, err = s.sealWait(ref, binding, stable)
 		ref.Args = args
 	}
 	if err != nil {
@@ -342,6 +362,9 @@ func (s *Signer) issuePoll(binding []byte, next, obs Object, now, due time.Time)
 func (s *Signer) Postpone(binding []byte, ref WaitRef, due, expiry time.Time) Object {
 	if previous, err := time.Parse(time.RFC3339Nano, ref.NotBefore); err == nil && previous.After(due) {
 		due = previous
+	}
+	if ref.Reason == AnalysisRunning && !due.Before(expiry) {
+		return ref.Block("WAIT_DEADLINE_EXPIRED", "Rileggi lo stato dell’analisi alla scadenza della finestra.")
 	}
 	ref.NotBefore = due.UTC().Format(time.RFC3339Nano)
 	ref.Deadline = expiry.UTC().Format(time.RFC3339Nano)

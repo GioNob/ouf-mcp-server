@@ -61,6 +61,7 @@ func (s *batchSDKStore) SaveBatchStart(_ context.Context, scope analysis.Scope, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	start.Initialized = true
+	start.CreatedAt = time.Now()
 	s.scope, s.key, s.digest, s.start = scope, key, digest, start
 	return start, nil
 }
@@ -230,17 +231,22 @@ func predecessorLegacyAnalysisSession(t *testing.T, service *orchestration.Servi
 func assertBatchWire(t *testing.T, contract *jsonschema.Resolved, result *mcp.CallToolResult) nextstep.Object {
 	t.Helper()
 	wire, err := json.Marshal(result)
-	body := ownerObject(result)
 	if err != nil || len(wire) > analysis.BatchMaxResultBytes || result.Meta[batchResultMeta] != nil || len(result.Content) != 1 {
 		t.Fatalf("invalid batch wire size=%d error=%v", len(wire), err)
 	}
-	if err := contract.Validate(body["next"]); err != nil {
+	var envelope struct {
+		StructuredContent struct{ Next nextstep.Object } `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(wire, &envelope); err != nil {
+		t.Fatal("invalid batch JSON", err)
+	}
+	if err := contract.Validate(envelope.StructuredContent.Next); err != nil {
 		t.Fatal("invalid next", err)
 	}
 	if text, ok := result.Content[0].(*mcp.TextContent); !ok || text.Text != batchResultText {
 		t.Fatal("batch result contained an unfixed text projection")
 	}
-	return body
+	return ownerObject(result)
 }
 
 func TestPackBatchOfferKeepsFirstExampleWhenSecondDoesNotFit(t *testing.T) {

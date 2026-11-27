@@ -190,6 +190,9 @@ func batchStartForRead(ctx context.Context, c analysis.Coordinator, i orchestrat
 	if err == nil && epoch != start.Epoch {
 		err = analysis.ErrEpochChanged
 	}
+	if err == nil && start.Authority != "" && start.Authority != analysis.BatchAuthorityBinding(i) {
+		err = analysis.ErrScope
+	}
 	return start, true, err
 }
 

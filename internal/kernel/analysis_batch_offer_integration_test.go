@@ -231,12 +231,9 @@ func TestBatchPostgresResumeFromAnalysisID(t *testing.T) {
 		t.Fatal("unexpected STATUS projection", status)
 	}
 	next := status["next"].(nextstep.Object)
-	alternatives, _ := next["alternatives"].([]any)
-	if next["reasonCode"] != analysis.DiscoveryDecisionRequired || !slices.ContainsFunc(alternatives, func(value any) bool {
-		args, _ := value.(nextstep.Object)["arguments"].(nextstep.Object)
-		return args["analysisId"] == id && args["batchId"] == batch["batchId"]
-	}) {
-		t.Fatal("STATUS next did not reference the offered lot", next)
+	args, _ := next["arguments"].(nextstep.Object)
+	if next["reasonCode"] != "ANALYSIS_CONTINUE" || next["tool"] != "source.analysis.read" || args["analysisId"] != id || args["view"] != "BATCH" {
+		t.Fatal("STATUS next did not direct the caller to the current offer", next)
 	}
 	first := resumedItems[0].(nextstep.Object)
 	if examples := first["examples"].([]any); len(examples) != 2 || examples[0] != "via Roma 1" || examples[1] != true {

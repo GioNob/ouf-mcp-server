@@ -54,8 +54,14 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close()              { s.pool.Close() }
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) Ready(ctx context.Context) error {
-	var version int
-	return s.pool.QueryRow(ctx, "select max(version) from ouf_mcp.schema_migration").Scan(&version)
+	var ready bool
+	if err := s.pool.QueryRow(ctx, "select exists(select from ouf_mcp.schema_migration where version=28)").Scan(&ready); err != nil {
+		return err
+	}
+	if !ready {
+		return errors.New("batch worker migration 028 is required")
+	}
+	return nil
 }
 
 func (s *Store) EnsureManifest(ctx context.Context, checksum, version, schemaVersion string, payload []byte) error {
@@ -175,7 +181,7 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	var existingID uuid.UUID
 	var existingHash string
 	err = tx.QueryRow(ctx, `select attempt_id,request_hash from ouf_mcp.idempotency_claim where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner=$4 and capability_id=$5 and operation_class=$6 and idempotency_key=$7 for update`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey).Scan(&existingID, &existingHash)
-	if errors.Is(err, pgx.ErrNoRows) && in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND" {
+	if errors.Is(err, pgx.ErrNoRows) && in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND" && !in.BatchDiscovery {
 		existingID, existingHash, err = existingDiscoveryClaim(ctx, tx, in)
 	}
 	if err == nil {
@@ -284,6 +290,10 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 		return orchestration.AdmissionDecision{}, err
 	}
 	if blocking > 0 {
+		if in.BatchDiscovery {
+			return orchestration.AdmissionDecision{}, orchestration.NewWindowBudgetError(ErrGroupLocked,
+				"ADMISSION_WINDOW_WAIT", "EQUIVALENT_ATTEMPTS", now, windowEnd)
+		}
 		return orchestration.AdmissionDecision{}, ErrGroupLocked
 	}
 	if blocked || (!in.StatusRead && attempts >= in.RetryThreshold) {
@@ -296,8 +306,8 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	if err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
-	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim(service_principal_id,principal_id,tenant_id,owner,capability_id,operation_class,idempotency_key,request_hash,attempt_id,discovery_owner_key)
-		values($1,$2,$3,$4,$5,$6,$7,$8,$9,case when $5='ouf.semantic.discovery' and $6='COMMAND' then $7 end)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID)
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.idempotency_claim(service_principal_id,principal_id,tenant_id,owner,capability_id,operation_class,idempotency_key,request_hash,attempt_id,discovery_owner_key,batch_discovery_worker)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9,case when $5='ouf.semantic.discovery' and $6='COMMAND' and not $10::boolean then $7 end,$10)`, in.Identity.ServicePrincipalID, in.Identity.PrincipalID, in.Identity.TenantID, in.Owner, in.CapabilityID, in.OperationClass, in.IdempotencyKey, in.RequestHash, in.AttemptID, in.BatchDiscovery)
 	if err == nil {
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.attempt_admission_context values($1,$2,$3,$4,$5,$6,$7,$8,$9)`, in.AttemptID, windowID, groupID, in.Owner, in.Identity.ActorType, in.Identity.AuthenticationContextRef, in.AuthorizationDecisionRef, in.SemanticFingerprint, in.FingerprintVersion)
 	}
@@ -339,6 +349,12 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 		if err = execOne(ctx, tx, `update ouf_mcp.tool_attempt set owner_due=$2,owner_due_reason=$3,owner_code=$4,owner_status=$5,owner_selector=nullif($6,'')
 			where attempt_id=$1`, id, due, obs.Reason, obs.Code, obs.Status, outcome.ObservationSelector); err != nil {
 			return err
+		}
+		// Retain the owner's route clock even if the column checkpoint is interrupted.
+		if outcome.BatchRoute != "" && due != nil && (obs.Status == 429 || obs.Status == 503) {
+			if _, err = tx.Exec(ctx, extendBatchRoutePause, outcome.BatchRoute, *due); err != nil {
+				return err
+			}
 		}
 	}
 	if outcome.Uncertain {

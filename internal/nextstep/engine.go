@@ -43,6 +43,7 @@ type Engine struct {
 	Now                 func() time.Time
 	AnalysisID          func(string, string) string
 	CommandKey          func(string, Object, Object, Object) string
+	batchPollStart      time.Time
 }
 
 func step(action, reason, message string) Object {
@@ -756,6 +757,12 @@ func (e Engine) ownerCall(reason, tool string, args, obs Object) Object {
 	return e.ownerNext(call("CALL_TOOL", reason, tool, args), tool, obs)
 }
 
+func (e Engine) ownerPoll(reason, tool string, args, obs Object, terminal []string) Object {
+	next := call("POLL", reason, tool, args)
+	next["terminalStates"] = terminal
+	return e.ownerNext(next, tool, obs)
+}
+
 // ownerNext is the emission boundary for automatic continuations. POLL
 // supplies a local floor. A CALL_TOOL needs a wait only for a future bound.
 func (e Engine) ownerNext(next Object, read string, obs Object) Object {
@@ -764,9 +771,21 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 		return next
 	}
 	now := e.clock()
+	pollStart := now
+	if !e.batchPollStart.IsZero() {
+		pollStart = e.batchPollStart
+	}
 	var floor time.Time
 	if action == "POLL" {
-		floor = now.Add(time.Duration(max(orchestration.PollIntervalSeconds, e.PollIntervalSeconds)) * time.Second)
+		interval := time.Duration(max(orchestration.PollIntervalSeconds, e.PollIntervalSeconds)) * time.Second
+		if !e.batchPollStart.IsZero() && e.WaitMaxSeconds > 0 {
+			window := time.Duration(e.WaitMaxSeconds) * time.Second
+			if interval >= window {
+				// Leave time to read STATUS before the signed window expires.
+				interval = window / 2
+			}
+		}
+		floor = pollStart.Add(interval)
 	}
 	reason, _ := next["reasonCode"].(string)
 	admission := AdmissionWindowCode(reason) && next["deadline"] != nil
@@ -820,7 +839,8 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 		next["contract"] = checkedOwnerCall{tool: tool, arguments: argumentDigest(args)}
 		return next
 	}
-	if (ownerReason == "OWNER_TIMEOUT" || ownerReason == "TRANSIENT_OWNER_WAIT") && due.After(now) && !admission {
+	// The signed batch reason selects the durable STATUS observation in ouf.wait.
+	if reason != AnalysisRunning && (ownerReason == "OWNER_TIMEOUT" || ownerReason == "TRANSIENT_OWNER_WAIT") && due.After(now) && !admission {
 		next["reasonCode"] = ownerReason
 	}
 	if next["terminalStates"] == nil {
@@ -831,7 +851,7 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 		return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la scadenza del lavoro con l’owner.", "OPERATOR")
 	}
 	if !end.IsZero() && !admission {
-		if !now.Before(end) {
+		if !now.Before(end) || (reason == AnalysisRunning && !due.Before(end)) {
 			if next["tool"] == read {
 				return (WaitRef{Read: read, Args: args}).Block("WAIT_DEADLINE_EXPIRED", "L’attesa è scaduta. Rileggi l’esito registrato su richiesta dell’utente.")
 			}
@@ -839,7 +859,7 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 		}
 		next["deadline"] = end.UTC().Format(time.RFC3339Nano)
 	}
-	return e.Signer.issuePoll(e.Binding, next, obs, now, due)
+	return e.Signer.issuePoll(e.Binding, next, obs, pollStart, due)
 }
 
 func (e Engine) machineDeadline(obs Object) (time.Time, bool) {

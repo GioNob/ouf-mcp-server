@@ -106,6 +106,16 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		out.Phase, out.Reason = "BLOCKED", "ANALYSIS_HELD"
 	case counts.Blocked != 0:
 		out.Phase, out.Reason = "PARTIAL", "ANALYSIS_SUMMARY"
+		var hold string
+		err = tx.QueryRow(ctx, `select reason_code from ouf_mcp.analysis_batch_hold
+			where analysis_id=$1 and reason_code in ('RETRY_BUDGET_EXHAUSTED','OUTCOME_REQUIRES_RECONCILIATION',
+			'AUTHORIZATION_DENIED','ANALYSIS_AUTHORITY_UNAVAILABLE','ANALYSIS_POLICY_EPOCH_CHANGED','RETRY_WINDOW_UNAVAILABLE')
+			order by reason_code,ordinal limit 1`, id).Scan(&hold)
+		if err == nil {
+			out.Phase, out.Reason = "BLOCKED", hold
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
+		}
 	default:
 		out.Phase, out.Reason = "COMPLETE", "ANALYSIS_SUMMARY"
 	}

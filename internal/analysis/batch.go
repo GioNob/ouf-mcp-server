@@ -22,7 +22,9 @@ const BatchMaxItems = 8
 type BatchStart struct {
 	ID          string
 	Profile     Profile
+	CreatedAt   time.Time `json:"-"`
 	Epoch       string
+	Authority   string
 	Revision    int64
 	Initialized bool
 }
@@ -75,10 +77,14 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 		return BatchStart{}, err
 	}
 	scope := IdentityScope(i)
+	authority := BatchAuthorityBinding(i)
 	intent := Digest([]string{BatchMode, asset, profile, hash})
 	if start, found, err := store.LookupBatchStartCommand(ctx, scope, checksum, key, intent); found || err != nil {
 		if err == nil && start.Epoch != epoch {
 			err = ErrEpochChanged
+		}
+		if err == nil && start.Authority != "" && start.Authority != authority {
+			err = ErrScope
 		}
 		if err != nil || start.Initialized {
 			return start, err
@@ -94,7 +100,7 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 		if err != nil {
 			return BatchStart{}, err
 		}
-		start = BatchStart{ID: id, Profile: pin, Epoch: epoch}
+		start = BatchStart{ID: id, Profile: pin, Epoch: epoch, Authority: authority}
 	}
 	if start.Profile.SchemaHash != hash {
 		return BatchStart{}, ErrProfile
@@ -102,6 +108,9 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 	saved, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start)
 	if err == nil && saved.Epoch != epoch {
 		err = ErrEpochChanged
+	}
+	if err == nil && saved.Authority != "" && saved.Authority != authority {
+		err = ErrScope
 	}
 	return saved, err
 }

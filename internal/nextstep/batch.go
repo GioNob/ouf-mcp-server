@@ -1,6 +1,8 @@
 package nextstep
 
 import (
+	"time"
+
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -31,7 +33,7 @@ func BatchBlock(code string) Object {
 	return ManualBlock(code, message, "OPERATOR")
 }
 
-func (e Engine) BatchStatusNext(id, reason string) Object {
+func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
 	const read = "source.analysis.read"
 	args := Object{"analysisId": id}
 	switch reason {
@@ -40,7 +42,26 @@ func (e Engine) BatchStatusNext(id, reason string) Object {
 	case "ANALYSIS_SUMMARY":
 		args["view"] = "SUMMARY"
 	case AnalysisRunning:
-		return ManualBlock(reason, "L’analisi ha colonne in attesa di elaborazione. Lo stato è consultabile con lo stesso riferimento.", "OPERATOR")
+		args["view"] = "STATUS"
+		if e.Valid == nil || !e.Valid(read, args) {
+			return BatchBlock(BatchUnavailable)
+		}
+		maximum := e.WaitMaxSeconds
+		if maximum == 0 {
+			maximum = DefaultWaitMaxSeconds
+		}
+		window := time.Duration(maximum) * time.Second
+		now := e.clock()
+		start := now
+		if !createdAt.IsZero() && !createdAt.After(now) {
+			// All readers of this running analysis share a finite issuance window.
+			// A new authorized STATUS read can issue the next window after expiry.
+			start = createdAt.Add(now.Sub(createdAt) / window * window)
+		}
+		e.batchPollStart = start
+		deadline := start.Add(window)
+		return e.ownerPoll(reason, read, args, Object{"deadline": deadline.UTC().Format(time.RFC3339Nano)},
+			[]string{"READY_FOR_DECISION", "COMPLETE", "PARTIAL", "BLOCKED"})
 	default:
 		return BatchBlock(reason)
 	}

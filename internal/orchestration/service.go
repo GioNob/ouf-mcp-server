@@ -61,7 +61,7 @@ type IdentityClaims struct {
 }
 
 type Identity struct {
-	// Opaque Gateway-signed delegation, request memory only: never serialized/persisted.
+	// Opaque Gateway-signed delegation, kept only in memory until its signed expiry.
 	Delegation                                                                     string          `json:"-"`
 	Claims                                                                         *IdentityClaims `json:"-"`
 	ServicePrincipalID, PrincipalID, TenantID, ActorType, AuthenticationContextRef string
@@ -97,6 +97,7 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
+	BatchDiscovery                                                                   bool
 	ColumnDecision                                                                  *ColumnDecision
 	CallsPerMinute                                                                  int
 	StatusRead                                                                      bool
@@ -124,6 +125,7 @@ type AdmissionDecision struct {
 }
 type AttemptOutcome struct {
 	Observation         OwnerObservation
+	BatchRoute          string
 	Uncertain           bool
 	ObservationSelector string
 	ColumnDecision      *ColumnDecision
@@ -209,6 +211,13 @@ type Invocation struct {
 	CheckDecision    func(AuthorizationDecision) error
 	InternalWaitRead bool
 	MachineWaitRead  bool
+
+	// DiscoveryAdmissionKey identifies one fenced worker attempt at MCP.
+	// Semantic still receives the stable key carried by the discovery command.
+	DiscoveryAdmissionKey string
+	// BatchRoute identifies the worker route sharing the owner retry clock.
+	BatchRoute string
+
 	// Trusted manifest binding, never taken from tool arguments. Transport,
 	// fingerprints and budget identity continue to use CapabilityID.
 	AuthorizationCapabilityID                                                string
@@ -237,6 +246,7 @@ type Result struct {
 }
 
 type Service struct {
+	ObserveBatchAuthority   func(string, Identity)
 	AdmissionCallsPerMinute int
 	ReprocessingGuard       func() error
 	Reprocessing            *reprocessing.VerifiedPermit
@@ -325,7 +335,11 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if publicStatus && (decision.PermittedDetailLevel != statusview.Public || decision.ResourceScope["tenantId"] != in.Identity.TenantID || decision.ResourceScope["resourceType"] != "capability") {
 		return Result{}, ErrUnauthorized
 	}
-	if in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND" {
+	discoveryCommand := in.CapabilityID == "ouf.semantic.discovery" && in.OperationClass == "COMMAND"
+	if in.DiscoveryAdmissionKey != "" && (!discoveryCommand || in.Owner != "semantic" || in.Identity.ActorType != "HUMAN" || uuid.Validate(in.DiscoveryAdmissionKey) != nil) {
+		return Result{}, errors.New("INVALID_DISCOVERY_ADMISSION_KEY")
+	}
+	if discoveryCommand {
 		var command struct {
 			IdempotencyKey string `json:"idempotencyKey"`
 		}
@@ -384,13 +398,18 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		return Result{}, errors.New("invalid internal wait read")
 	}
 	choice := columnDecision(in)
+	admissionKey := in.IdempotencyKey
+	if in.DiscoveryAdmissionKey != "" {
+		admissionKey = "analysis-batch:" + in.DiscoveryAdmissionKey
+	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
+		BatchDiscovery: in.DiscoveryAdmissionKey != "",
 		CallsPerMinute: s.AdmissionCallsPerMinute, StatusRead: statusRead, InternalWaitRead: in.InternalWaitRead,
 		Reprocessing: permit, AttemptTimeout: in.Timeout, ColumnDecision: choice,
 		BudgetProfile: in.BudgetProfile,
 		AttemptID:     uuid.New(), Identity: in.Identity, CapabilityID: in.CapabilityID, Owner: in.Owner,
 		OperationClass: in.OperationClass, ManifestChecksum: in.ManifestChecksum, AuthorizationDecisionRef: decision.DecisionRef,
-		IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(requestHash[:]), SemanticFingerprint: fingerprint,
+		IdempotencyKey: admissionKey, RequestHash: hex.EncodeToString(requestHash[:]), SemanticFingerprint: fingerprint,
 		FingerprintVersion: "v1", CorrelationID: in.CorrelationID, Window: in.Window, RetryThreshold: in.RetryThreshold, Maximum: in.Maximum,
 	})
 	if err != nil {
@@ -442,7 +461,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		}
 		return Result{Observation: observation, AttemptID: admitted.AttemptID}, callErr
 	}
-	outcome := AttemptOutcome{Observation: observation, ObservationSelector: selector, Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
+	outcome := AttemptOutcome{Observation: observation, BatchRoute: in.BatchRoute, ObservationSelector: selector, Code: "UPSTREAM_ERROR", BackendRequestID: response.BackendRequestID}
 	if response.BackendRequestID == "" {
 		outcome.BackendRequestID = backendRequestID
 	}
