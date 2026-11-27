@@ -61,7 +61,7 @@ func (s *workflowServer) publishedHint(ctx context.Context, id, request string, 
 	if err != nil {
 		return empty, false, err
 	}
-	summary, ok, err := store.PublishedHint(ctx, analysis.IdentityScope(i.Identity), id, checksum, request)
+	summary, ok, err := store.PublishedHint(analysis.WithOwnerObservationKey(ctx, s.analysisService.FingerprintKey), analysis.IdentityScope(i.Identity), id, checksum, request)
 	if !ok || err != nil {
 		return summary, ok, err
 	}

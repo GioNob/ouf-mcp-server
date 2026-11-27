@@ -123,3 +123,32 @@ func TestPlanRejectsForgedScopeAndUnsupportedWork(t *testing.T) {
 		t.Fatal("accepted 1025")
 	}
 }
+
+func TestBuildPreservesDiscoveryTaskIdentity(t *testing.T) {
+	scope, profile, manifest := fixture(t, 2)
+	const canonical = `{"requestId":"abcdef01-2345-4abc-8def-0123456789ab"}`
+	const upper = `{"requestId":"ABCDEF01-2345-4ABC-8DEF-0123456789AB"}`
+	a := Work{Tool: "semantic.discovery.status", Arguments: json.RawMessage(canonical), Columns: []int{0}, Observation: 1}
+	b := Work{Tool: a.Tool, Arguments: json.RawMessage(upper), Columns: []int{1}, Observation: a.Observation}
+	plan, err := Build(scope, profile, manifest, 0, []Work{a, b})
+	if err != nil || len(plan.Tasks) != 2 {
+		t.Fatal(plan.Tasks, err)
+	}
+	for i, work := range []Work{a, b} {
+		task := plan.Tasks[i]
+		if task.ID != Digest([]any{work.Tool, work.Arguments, work.Observation}) ||
+			string(task.Arguments) != string(work.Arguments) || len(task.Columns) != 1 || task.Columns[0] != work.Columns[0] {
+			t.Fatal("changed the retained task identity", task)
+		}
+	}
+	b.Arguments = json.RawMessage(`{"requestId":"invalid"}`)
+	if _, err := Build(scope, profile, manifest, 0, []Work{b}); err != ErrInvalid {
+		t.Fatal("non-UUID discovery request was accepted", err)
+	}
+	const candidateArgs = `{"includeState":true,"requestId":"ABCDEF01-2345-4ABC-8DEF-0123456789AB"}`
+	candidates := Work{Tool: "semantic.discovery.candidates", Arguments: json.RawMessage(candidateArgs), Columns: []int{0}}
+	plan, err = Build(scope, profile, manifest, 0, []Work{candidates})
+	if err != nil || len(plan.Tasks) != 1 || string(plan.Tasks[0].Arguments) != candidateArgs {
+		t.Fatal("changed the candidate arguments", plan.Tasks, err)
+	}
+}

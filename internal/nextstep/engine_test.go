@@ -91,6 +91,23 @@ func pollTarget(t *testing.T, e Engine, next Object) WaitRef {
 	return ref
 }
 
+func TestReadyTaskSkipsWaitingPredecessor(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	predecessor := Object{"taskId": "first", "state": "WAITING", "notBefore": now.Add(72 * time.Second).Format(time.RFC3339Nano)}
+	dependent := Object{"taskId": "second", "state": "READY", "predecessor": predecessor}
+	obs := Object{"tasks": []any{dependent}}
+	if got := get(obs, nil, "#readyTask"); got != nil {
+		t.Fatal("selected a task whose predecessor is waiting", got)
+	}
+	if got := get(obs, nil, "#timedTask"); got != "first" {
+		t.Fatal("lost the off-page predecessor", got)
+	}
+	obs["tasks"] = []any{predecessor, dependent, Object{"state": "READY", "taskId": "independent"}}
+	if got := get(obs, nil, "#readyTask"); got != "independent" {
+		t.Fatal("lost independent work", got)
+	}
+}
+
 func TestSameToolNumericArguments(t *testing.T) {
 	input := Object{"offset": json.Number("1e0")}
 	next := call("CALL_TOOL", "COLUMN_PAGE", "source.file.preview", Object{"offset": 1})

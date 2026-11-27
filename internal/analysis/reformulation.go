@@ -27,6 +27,7 @@ type ReformulationStore interface {
 }
 
 func (c Coordinator) Reformulate(ctx context.Context, i orchestration.Identity, source, key string, r Reformulation, limit int) (View, error) {
+	ctx = c.withOwnerObservationKey(ctx)
 	k, err := uuid.Parse(key)
 	if ValidateID(source) != nil || err != nil || k.Version() != 4 || k.String() != key || !CanonicalUUID(r.RequestID) ||
 		r.Column < 0 || r.Column >= 1024 || !UsableColumnName(r.Intent) || limit < 0 || limit > 16 {

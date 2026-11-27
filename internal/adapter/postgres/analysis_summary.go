@@ -125,21 +125,26 @@ func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, n
 	if (t.Tool == "semantic.discovery.status" || t.Tool == "semantic.discovery.candidates") &&
 		(t.State == "SUCCEEDED" || !obs.At.IsZero()) {
 		var ref struct{ RequestID string }
-		if json.Unmarshal(t.Arguments, &ref) != nil || !analysis.CanonicalUUID(ref.RequestID) {
+		if json.Unmarshal(t.Arguments, &ref) != nil {
 			return analysis.ErrInvalid
 		}
+		requestID, err := uuid.Parse(ref.RequestID)
+		if err != nil {
+			return analysis.ErrInvalid
+		}
+		request := requestID.String()
 		if obs.At.IsZero() {
 			obs = orchestration.ObserveOwner(orchestration.GatewayResponse{Body: t.Result}, nil, now)
 		}
 		if t.NotBefore.After(obs.Due) {
 			obs.Due = t.NotBefore
 		}
-		saved, err := saveDiscoveryClock(ctx, tx, id, ref.RequestID, obs)
+		saved, err := saveDiscoveryClock(ctx, tx, id, request, obs)
 		if err != nil {
 			return err
 		}
 		if t.State == "SUCCEEDED" {
-			return projectDiscovery(ctx, tx, id, t.Tool, ref.RequestID, t.Result, obs.At, saved.Due)
+			return projectDiscovery(ctx, tx, id, t.Tool, request, t.Result, obs.At, saved.Due)
 		}
 	}
 	if t.State == "HELD" {
@@ -191,9 +196,11 @@ func saveDiscoveryClock(ctx context.Context, tx pgx.Tx, id, request string, obs 
 // A nil evidence payload is an error observation. It can postpone the
 // request without replacing verified column evidence or storing an error body.
 func (s *Store) RecordDiscovery(ctx context.Context, scope analysis.Scope, id, manifest, tool, request string, raw []byte, obs orchestration.OwnerObservation) (orchestration.OwnerObservation, error) {
-	if !analysis.CanonicalUUID(request) {
+	requestID, err := uuid.Parse(request)
+	if err != nil {
 		return obs, analysis.ErrInvalid
 	}
+	request = requestID.String()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return obs, err
@@ -288,20 +295,81 @@ func projectDiscovery(ctx context.Context, tx pgx.Tx, id, tool, request string, 
 	return projectOutcome(ctx, tx, id, nil, request, o, next)
 }
 
-// Both live summary paths select one column, then read only its task. Older
-// rows may have the owner's delay only in the original discovery receipt.
+// Prepare the selected request's keys once, then follow its dependency chain.
+// Its observation decreases at each link. A missing link yields an empty ID.
+const summaryStepJoin = ` left join lateral (
+	with recursive seed as (
+		select t.analysis_id,t.task_id,` + plannedReadTaskKeys + ` where t.task_id is not null
+	), ` + plannedReadPredecessors + `(select analysis_id from seed)
+		and ` + plannedReadRequest + `=(select request_id from seed where observation>1)` + plannedReadPredecessorOrder + `,
+	chain as (
+		select seed.*,0 as depth from seed
+		union all
+		select t.analysis_id,prior.task_id,prior.request_id,prior.observation,prior.state,prior.not_before,t.depth+1
+		from chain t ` + plannedReadPredecessorJoin + ` where ` + blockedPredecessor + `
+	)
+	select coalesce(case when t.state in ('READY','WAITING','RUNNING','SUCCEEDED') then t.task_id::text end,'') as task_id,
+		greatest(t.not_before,` + plannedReadDue + `) as not_before,t.request_id::text as request_id
+	from chain t ` + plannedReadClockJoins + ` order by t.depth desc limit 1
+) step on `
+
+const summaryResumableState = `t.state in ('READY','WAITING','RUNNING')`
+
+// Resolve each needed status predecessor once before choosing a column. Start
+// at runnable roots and pass their continuation down blocked links. The plan
+// page uses the same predecessor keys, ordering and blocked-link predicate.
+const liveSummaryColumnSQL = `with recursive step_candidates as materialized (
+	select c.ordinal,t.task_id,` + plannedReadTaskKeys + `
+	from ouf_mcp.analysis_column c join ouf_mcp.profile_analysis_task t using(analysis_id,task_id)
+	where c.analysis_id=$1 and c.next_tool='source.analysis.step' and t.task->>'awaitParent' is distinct from 'true'
+), ` + plannedReadPredecessors + `$1
+	and ` + plannedReadRequest + ` in (select request_id from step_candidates where observation>1)` + plannedReadPredecessorOrder + `,
+status_resumes as (
+	select t.request_id,t.observation,t.state,t.task_id,
+		greatest(t.not_before,prior.successor_not_before) as not_before
+	from status_predecessors t ` + plannedReadPredecessorJoin + `
+	where ` + summaryResumableState + ` and (` + blockedPredecessor + `) is not true
+	union all
+	select t.request_id,t.observation,t.state,prior.task_id,prior.not_before
+	from status_predecessors t join status_resumes prior on prior.request_id=t.request_id
+		and prior.observation=t.observation-1
+	where ` + blockedPredecessor + `
+), resolved_steps as (
+	select t.ordinal,t.request_id,
+		case when ` + blockedPredecessor + ` then root.task_id else t.task_id end::text as task_id,
+		case when ` + blockedPredecessor + ` then root.not_before
+			else greatest(t.not_before,prior.successor_not_before) end as not_before
+	from step_candidates t ` + plannedReadPredecessorJoin + `
+	left join status_resumes root on root.request_id=t.request_id and root.observation=t.observation-1
+	where ` + summaryResumableState + `
+)
+select c.*,r.task_id as step_id,r.request_id as step_request,r.not_before as step_due
+from ouf_mcp.analysis_column c left join resolved_steps r using(ordinal)
+where c.analysis_id=$1 and c.next_tool<>'' and (c.next_tool<>'source.analysis.step' or r.task_id is not null)
+order by c.published_first desc,c.ordinal limit 1`
+
+const liveSummaryTimingJoins = ` left join ouf_mcp.profile_analysis_task t on t.analysis_id=c.analysis_id and t.task_id=c.task_id
+	left join ouf_mcp.analysis_owner_due w on w.analysis_id=c.analysis_id and w.request_id=c.request_id
+	left join ouf_mcp.analysis_owner_due step_clock on step_clock.analysis_id=c.analysis_id and step_clock.request_id=c.step_request
+	left join lateral (select c.step_id as task_id,c.step_request::text as request_id,
+		greatest(c.step_due,step_clock.not_before) as not_before) step on true`
+
+const liveSummaryHintSQL = `select c.next_tool,coalesce(step.task_id,c.task_id::text,''),coalesce(c.request_id::text,''),c.ordinal,
+	case when c.next_tool='source.analysis.plan' then c.header else '' end,step.request_id,` + summaryTimingSQL + `
+	from (` + liveSummaryColumnSQL + `) c ` + liveSummaryTimingJoins + `
+	where not (select integrity_hold from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1)`
+
+// Older rows may have the owner's delay only in the original discovery receipt.
 const summaryTimingSQL = `jsonb_build_object(
 	'notBefore',w.not_before,'ownerDueReason',w.reason,
 	'decisionRequired',c.outcome->>'reasonCode'='DISCOVERY_DECISION_REQUIRED',
-	'nextAttemptAt',case when c.next_tool='source.analysis.step' then t.task->'notBefore' end,
-	'next_retry_at',case when c.next_tool='source.analysis.step'
-		and t.task->>'tool' in ('semantic.discovery.status','semantic.discovery.candidates')
-		then (select ` + plannedReadDue + plannedReadClocks + `where t.analysis_id=c.analysis_id and t.task_id=c.task_id) end,
-	'completedAt',t.task->'completedAt',
-	'result',case when c.request_id::text=t.task->'result'->>'requestId'
+	'nextAttemptAt',step.not_before,
+	'completedAt',case when step.task_id is null then t.task->'completedAt' end,
+	'result',case when step.task_id is null and c.request_id=case
+		when pg_input_is_valid(t.task->'result'->>'requestId','uuid') then (t.task->'result'->>'requestId')::uuid end
 		then t.task->'result' end)`
 
-func mergeSummaryTiming(h *analysis.Hint, raw []byte) error {
+func mergeSummaryTiming(ctx context.Context, q ownerObservationQueryer, scope analysis.Scope, h *analysis.Hint, raw []byte, stepRequest *string) error {
 	var obs map[string]any
 	if err := json.Unmarshal(raw, &obs); err != nil {
 		return err
@@ -323,6 +391,17 @@ func mergeSummaryTiming(h *analysis.Hint, raw []byte) error {
 	due, valid := orchestration.OwnerDue(obs, time.Now(), floor, "")
 	if !valid {
 		return analysis.ErrProfile
+	}
+	if stepRequest != nil {
+		if selector := analysis.DiscoveryObservationSelector(ctx, *stepRequest); selector != "" {
+			saved, err := readDiscoveryObservation(ctx, q, scope, selector, "", *stepRequest)
+			if err != nil {
+				return err
+			}
+			if saved.Due.After(due) || (saved.Due.Equal(due) && h.OwnerReason == "") {
+				due, h.OwnerReason = saved.Due, saved.Reason
+			}
+		}
 	}
 	if !due.IsZero() {
 		h.NotBefore = due.UTC().Format(time.RFC3339Nano)
@@ -395,16 +474,21 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		return out, analysis.ErrProfile
 	}
 	var timing []byte
+	var stepRequest *string
+	liveHint := out.Hint
+	readLiveHint := false
 	if pos.Snapshot != uuid.Nil {
 		var raw []byte
 		var header string
+		var taskID *string
 		err = scanSummaryRow(ctx, tx, &out, `select a.frozen_hint,case when a.frozen_hint->>'Tool'='source.analysis.plan' then coalesce(c.header,'') else '' end,
-		 `+summaryTimingSQL+` from ouf_mcp.analysis_summary_read a
+		 step.task_id,step.request_id,`+summaryTimingSQL+` from ouf_mcp.analysis_summary_read a
 		 left join ouf_mcp.analysis_column c on c.analysis_id=a.analysis_id and c.ordinal=(a.frozen_hint->>'Ordinal')::int
-		 and coalesce(c.task_id,'')=a.frozen_hint->>'TaskID' and coalesce(c.request_id::text,'')=a.frozen_hint->>'RequestID'
+		 and coalesce(c.task_id,'')=a.frozen_hint->>'TaskID' and c.request_id is not distinct from nullif(a.frozen_hint->>'RequestID','')::uuid
 		 left join ouf_mcp.profile_analysis_task t on t.analysis_id=a.analysis_id and t.task_id=a.frozen_hint->>'TaskID'
 		 left join ouf_mcp.analysis_owner_due w on w.analysis_id=a.analysis_id and w.request_id=nullif(a.frozen_hint->>'RequestID','')::uuid
-		 where a.analysis_id=$1 and a.snapshot_id=$2 and a.seq=$3 and a.frozen_hint is not null`, []any{id, pos.Snapshot, out.Seq}, &raw, &header, &timing)
+		 `+summaryStepJoin+`a.frozen_hint->>'Tool'='source.analysis.step'
+		 where a.analysis_id=$1 and a.snapshot_id=$2 and a.seq=$3 and a.frozen_hint is not null`, []any{id, pos.Snapshot, out.Seq}, &raw, &header, &taskID, &stepRequest, &timing)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return out, analysis.ErrExpired
 		}
@@ -414,17 +498,26 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		if json.Unmarshal(raw, &out.Hint) != nil {
 			return out, analysis.ErrProfile
 		}
-		out.Hint.Header = header
+		if out.Hint.Tool == "source.analysis.step" && (taskID == nil || *taskID == "") {
+			// Keep the snapshot's counts and items, but renew a hint whose
+			// task or predecessor can no longer run.
+			out.Hint, timing, stepRequest = liveHint, nil, nil
+			readLiveHint = !out.Stopped && liveHint.Reason == ""
+		} else {
+			if taskID != nil && *taskID != out.Hint.TaskID {
+				out.Hint.TaskID, out.Hint.NotBefore, out.Hint.OwnerReason = *taskID, "", ""
+			}
+			out.Hint.Header = header
+		}
 	} else if out.Stopped || out.Hint.Reason != "" {
 		if out.Hint.Reason == "" {
 			out.Hint.Reason = "OUTCOME_REQUIRES_RECONCILIATION"
 		}
 	} else if c.Pending > 0 || c.Blocked > 0 {
-		err = scanSummaryRow(ctx, tx, &out, `select c.next_tool,coalesce(c.task_id,''),coalesce(c.request_id::text,''),c.ordinal,
-			case when c.next_tool='source.analysis.plan' then c.header else '' end,`+summaryTimingSQL+`
-			from (select * from ouf_mcp.analysis_column where analysis_id=$1 and next_tool<>'' order by published_first desc,ordinal limit 1) c
-			left join ouf_mcp.profile_analysis_task t using(analysis_id,task_id)
-			left join ouf_mcp.analysis_owner_due w on w.analysis_id=c.analysis_id and w.request_id=c.request_id`, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header, &timing)
+		readLiveHint = true
+	}
+	if readLiveHint {
+		err = scanSummaryRow(ctx, tx, &out, liveSummaryHintSQL, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header, &stepRequest, &timing)
 	}
 	if errors.Is(err, pgx.ErrNoRows) && c.Blocked == c.Total {
 		err = scanSummaryRow(ctx, tx, &out, `select outcome->>'reasonCode' from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='BLOCKED' order by ordinal limit 1`, []any{id}, &out.Hint.Reason)
@@ -436,10 +529,10 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	}
 	if len(timing) > 0 {
 		decision := out.Hint.DecisionRequired
-		if err := mergeSummaryTiming(&out.Hint, timing); err != nil {
+		if err := mergeSummaryTiming(ctx, tx, scope, &out.Hint, timing, stepRequest); err != nil {
 			return out, err
 		}
-		if pos.Snapshot != uuid.Nil {
+		if pos.Snapshot != uuid.Nil && !readLiveHint {
 			out.Hint.DecisionRequired = decision
 		}
 	}

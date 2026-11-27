@@ -130,6 +130,18 @@ func CanonicalUUID(s string) bool {
 	return err == nil && id.String() == s
 }
 
+func sameDiscoveryRequest(request, other string) bool {
+	if len(other) != 36 {
+		return false
+	}
+	id, err := uuid.Parse(request)
+	if err != nil {
+		return false
+	}
+	otherID, err := uuid.Parse(other)
+	return err == nil && id == otherID
+}
+
 func discoveryEnvelope(request string, raw []byte) (map[string]json.RawMessage, bool) {
 	var fields map[string]json.RawMessage
 	if !CanonicalUUID(request) || !ValidEvidenceJSON(raw) || json.Unmarshal(raw, &fields) != nil || fields == nil {
@@ -144,7 +156,7 @@ func discoveryEnvelope(request string, raw []byte) (map[string]json.RawMessage, 
 	}
 	if rawID, ok := fields["requestId"]; ok {
 		var ownerID string
-		if json.Unmarshal(rawID, &ownerID) != nil || ownerID != request {
+		if json.Unmarshal(rawID, &ownerID) != nil || !sameDiscoveryRequest(request, ownerID) {
 			return nil, false
 		}
 	}
@@ -266,7 +278,7 @@ func DiscoveryEvidenceWithCompletion(tool, requestID string, raw []byte, complet
 		if id == "" {
 			id = candidate.CandidateID
 		}
-		if !CanonicalUUID(id) || seen[id] || (candidate.RequestID != "" && candidate.RequestID != requestID) ||
+		if !CanonicalUUID(id) || seen[id] || (candidate.RequestID != "" && !sameDiscoveryRequest(requestID, candidate.RequestID)) ||
 			(candidate.ExpiresAt != nil && !candidate.ExpiresAt.After(now)) {
 			return unavailable, ""
 		}

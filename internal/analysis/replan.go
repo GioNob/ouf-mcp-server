@@ -24,6 +24,7 @@ type ReplanStore interface {
 }
 
 func (c Coordinator) Replan(ctx context.Context, i orchestration.Identity, source, key string) (View, error) {
+	ctx = c.withOwnerObservationKey(ctx)
 	k, err := uuid.Parse(key)
 	if ValidateID(source) != nil || err != nil || k.Version() != 4 || k.String() != key {
 		return View{}, ErrInvalid

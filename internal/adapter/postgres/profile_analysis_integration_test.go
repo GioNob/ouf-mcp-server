@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func analysisFixture(t *testing.T, n int) (context.Context, *Store, analysis.Scope, analysis.Profile, *manifest.Snapshot) {
@@ -162,6 +164,7 @@ type analysisGateway struct {
 	profile   analysis.Profile
 	calls     int
 	transient bool
+	rateLimit string
 }
 
 func (g *analysisGateway) Execute(_ context.Context, r orchestration.GatewayRequest, _ time.Duration) (orchestration.GatewayResponse, error) {
@@ -187,6 +190,12 @@ func (g *analysisGateway) Execute(_ context.Context, r orchestration.GatewayRequ
 	if g.transient {
 		g.transient = false
 		return orchestration.GatewayResponse{Status: 503, Problem: &orchestration.Problem{Status: 503, RetryAfter: "60"}}, nil
+	}
+	if g.rateLimit != "" {
+		header := g.rateLimit
+		g.rateLimit = ""
+		return orchestration.GatewayResponse{Status: 429, RetryAfter: header,
+			Problem: &orchestration.Problem{Status: 429, Code: "RATE_LIMITED", RetryAfter: header}}, nil
 	}
 	return orchestration.GatewayResponse{Status: 200, Body: []byte(`{"items":[],"evidence":"fixture"}`)}, nil
 }
@@ -449,6 +458,327 @@ func TestProfileAnalysisDiscoveryCandidateExecutionAndPollPacing(t *testing.T) {
 	}
 }
 
+func TestPlannedDiscoveryUUIDReplayAndFinish(t *testing.T) {
+	const canonical = `{"requestId":"abcdef01-2345-4abc-8def-0123456789ab"}`
+	const uppercase = `{"requestId":"ABCDEF01-2345-4ABC-8DEF-0123456789AB"}`
+	for _, tc := range []struct {
+		name, arguments string
+		historical      bool
+	}{
+		{name: "new-uppercase", arguments: uppercase},
+		{name: "historical-canonical", arguments: canonical, historical: true},
+		{name: "historical-uppercase", arguments: uppercase, historical: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, s, c, identity, _, gateway, profile := coordinatorFixture(t, 1)
+			scope := analysis.IdentityScope(identity)
+			c.CommandKey = uuid.NewString()
+			work := analysis.Work{Tool: "semantic.discovery.status", Arguments: json.RawMessage(tc.arguments), Columns: []int{0}, Observation: 1}
+			invalid := work
+			invalid.Arguments = json.RawMessage(`{"requestId":"invalid"}`)
+			if _, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, []analysis.Work{invalid}); !errors.Is(err, analysis.ErrInvalid) || gateway.calls != 0 {
+				t.Fatal("non-UUID input reached the owner during planning", err, gateway.calls)
+			}
+			// Use the task identity and command receipt formula of 0269770.
+			wantID := analysis.Digest([]any{work.Tool, work.Arguments, work.Observation})
+			wantReceipt := analysis.Digest([]any{profile.AssetID, profile.ProfileID, int64(0), []analysis.Work{work}})
+			if tc.historical {
+				plan, err := analysis.Build(scope, profile, c.Manifest, 0, []analysis.Work{work})
+				if err != nil {
+					t.Fatal(err)
+				}
+				plan.Tasks[0].Arguments = work.Arguments
+				plan.Tasks[0].ID = wantID
+				plan.Headers = []string{"fixture"}
+				plan.CommandKey = c.CommandKey
+				plan.CommandDigest = wantReceipt
+				if _, err = s.PlanAnalysis(ctx, plan); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, []analysis.Work{work})
+			if err != nil || len(view.Tasks) != 1 || view.Tasks[0].ID != wantID {
+				t.Fatal("UUID spelling changed the plan identity", view, err)
+			}
+			before := gateway.calls
+			replayed, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, []analysis.Work{work})
+			if err != nil || replayed.ID != view.ID || replayed.Revision != view.Revision || len(replayed.Tasks) != 1 ||
+				replayed.Tasks[0].ID != wantID || gateway.calls != before {
+				t.Fatal("same command opened new work", replayed, err, gateway.calls)
+			}
+			if target, found, err := planReceipt(ctx, s.pool, scope, c.CommandKey, wantReceipt); err != nil || !found || target != view.ID {
+				t.Fatal("stored receipt does not match the predecessor digest", target, found, err)
+			}
+			changed := work
+			changed.Arguments = json.RawMessage(canonical)
+			if tc.arguments == canonical {
+				changed.Arguments = json.RawMessage(uppercase)
+			}
+			if _, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, []analysis.Work{changed}); !errors.Is(err, analysis.ErrKeyReuse) || gateway.calls != before {
+				t.Fatal("changed arguments reused the command key", err, gateway.calls)
+			}
+			checksum, _ := c.Manifest.Checksum()
+			stored, err := s.ReadAnalysisTask(ctx, scope, view.ID, wantID, checksum)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotArguments, wantArguments map[string]any
+			if err := json.Unmarshal(stored.Arguments, &gotArguments); err != nil {
+				t.Fatalf("invalid stored arguments: %v", err)
+			}
+			if err := json.Unmarshal(work.Arguments, &wantArguments); err != nil {
+				t.Fatalf("invalid expected arguments: %v", err)
+			}
+			if gotArguments["requestId"] != wantArguments["requestId"] {
+				t.Fatalf("unexpected stored requestId spelling: got %q, want %q", gotArguments["requestId"], wantArguments["requestId"])
+			}
+			if !reflect.DeepEqual(gotArguments, wantArguments) {
+				t.Fatalf("unexpected stored arguments: got %v, want %v", gotArguments, wantArguments)
+			}
+			task, err := c.Step(ctx, identity, view.ID, wantID)
+			if err != nil || task.State != "SUCCEEDED" || gateway.calls != before+1 {
+				t.Fatal("owner result did not complete the task", task, err, gateway.calls)
+			}
+			stored, err = s.ReadAnalysisTask(ctx, scope, view.ID, wantID, checksum)
+			if err != nil || stored.State != "SUCCEEDED" || len(stored.Result) == 0 {
+				t.Fatal("owner result was not persisted", stored, err)
+			}
+		})
+	}
+}
+
+func TestPlannedDiscoveryPageResolves128ConsecutiveObservations(t *testing.T) {
+	ctx, s, scope, profile, m := analysisFixture(t, 1)
+	args := json.RawMessage(fmt.Sprintf(`{"requestId":%q}`, uuid.NewString()))
+	const observations = 128
+	work := make([]analysis.Work, 0, observations)
+	// The first row needs the entire chain. Every later row shares its suffix.
+	for n := observations; n > 0; n-- {
+		work = append(work, analysis.Work{Tool: "semantic.discovery.status", Columns: []int{0}, Arguments: args, Observation: n})
+	}
+	plan, err := analysis.Build(scope, profile, m, 0, work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &plan.Tasks[observations-1]
+	root.State = "WAITING"
+	root.NotBefore = time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err = s.PlanAnalysis(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	view, err := s.ReadAnalysis(ctx, scope, plan.ID, plan.Manifest, 0, observations)
+	if err != nil || len(view.Tasks) != observations || view.HasMore {
+		t.Fatal("expected a full page", len(view.Tasks), view.HasMore, err)
+	}
+	for n, task := range view.Tasks {
+		if task.Observation != observations-n {
+			t.Fatal("unexpected observation order", task.Observation, n)
+		}
+		predecessor := task.Predecessor
+		if task.Observation == 1 {
+			if predecessor != nil || task.ID != root.ID {
+				t.Fatal("first observation has a predecessor", task, predecessor)
+			}
+			continue
+		}
+		if predecessor == nil || predecessor.ID != root.ID || predecessor.State != root.State || !predecessor.NotBefore.Equal(root.NotBefore) {
+			t.Fatal("wrong chain root", task.Observation, predecessor)
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	_, reads, err := analysisTasks(ctx, tx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visits := 0
+	resolve := predecessorResolver(func(id string) plannedRead {
+		visits++
+		return reads[id]
+	})
+	for _, task := range view.Tasks[:observations-1] {
+		link := reads[task.ID].predecessor
+		if link == nil || resolve(*link).ID != root.ID {
+			t.Fatal("wrong chain root in counted projection", task.Observation)
+		}
+	}
+	if visits != observations-1 {
+		t.Fatalf("visited %d predecessors, want %d", visits, observations-1)
+	}
+}
+
+func plannedObservationFixture(t *testing.T, requests, observations int) (context.Context, pgx.Tx, analysis.Plan, time.Time) {
+	t.Helper()
+	ctx, s, scope, profile, m := analysisFixture(t, 1)
+	plan, err := analysis.Build(scope, profile, m, 0, []analysis.Work{searchWork(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err = planAnalysis(ctx, tx, plan); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err = tx.Exec(ctx, `insert into ouf_mcp.profile_analysis_task(analysis_id,task_id,task)
+		select $1,task_id,jsonb_build_object('taskId',task_id,'tool','semantic.discovery.status',
+			'arguments',jsonb_build_object('requestId',case when observation%2=1 then upper(request_id) else request_id end),
+			'observation',observation,'state',case when observation=1 then 'WAITING' else 'READY' end,
+			'notBefore',case when observation=1 then $4::timestamptz else '0001-01-01T00:00:00Z'::timestamptz end,
+			'columns',jsonb_build_array(0))
+		from (
+			select observation,md5(request_number::text)::uuid::text as request_id,
+				lpad(to_hex((request_number-1)*$3::int+observation),64,'0') as task_id
+			from generate_series(1,$2::int) requests(request_number)
+			cross join generate_series(1,$3::int) observations(observation)
+		) tasks order by task_id`, plan.ID, requests, observations, due)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `analyze ouf_mcp.profile_analysis_task`); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, tx, plan, due
+}
+
+func TestPlannedDiscoveryPagePredecessorQueryPlan(t *testing.T) {
+	const requests, observations = 1024, 4
+	ctx, tx, plan, due := plannedObservationFixture(t, requests, observations)
+	var raw []byte
+	if err := tx.QueryRow(ctx, `explain (format json) `+analysisTasksSQL, plan.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	type planNode struct {
+		Type  string     `json:"Node Type"`
+		CTE   string     `json:"CTE Name"`
+		Plans []planNode `json:"Plans"`
+	}
+	var explain []struct{ Plan planNode }
+	if err := json.Unmarshal(raw, &explain); err != nil || len(explain) != 1 {
+		t.Fatal("invalid EXPLAIN output", err, string(raw))
+	}
+	var checkJoin func(planNode, string)
+	var predecessorJoined bool
+	checkJoin = func(node planNode, join string) {
+		switch node.Type {
+		case "Nested Loop", "Hash Join", "Merge Join":
+			join = node.Type
+		}
+		if node.CTE == "status_predecessors" {
+			if join != "Hash Join" && join != "Merge Join" {
+				t.Fatalf("predecessor uses %q: %s", join, raw)
+			}
+			predecessorJoined = true
+		}
+		for _, child := range node.Plans {
+			checkJoin(child, join)
+		}
+	}
+	checkJoin(explain[0].Plan, "")
+	if !predecessorJoined {
+		t.Fatal("missing predecessor join", string(raw))
+	}
+	view, err := analysisView(ctx, tx, plan.Scope, plan.ID, plan.Profile, 1, requests*observations, 1)
+	if err != nil || len(view.Tasks) != 1 || view.HasMore || view.Budget.PlannedCalls != requests*observations+1 {
+		t.Fatal("incorrect final page or plan totals", view, err)
+	}
+	task := view.Tasks[0]
+	wantPredecessor := fmt.Sprintf("%064x", (requests-1)*observations+1)
+	if task.ID != fmt.Sprintf("%064x", requests*observations) || task.Predecessor == nil ||
+		task.Predecessor.ID != wantPredecessor || task.Predecessor.State != "WAITING" || !task.Predecessor.NotBefore.Equal(due) {
+		t.Fatal("final page lost its off-page predecessor", task, task.Predecessor)
+	}
+}
+
+func TestPlannedDiscoverySuccessorQueryPlan(t *testing.T) {
+	const requests, observations = 1024, 4
+	ctx, tx, plan, _ := plannedObservationFixture(t, requests, observations)
+	last := requests * observations
+	var raw []byte
+	if err := tx.QueryRow(ctx, `explain (format json) `+analysisSuccessorSQL, plan.ID,
+		fmt.Sprintf("%064x", last), []string{fmt.Sprintf("%064x", last-1)}).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	type planNode struct {
+		Type      string     `json:"Node Type"`
+		Index     string     `json:"Index Name"`
+		Condition string     `json:"Index Cond"`
+		Plans     []planNode `json:"Plans"`
+	}
+	var explain []struct{ Plan planNode }
+	if err := json.Unmarshal(raw, &explain); err != nil || len(explain) != 1 {
+		t.Fatal("invalid EXPLAIN output", err, string(raw))
+	}
+	var check func(planNode)
+	var lookups int
+	check = func(node planNode) {
+		if node.Index == "profile_analysis_task_pkey" && strings.Contains(node.Condition, "analysis_id") && strings.Contains(node.Condition, "task_id") {
+			lookups++
+		}
+		if node.Type == "Seq Scan" || node.Type == "Nested Loop" {
+			t.Fatalf("successor query uses %s: %s", node.Type, raw)
+		}
+		for _, child := range node.Plans {
+			check(child)
+		}
+	}
+	check(explain[0].Plan)
+	if lookups != 2 {
+		t.Fatal("expected indexed lookups for both observations", string(raw))
+	}
+}
+
+func TestPlannedDiscoverySuccessorUsesCurrentPlanRevision(t *testing.T) {
+	ctx, s, scope, profile, m := analysisFixture(t, 1)
+	const tool = "semantic.discovery.status"
+	const canonical = `{"requestId":"abcdef01-2345-4abc-8def-0123456789ab"}`
+	const mixed = `{"requestId":"AbcDEf01-2345-4ABc-8DEf-0123456789aB"}`
+	const uppercase = `{"requestId":"ABCDEF01-2345-4ABC-8DEF-0123456789AB"}`
+	work := analysis.Work{Tool: tool, Columns: []int{0}, Arguments: json.RawMessage(canonical), Observation: 1}
+	plan, err := analysis.Build(scope, profile, m, 0, []analysis.Work{work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &plan.Tasks[0]
+	first.State = "SUCCEEDED"
+	first.CompletedAt = time.Date(2039, 12, 31, 0, 0, 0, 0, time.UTC)
+	view, err := s.PlanAnalysis(ctx, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next, err := s.ReadAnalysisSuccessor(ctx, scope, plan.ID, plan.Manifest, *first); err != nil || next != nil {
+		t.Fatal("unexpected successor before extending the plan", next, err)
+	}
+	newPlan, err := analysis.Build(scope, profile, m, view.Revision, []analysis.Work{
+		{Tool: tool, Columns: []int{0}, Arguments: json.RawMessage(uppercase), Observation: 1},
+		{Tool: tool, Columns: []int{0}, Arguments: json.RawMessage(mixed), Observation: 2},
+		{Tool: tool, Columns: []int{0}, Arguments: json.RawMessage(canonical), Observation: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	equivalent := &newPlan.Tasks[0]
+	equivalent.State = "SUCCEEDED"
+	equivalent.CompletedAt = first.CompletedAt.Add(time.Minute)
+	if _, err = s.PlanAnalysis(ctx, newPlan); err != nil {
+		t.Fatal(err)
+	}
+	successor := newPlan.Tasks[1]
+	for range 2 {
+		next, err := s.ReadAnalysisSuccessor(ctx, scope, plan.ID, plan.Manifest, *first)
+		if err != nil || next == nil || next.ID != successor.ID || next.State != successor.State ||
+			!next.NotBefore.Equal(equivalent.CompletedAt.Add(31*time.Second)) {
+			t.Fatal("lost the first successor or the latest equivalent pacing floor", next, err)
+		}
+	}
+}
+
 func TestLostPlannedObservationResumesAtRequestDeadline(t *testing.T) {
 	ctx, s, c, identity, _, _, profile := coordinatorFixture(t, 2)
 	scope := analysis.IdentityScope(identity)
@@ -515,4 +845,113 @@ func TestLostPlannedObservationResumesAtRequestDeadline(t *testing.T) {
 	if err != nil || held.State != "WAITING" || held.Attempts != 0 || held.Fence != "" || !held.NotBefore.Equal(obs.Due) {
 		t.Fatal("direct step ignored the request clock", held, err)
 	}
+}
+
+func TestWaitingPlannedPredecessorResumesAcrossPages(t *testing.T) {
+	ctx, s, c, identity, _, owner, profile := coordinatorFixture(t, 2)
+	scope := analysis.IdentityScope(identity)
+	request := uuid.NewString()
+	args := json.RawMessage(fmt.Sprintf(`{"requestId":%q}`, request))
+	other := json.RawMessage(fmt.Sprintf(`{"requestId":%q}`, uuid.NewString()))
+	plan, err := analysis.Build(scope, profile, c.Manifest, 0, []analysis.Work{
+		{Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 1},
+		{Tool: "semantic.discovery.status", Arguments: args, Columns: []int{0}, Observation: 2},
+		{Tool: "semantic.discovery.status", Arguments: other, Columns: []int{1}, Observation: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.PlanAnalysis(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	first, second, independent := plan.Tasks[0].ID, plan.Tasks[1].ID, plan.Tasks[2].ID
+	owner.rateLimit = "72"
+	a, err := c.Step(ctx, identity, plan.ID, first)
+	if err != nil || a.State != "WAITING" || a.Code != "TRANSIENT_OWNER_WAIT" || owner.calls != 1 {
+		t.Fatal(a, err, owner.calls)
+	}
+	saved, err := c.Service.SavedObservation(ctx, identity, "ouf.semantic.discovery.status", "READ", args)
+	if err != nil || !saved.Due.Equal(a.NotBefore) {
+		t.Fatal("lost the recorded owner clock", saved, a, err)
+	}
+	now := a.NotBefore.Add(-72 * time.Second)
+	read, _ := analysis.Find(c.Manifest, "source.analysis.read")
+	signer, err := nextstep.NewSigner(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := nextstep.Engine{Signer: signer, Binding: []byte("reader"), Now: func() time.Time { return now },
+		Valid: func(string, nextstep.Object) bool { return true }}
+	readPage := func(offset, limit int) nextstep.Object {
+		t.Helper()
+		page, err := c.Read(ctx, identity, plan.ID, offset, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := json.Marshal(page)
+		var observation nextstep.Object
+		if err != nil || json.Unmarshal(wire, &observation) != nil {
+			t.Fatal("invalid plan page", err)
+		}
+		return engine.Evaluate(read, c.Manifest.NextPolicies[read.NextPolicy], nextstep.Object{"analysisId": plan.ID, "offset": offset}, observation, false)
+	}
+	assertStep := func(next nextstep.Object, taskID string) {
+		t.Helper()
+		args, _ := next["arguments"].(nextstep.Object)
+		if next["action"] != "CALL_TOOL" || next["tool"] != "source.analysis.step" || args["taskId"] != taskID || !nextstep.CheckedOwnerCall(next) {
+			t.Fatal("unexpected next task", next)
+		}
+	}
+	assertStep(readPage(0, 3), independent)
+	if task, err := c.Step(ctx, identity, plan.ID, independent); err != nil || task.State != "SUCCEEDED" || owner.calls != 2 {
+		t.Fatal(task, err, owner.calls)
+	}
+	for _, offset := range []int{0, 1} {
+		next := readPage(offset, 2)
+		wait, _ := next["arguments"].(nextstep.Object)
+		token, _ := wait["waitRef"].(string)
+		resume, _ := wait["resumeArguments"].(nextstep.Object)
+		ref, err := signer.Open(token, engine.Binding)
+		if err != nil || next["tool"] != "ouf.wait" || !ref.RestoreArgs(resume) || ref.Read != "source.analysis.step" ||
+			ref.Args["taskId"] != first || ref.NotBefore != a.NotBefore.UTC().Format(time.RFC3339Nano) {
+			t.Fatal("missing predecessor wait", offset, next, ref, err)
+		}
+	}
+	if task, err := c.Step(ctx, identity, plan.ID, first); err != nil || task.State != "WAITING" || owner.calls != 2 {
+		t.Fatal("premature owner call", task, err, owner.calls)
+	}
+	now = a.NotBefore
+	assertStep(readPage(0, 2), first)
+	assertStep(readPage(1, 2), first)
+
+	// Age only this fixture's persisted clocks, leaving PostgreSQL's claim
+	// clock authoritative and avoiding a real 72-second deadline.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `update ouf_mcp.tool_attempt set owner_due=transaction_timestamp() where attempt_id=$1`, a.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `update ouf_mcp.analysis_owner_due set not_before=transaction_timestamp() where analysis_id=$1 and request_id=$2`, plan.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `update ouf_mcp.profile_analysis_task set task=jsonb_set(task,'{notBefore}',to_jsonb(transaction_timestamp()))
+		where analysis_id=$1 and task_id=$2`, plan.ID, first); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a, err = c.Step(ctx, identity, plan.ID, first)
+	if err != nil || a.State != "SUCCEEDED" || owner.calls != 3 {
+		t.Fatal("predecessor did not resume", a, err, owner.calls)
+	}
+	reopened, err := c.Read(ctx, identity, plan.ID, 1, 1)
+	if err != nil || len(reopened.Tasks) != 1 || reopened.Tasks[0].Predecessor != nil || reopened.Tasks[0].NotBefore.Sub(a.CompletedAt) != 31*time.Second {
+		t.Fatal("successor lost its normal pacing", reopened, err)
+	}
+	now = a.CompletedAt.Add(31 * time.Second)
+	assertStep(readPage(1, 1), second)
 }

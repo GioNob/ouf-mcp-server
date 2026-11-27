@@ -107,7 +107,7 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		}
 	}()
 	page := view == "SUMMARY"
-	result, err := store.ReadSummary(ctx, scope, id, checksum, pos, page)
+	result, err := store.ReadSummary(analysis.WithOwnerObservationKey(ctx, c.Service.FingerprintKey), scope, id, checksum, pos, page)
 	if err != nil {
 		return s.summaryFailure(ctx, err, id)
 	}
@@ -218,8 +218,8 @@ func recordAnalysisRead(ctx context.Context, service *orchestration.Service, sna
 		return nil
 	}
 	obs, observed := result.Meta["ouf/ownerObservation"].(orchestration.OwnerObservation)
-	if !observed {
-		return nil // Pre-dispatch refusals have no owner observation.
+	if !observed || obs.At.IsZero() {
+		return nil // An admission refusal can carry an existing clock without new evidence.
 	}
 	store, ok := service.Admission.(analysis.SummaryStore)
 	if !ok {

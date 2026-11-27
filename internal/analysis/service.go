@@ -25,6 +25,43 @@ type Coordinator struct {
 	PreviewPageSize         int
 }
 
+type ownerObservationKeyContext struct{}
+type publicObservationContext struct{}
+type publicObservation struct{ selector, legacySelector, request string }
+
+// DiscoveryObservationSelector derives a selector without passing the key to storage.
+func DiscoveryObservationSelector(ctx context.Context, request string) string {
+	key, _ := ctx.Value(ownerObservationKeyContext{}).([]byte)
+	if len(key) == 0 {
+		return ""
+	}
+	return orchestration.DiscoveryObservationSelector(key, request)
+}
+
+var ErrObservationInterval = errors.New("OBSERVATION_INTERVAL")
+
+// WithPublicObservation binds a public discovery read to its saved clock.
+func WithPublicObservation(ctx context.Context, selector, legacySelector, request string) context.Context {
+	return context.WithValue(ctx, publicObservationContext{}, publicObservation{selector: selector, legacySelector: legacySelector, request: request})
+}
+
+func PublicObservation(ctx context.Context) (selector, legacySelector, request string) {
+	ref, _ := ctx.Value(publicObservationContext{}).(publicObservation)
+	return ref.selector, ref.legacySelector, ref.request
+}
+
+func (c Coordinator) withOwnerObservationKey(ctx context.Context) context.Context {
+	if c.Service == nil || len(c.Service.FingerprintKey) == 0 {
+		return ctx
+	}
+	return WithOwnerObservationKey(ctx, c.Service.FingerprintKey)
+}
+
+// WithOwnerObservationKey lets a plan or summary read derive observation selectors.
+func WithOwnerObservationKey(ctx context.Context, key []byte) context.Context {
+	return context.WithValue(ctx, ownerObservationKeyContext{}, key)
+}
+
 func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, cap manifest.Capability) error {
 	_, err := c.authorization(ctx, i, cap)
 	return err
@@ -97,6 +134,7 @@ func (e *PlanEpochError) Error() string { return ErrEpochChanged.Error() }
 func (e *PlanEpochError) Unwrap() error { return ErrEpochChanged }
 
 func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, profile string, expected int64, work []Work) (View, error) {
+	ctx = c.withOwnerObservationKey(ctx)
 	epoch, e := c.Epoch(ctx, i)
 	if e != nil {
 		return View{}, e
@@ -107,6 +145,11 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	}
 	if uuid.Validate(asset) != nil || uuid.Validate(profile) != nil || len(work) < 1 || len(work) > MaxPlanBatch {
 		return View{}, ErrInvalid
+	}
+	for _, w := range work {
+		if err := validateDiscoveryArguments(w); err != nil {
+			return View{}, err
+		}
 	}
 	// The owner contract makes profile IDs immutable. Reuse the previously
 	// verified metadata for later plan batches, retaining current authorization.
@@ -124,6 +167,7 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	}
 	var intent string
 	if c.CommandKey != "" {
+		// Existing receipts hash the submitted work, including UUID spelling.
 		intent = Digest([]any{asset, profile, expected, work})
 		if receipts, ok := c.Store.(interface {
 			LookupPlanCommand(context.Context, Scope, string, string, string) (View, bool, error)
@@ -291,7 +335,7 @@ func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id stri
 	if e != nil {
 		return View{}, e
 	}
-	v, err := c.Store.ReadAnalysis(ctx, IdentityScope(i), id, checksum, offset, limit)
+	v, err := c.Store.ReadAnalysis(c.withOwnerObservationKey(ctx), IdentityScope(i), id, checksum, offset, limit)
 	if err == nil {
 		err = c.CheckPublishedScope(ctx, i, v.Visibility)
 		if errors.Is(err, ErrScope) && errors.Is(c.CheckEpoch(ctx, i, v.Epoch), ErrEpochChanged) {
@@ -332,12 +376,12 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 			return Task{}, e
 		}
 	}
-	task, e := c.Store.ClaimAnalysisTask(ctx, scope, id, taskID, checksum)
+	task, e := c.Store.ClaimAnalysisTask(c.withOwnerObservationKey(ctx), scope, id, taskID, checksum)
 	if e != nil {
 		return Task{}, e
 	}
 	if task.State != "RUNNING" || task.Fence == "" {
-		return task, nil
+		return c.withAnalysisSuccessor(ctx, scope, id, checksum, task), nil
 	}
 	start := time.Now()
 	dispatchKey := "analysis:" + Digest([]any{id, task.ID, task.Attempts})
@@ -442,15 +486,34 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 	// Reconciliation has its own bounded context. A disconnected MCP client must
 	// not erase an already observed outcome; a failed write leaves a fenced hold.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
 	finished, err := c.Store.FinishAnalysisTask(finishCtx, scope, id, taskID, task.Fence, f)
-	if err == nil && (errors.Is(callErr, orchestration.ErrUnauthorized) || errors.Is(callErr, ErrEpochChanged)) {
+	cancel()
+	if err != nil {
+		return finished, err
+	}
+	if errors.Is(callErr, orchestration.ErrUnauthorized) || errors.Is(callErr, ErrEpochChanged) {
 		return finished, callErr
 	}
-	if err == nil && r.Problem != nil && r.Problem.Status == http.StatusForbidden && f.State == "HELD" && f.Code != "RETRY_BUDGET_EXHAUSTED" {
+	if r.Problem != nil && r.Problem.Status == http.StatusForbidden && f.State == "HELD" && f.Code != "RETRY_BUDGET_EXHAUSTED" {
 		return finished, &OwnerDenial{ReasonCode: f.Code, CapabilityID: cap.RequiredAuthorization, PolicyVersion: f.PolicyVersion}
 	}
-	return finished, err
+	return c.withAnalysisSuccessor(ctx, scope, id, checksum, finished), nil
+}
+
+func (c Coordinator) withAnalysisSuccessor(ctx context.Context, scope Scope, id, manifest string, task Task) Task {
+	if task.Tool != "semantic.discovery.status" || task.State != "SUCCEEDED" {
+		return task
+	}
+	// Start a fresh read budget once the outcome (or replay read) is committed.
+	readCtx, cancel := context.WithTimeout(ctx, time.Duration(task.MaxTimeMS)*time.Millisecond)
+	defer cancel()
+	successor, err := c.Store.ReadAnalysisSuccessor(c.withOwnerObservationKey(readCtx), scope, id, manifest, task)
+	if err != nil {
+		task.SuccessorUnavailable = true
+	} else {
+		task.Successor = successor
+	}
+	return task
 }
 
 func PermissionReasons() []string {

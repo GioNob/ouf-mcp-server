@@ -27,6 +27,7 @@ const DefaultWaitMaxSeconds = 3600
 
 type Engine struct {
 	Observed            orchestration.OwnerObservation
+	AnalysisSuccessor   *analysis.TaskResume
 	SavedObservation    func(string, Object) (orchestration.OwnerObservation, error)
 	Signer              *Signer
 	Binding             []byte
@@ -101,6 +102,14 @@ func incompleteColumn(obs Object) Object {
 	return nil
 }
 
+func resumablePlanTask(item any) Object {
+	task, _ := item.(Object)
+	if predecessor, blocked := task["predecessor"].(Object); blocked {
+		return predecessor
+	}
+	return task
+}
+
 func get(obs, input Object, paths string) any {
 	switch paths {
 	case "executionProposalRequired":
@@ -139,7 +148,7 @@ func get(obs, input Object, paths string) any {
 	case "#readyTask", "#timedTask":
 		tasks, _ := obs["tasks"].([]any)
 		for _, item := range tasks {
-			task, _ := item.(Object)
+			task := resumablePlanTask(item)
 			switch task["state"] {
 			case "PLANNED", "READY", "PENDING":
 				if paths == "#readyTask" {
@@ -174,6 +183,9 @@ func get(obs, input Object, paths string) any {
 		terminal := true
 		for _, item := range tasks {
 			task, _ := item.(Object)
+			if paths == "#resumeTask" {
+				task = resumablePlanTask(item)
+			}
 			switch task["state"] {
 			case "COMPLETED", "SUCCEEDED":
 				continue
@@ -349,6 +361,15 @@ func (e Engine) Evaluate(c manifest.Capability, policy manifest.Policy, input, o
 	}
 	next := e.evaluate(c, policy, input, obs, failed)
 	return ensureProgress(c.ToolName, input, e.ownerNext(next, policy.Read, obs))
+}
+
+func (e Engine) AnalysisSuccessorFallback(id string) Object {
+	const tool = "source.analysis.read"
+	args := Object{"analysisId": id}
+	if e.Valid == nil || !e.Valid(tool, args) {
+		return ManualBlock("ANALYSIS_OBSERVATION", "Verifica il riferimento al piano.", "OPERATOR")
+	}
+	return e.ownerCall("ANALYSIS_OBSERVATION", tool, args, nil)
 }
 
 // Compare decoded JSON numbers by value, including 1, 1.0 and 1e0.
@@ -589,6 +610,14 @@ func (e Engine) evaluate(c manifest.Capability, policy manifest.Policy, input, o
 	if failed {
 		return e.failure(c, policy, input, obs)
 	}
+	if c.ToolName == "source.analysis.step" && e.AnalysisSuccessor != nil {
+		rule := manifest.Rule{Tool: c.ToolName, Args: map[string]string{"analysisId": "@analysisId", "taskId": "@taskId", "commandKey": "#uuid"}}
+		args := e.project(rule, obs, Object{"analysisId": input["analysisId"], "taskId": e.AnalysisSuccessor.ID})
+		if e.Valid == nil || !e.Valid(c.ToolName, args) {
+			return ManualBlock("PLANNED_STEP", "Verifica i riferimenti del prossimo compito nel piano.", "OPERATOR")
+		}
+		return call("CALL_TOOL", "PLANNED_STEP", c.ToolName, args)
+	}
 	if c.ToolName == onboardingRead && input["view"] == "LATEST" {
 		if next := e.afterDraftRecoveryRead(input, obs); next != nil {
 			return next
@@ -748,6 +777,9 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 	}
 	args := next["arguments"].(Object)
 	tool, _ := next["tool"].(string)
+	if successor := e.AnalysisSuccessor; successor != nil && tool == "source.analysis.step" && args["taskId"] == successor.ID {
+		obs = Object{"notBefore": successor.NotBefore.UTC().Format(time.RFC3339Nano), "state": successor.State}
+	}
 	ownerReason, _ := obs["ownerDueReason"].(string)
 	if e.Observed.Reason != "" {
 		ownerReason = e.Observed.Reason
@@ -774,7 +806,7 @@ func (e Engine) ownerNext(next Object, read string, obs Object) Object {
 		// A plan may select one task from a page of independent clocks.
 		tasks, _ := obs["tasks"].([]any)
 		for _, item := range tasks {
-			task, _ := item.(Object)
+			task := resumablePlanTask(item)
 			if task["taskId"] != nil && task["taskId"] == args["taskId"] {
 				due, valid = orchestration.OwnerDue(task, now, due, "")
 				break

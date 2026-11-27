@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+func TestDiscoveryObservationSelectorCanonicalizesUUID(t *testing.T) {
+	key := make([]byte, 32)
+	const request = "abcdef01-2345-4abc-8def-0123456789ab"
+	const original = "ABCDEF01-2345-4ABC-8DEF-0123456789AB"
+	want := DiscoveryObservationSelector(key, request)
+	legacy := observationHMAC(key, "ouf.semantic.discovery.status", map[string]any{"requestId": original})
+	for _, capability := range []string{"ouf.semantic.discovery.status", "ouf.semantic.discovery.candidates"} {
+		args := []byte(`{"requestId":"` + original + `","includeState":true}`)
+		got, historical, canonical := observationReference(key, capability, "READ", args)
+		if got == "" || got != want || canonical != request || historical != legacy || historical == got ||
+			observationSelector(key, capability, "READ", args) != got {
+			t.Fatal(capability, got, historical, canonical)
+		}
+		if _, _, canonical := observationReference(key, capability, "READ", []byte(`{"requestId":"legacy"}`)); canonical != "" {
+			t.Fatal("invalid UUID was used for a plan lookup", canonical)
+		}
+	}
+}
+
 func TestOwnerDueLatestBoundSurvivesReceiptReplay(t *testing.T) {
 	start := time.Unix(1800000000, 0).UTC()
 	now := start.Add(10 * time.Second)

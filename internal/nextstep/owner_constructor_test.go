@@ -41,6 +41,15 @@ func init() {
 		return e.Evaluate(manifest.Capability{ToolName: "source.analysis.read"}, p, Object{"analysisId": "analysis"},
 			Object{"tasks": []any{Object{"taskId": "task", "state": "READY"}}}, false)
 	}})
+	registerOwnerProducer(Engine.Evaluate, ownerProducerCase{"source.analysis.step", func(e Engine) Object {
+		e.AnalysisSuccessor = &analysis.TaskResume{ID: "successor", State: "READY"}
+		e.CommandKey = func(string, Object, Object, Object) string { return "key" }
+		return e.Evaluate(manifest.Capability{ToolName: "source.analysis.step"}, manifest.Policy{},
+			Object{"analysisId": "analysis", "taskId": "predecessor"}, Object{"state": "SUCCEEDED"}, false)
+	}})
+	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+		return e.AnalysisSuccessorFallback("analysis")
+	}})
 	registerOwnerProducer(Engine.SummaryNext,
 		ownerProducerCase{"source.analysis.read", func(e Engine) Object {
 			return e.SummaryNext("analysis", "SUMMARY", "cursor", analysis.Summary{})
