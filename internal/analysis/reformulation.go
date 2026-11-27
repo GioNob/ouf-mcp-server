@@ -3,12 +3,36 @@ package analysis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
+
+const MaxColumnReformulations = 7
+
+var ErrReformulationTermTooLong = errors.New("REFORMULATION_TERM_TOO_LONG")
+var ErrReformulationExhausted = errors.New("REFORMULATION_BUDGET_EXHAUSTED")
+
+type ReformulationBudgetError struct {
+	AnalysisID string
+	RequestID  string
+}
+
+func (e *ReformulationBudgetError) Error() string { return ErrReformulationExhausted.Error() }
+func (e *ReformulationBudgetError) Unwrap() error { return ErrReformulationExhausted }
+
+func ValidateReformulationIntent(intent string) error {
+	if len(strings.Fields(intent)) > 3 {
+		return ErrReformulationTermTooLong
+	}
+	if !UsableColumnName(intent) {
+		return ErrInvalid
+	}
+	return nil
+}
 
 // The request is a compare-and-swap token for this column's current discovery.
 type Reformulation struct {
@@ -30,7 +54,7 @@ func (c Coordinator) Reformulate(ctx context.Context, i orchestration.Identity, 
 	ctx = c.withOwnerObservationKey(ctx)
 	k, err := uuid.Parse(key)
 	if ValidateID(source) != nil || err != nil || k.Version() != 4 || k.String() != key || !CanonicalUUID(r.RequestID) ||
-		r.Column < 0 || r.Column >= 1024 || !UsableColumnName(r.Intent) || limit < 0 || limit > 16 {
+		r.Column < 0 || r.Column >= 1024 || !UsableColumnName(r.Intent) || limit < 0 || limit > MaxColumnReformulations {
 		return View{}, ErrInvalid
 	}
 	checksum, _, err := c.SummaryAccess(ctx, i)
@@ -65,6 +89,9 @@ func reformulatedTask(p Plan, m *manifest.Snapshot, previous Task, r Reformulati
 	var args map[string]any
 	if previous.Tool != "semantic.discovery.request" || previous.State != "SUCCEEDED" || json.Unmarshal(previous.Arguments, &args) != nil || args == nil {
 		return Task{}, ErrReplanState
+	}
+	if err := ValidateReformulationIntent(r.Intent); err != nil {
+		return Task{}, err
 	}
 	old, _ := args["intent"].(string)
 	if strings.EqualFold(strings.TrimSpace(old), strings.TrimSpace(r.Intent)) {

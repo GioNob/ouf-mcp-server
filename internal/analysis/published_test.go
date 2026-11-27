@@ -88,29 +88,48 @@ func TestPublishedPackingAndCrossPageOrdinals(t *testing.T) { // MCP-50T-03
 	}
 }
 
-func TestPublishedLookupAndAuthoredDiscoveryForSameHeader(t *testing.T) {
+func TestPublishedResidualUsesVerifiedPreviewHeader(t *testing.T) {
 	scope, profile, m := fixture(t, 2)
-	work := []Work{{Tool: "semantic.discovery.request", PreviewName: "ente_gestore", Columns: []int{0},
-		Arguments: json.RawMessage(`{"intent":"Ente responsabile della gestione","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)}}
-	plan, err := BuildPublished(scope, profile, m, []string{"ente_gestore", "ente_gestore"}, work, "test", 0)
+	const description = "Indirizzo postale della sede del teatro"
+	work := []Work{{Tool: "semantic.discovery.request", PreviewName: "indirizzo", Columns: []int{0},
+		Arguments: json.RawMessage(`{"intent":"` + description + `","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)}}
+	plan, err := BuildPublished(scope, profile, m, []string{"indirizzo", "indirizzo"}, work, "test", 0)
 	if err != nil || len(plan.Tasks) != 1 {
 		t.Fatal(plan, err)
 	}
 	parent := plan.Tasks[0]
 	var batch Batch
-	if err = json.Unmarshal(parent.Arguments, &batch); err != nil || len(batch.Intents) != 1 || batch.Intents[0].Text != "ente_gestore" {
+	if err = json.Unmarshal(parent.Arguments, &batch); err != nil || len(batch.Intents) != 1 || batch.Intents[0].Text != "indirizzo" {
 		t.Fatal(batch, err)
 	}
-	children := parent.ResidualTasks(plan.ID, batch.Intents[0], false)
-	if len(children) != 2 || children[0].OwnerKey == children[1].OwnerKey {
+	if parent.DiscoveryText[0] != description {
+		t.Fatal(parent.DiscoveryText)
+	}
+	intent := batch.Intents[0]
+	result := fmt.Appendf(nil, `{"contract":%q,"results":[{"intentId":%q,"state":"NONE","hasMore":false,"hits":[]}]}`, BatchContract, intent.ID)
+	if rows, ok := AcceptedBatch(parent, result); !ok || rows[0].State != "NONE" {
+		t.Fatal(rows, ok)
+	}
+	children := parent.ResidualTasks(plan.ID, intent, false)
+	if len(children) != 1 || !slices.Equal(children[0].Columns, []int{0, 1}) {
 		t.Fatal(children)
 	}
-	for n, want := range []string{"Ente responsabile della gestione", "ente_gestore"} {
-		var args struct{ Intent string }
-		if !slices.Equal(children[n].Columns, []int{n}) || json.Unmarshal(children[n].Arguments, &args) != nil || args.Intent != want {
-			t.Fatal(children[n], want)
-		}
+	var args struct{ Intent, IdempotencyKey string }
+	wantKey := "analysis:" + Digest([]string{plan.ID, intent.ID})
+	if err := json.Unmarshal(children[0].Arguments, &args); err != nil || args.Intent != "indirizzo" || args.IdempotencyKey != wantKey || children[0].OwnerKey != wantKey {
+		t.Fatal(args, children[0].OwnerKey, err)
 	}
+
+	t.Run("replan from a stored descriptive residual", func(t *testing.T) {
+		legacy := intent
+		legacy.Text = description
+		legacy.ID = Digest([]string{intent.ID, description})
+		old := ResidualTask(plan.ID, legacy, []int{0}, MaxResultBytes, false)
+		fresh := Plan{ID: AnalysisID(scope, profile, "new-epoch"), Profile: profile, Headers: plan.Headers}
+		if err := cloneInputs(&fresh, []Task{parent, old}, m, plan.ID); err != nil || len(fresh.Tasks) != 1 || fresh.Tasks[0].ID != parent.ID {
+			t.Fatal(fresh.Tasks, err)
+		}
+	})
 }
 
 func TestPublishedWholeBatchErrors(t *testing.T) { // MCP-50T-04
@@ -194,7 +213,7 @@ func TestPublishedScopeAndUnavailableDatatype(t *testing.T) { // MCP-50T-02, MCP
 		{Tool: "semantic.discovery.request", Columns: []int{0}, Arguments: json.RawMessage(`{"intent":"fixture","preferredLanguages":["it"],"requestedArtifactType":"DATATYPE"}`)},
 		{Tool: "semantic.discovery.request", Columns: []int{1}, Arguments: json.RawMessage(`{"intent":"fixture","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)},
 	}
-	p, err := buildWithoutBatch(scope, profile, m, 0, work)
+	p, err := buildWithoutBatch(scope, profile, m, nil, 0, work)
 	if err != nil || len(p.Tasks) != 2 {
 		t.Fatal(p, err)
 	}

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 
@@ -47,13 +48,13 @@ const reformulationColumns = `select c.ordinal,c.task_id,coalesce(history.used,0
 	where p0.analysis_id=$1 and p0.service_principal_id=$2 and p0.principal_id=$3 and p0.tenant_id=$4
 	 and p0.manifest_checksum=any($5::char(64)[]) and c.request_id=$6 and c.task_id is not null
 	 and c.empty_candidate_page and c.outcome->>'reasonCode' in ('DISCOVERY_DECISION_REQUIRED','DISCOVERY_EVIDENCE_UNAVAILABLE')
-	 and coalesce(history.used,0)<$7 and coalesce(pub.stop_reason,'')=''
+	 and coalesce(pub.stop_reason,'')=''
 	 and not (select integrity_hold from ouf_mcp.analysis_counts where analysis_id=p0.analysis_id order by seq desc limit 1)`
 
 func (s *Store) ReformulationColumn(ctx context.Context, scope analysis.Scope, id, checksum, request string, limit int) (int, bool, error) {
 	var ordinal, used int
 	var task string
-	err := s.pool.QueryRow(ctx, reformulationColumns+" order by c.ordinal limit 1",
+	err := s.pool.QueryRow(ctx, reformulationColumns+" and coalesce(history.used,0)<$7 order by c.ordinal limit 1",
 		id, scope.Service, scope.Principal, scope.Tenant, manifest.AnalysisManifests(checksum), request, limit).Scan(&ordinal, &task, &used)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
@@ -101,11 +102,24 @@ func reservePlanReformulations(ctx context.Context, tx pgx.Tx, p analysis.Plan, 
 				if err != nil {
 					return err
 				}
-				used[n]++
 				if !ok {
 					// Roll back the entire normal plan, including prior ordinal charges.
-					return analysis.ErrConflict
+					refusal := &analysis.ReformulationBudgetError{AnalysisID: p.ID}
+					err := tx.QueryRow(ctx, `select coalesce((select request_id::text
+						from ouf_mcp.analysis_column where analysis_id=$1 and ordinal=$2),'')`, p.ID, n).Scan(&refusal.RequestID)
+					if err != nil {
+						return err
+					}
+					return refusal
 				}
+				var args struct{ Intent string }
+				if json.Unmarshal(t.Arguments, &args) != nil {
+					return analysis.ErrInvalid
+				}
+				if err := analysis.ValidateReformulationIntent(args.Intent); err != nil {
+					return err
+				}
+				used[n]++
 			}
 			counts[n]++
 		}
@@ -136,7 +150,7 @@ func profileUsage(ctx context.Context, tx pgx.Tx, p analysis.Plan) (map[int]int,
 }
 
 func takeReformulation(ctx context.Context, tx pgx.Tx, p analysis.Plan, ordinal, previouslyUsed, limit int) (bool, error) {
-	if previouslyUsed >= limit || limit > 16 {
+	if previouslyUsed >= limit || limit > analysis.MaxColumnReformulations {
 		return false, nil
 	}
 	tag, err := tx.Exec(ctx, `insert into ouf_mcp.analysis_reformulation_budget as b
@@ -162,13 +176,16 @@ func (s *Store) Reformulate(ctx context.Context, p analysis.Plan, r analysis.Ref
 		}
 		var ordinal, used int
 		var taskID string
-		err = tx.QueryRow(ctx, reformulationColumns+" and c.ordinal=$8", p.ID, p.Scope.Service, p.Scope.Principal,
-			p.Scope.Tenant, manifest.AnalysisManifests(p.Manifest), r.RequestID, limit, r.Column).Scan(&ordinal, &taskID, &used)
+		err = tx.QueryRow(ctx, reformulationColumns+" and c.ordinal=$7", p.ID, p.Scope.Service, p.Scope.Principal,
+			p.Scope.Tenant, manifest.AnalysisManifests(p.Manifest), r.RequestID, r.Column).Scan(&ordinal, &taskID, &used)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return out, analysis.ErrReplanState
 		}
 		if err != nil {
 			return out, err
+		}
+		if used >= limit {
+			return out, analysis.ErrReformulationExhausted
 		}
 		previous, err := readAnalysisTask(ctx, tx, p.ID, taskID)
 		if err != nil {

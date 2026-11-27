@@ -147,6 +147,14 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			if errors.As(err, &epoch) {
 				return workflowError(map[string]any{"code": epoch.Error(), "analysisId": epoch.AnalysisID, "retryable": false}), nil, nil
 			}
+			var budget *analysis.ReformulationBudgetError
+			if errors.As(err, &budget) {
+				body := map[string]any{"code": budget.Error(), "analysisId": budget.AnalysisID, "retryable": false}
+				if budget.RequestID != "" {
+					body["requestId"] = budget.RequestID
+				}
+				return workflowError(body), nil, nil
+			}
 			if errors.Is(err, orchestration.ErrUnauthorized) {
 				return governedCallErrorResult(err), nil, nil
 			}

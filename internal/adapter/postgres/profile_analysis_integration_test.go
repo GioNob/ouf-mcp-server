@@ -206,6 +206,82 @@ func coordinatorFixture(t *testing.T, n int) (context.Context, *Store, analysis.
 	service := &orchestration.Service{RequireDelegation: true, Auth: a, Admission: s, Gateway: g, FingerprintKey: make([]byte, 32)}
 	return ctx, s, analysis.Coordinator{Store: s, Service: service, Manifest: m}, orchestration.Identity{ServicePrincipalID: scope.Service, PrincipalID: scope.Principal, TenantID: scope.Tenant, ActorType: "HUMAN", Delegation: "fixture-memory-only"}, a, g, p
 }
+
+func TestInitialDiscoveryUsesVerifiedHeaderWithoutPublishedBatch(t *testing.T) {
+	for _, state := range []string{"INACTIVE", "ABSENT"} {
+		t.Run(state, func(t *testing.T) {
+			ctx, db, c, identity, _, _, profile := coordinatorFixture(t, 1)
+			for n, capability := range c.Manifest.Capabilities {
+				if capability.ToolName == analysis.BatchTool {
+					if state == "INACTIVE" {
+						c.Manifest.Capabilities[n].PublicationState = state
+					} else {
+						c.Manifest.Capabilities = append(c.Manifest.Capabilities[:n], c.Manifest.Capabilities[n+1:]...)
+					}
+					break
+				}
+			}
+			sum, err := c.Manifest.Checksum()
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := c.Manifest.CanonicalPayload()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = db.EnsureManifest(ctx, sum, c.Manifest.Version, "mcp-manifest-v1", payload); err != nil {
+				t.Fatal(err)
+			}
+
+			const header, description = "tipologia", "Tipo di soggetto che gestisce la strada"
+			work := []analysis.Work{{Tool: "semantic.discovery.request", Columns: []int{0}, PreviewName: header,
+				Arguments: json.RawMessage(fmt.Sprintf(`{"intent":%q,"preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`, description))}}
+			view, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, work)
+			if err != nil || len(view.Tasks) != 1 {
+				t.Fatal(view, err)
+			}
+			scope := analysis.IdentityScope(identity)
+			task, err := db.ReadAnalysisTask(ctx, scope, view.ID, view.Tasks[0].ID, sum)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var args struct{ Intent, IdempotencyKey string }
+			wantKey := "analysis:" + analysis.Digest([]any{view.ID, work[0].Tool, map[string]any{
+				"intent": header, "preferredLanguages": []string{"it"}, "requestedArtifactType": "PROPERTY",
+			}})
+			if err := json.Unmarshal(task.Arguments, &args); err != nil || args.Intent != header ||
+				args.IdempotencyKey != wantKey || task.DiscoveryText[0] != description {
+				t.Fatal(task, args, err)
+			}
+
+			predecessor := manifest.AnalysisPredecessor(sum)
+			rollback, err := db.ReadAnalysis(ctx, scope, view.ID, predecessor, 0, 1)
+			if predecessor == "" || err != nil || rollback.ID != view.ID {
+				t.Fatal(predecessor, rollback, err)
+			}
+		})
+	}
+}
+
+func TestPublishedPlanIsReadableWithRollbackManifest(t *testing.T) {
+	ctx, db, c, identity, _, _, profile := coordinatorFixture(t, 1)
+	work := []analysis.Work{{Tool: "semantic.discovery.request", Columns: []int{0},
+		Arguments: json.RawMessage(`{"intent":"tipologia","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)}}
+	view, err := c.Plan(ctx, identity, profile.AssetID, profile.ProfileID, 0, work)
+	if err != nil || view.Seed == "" {
+		t.Fatal(view, err)
+	}
+	checksum, err := c.Manifest.Checksum()
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor := manifest.AnalysisPredecessor(checksum)
+	rollback, err := db.ReadAnalysis(ctx, analysis.IdentityScope(identity), view.ID, predecessor, 0, 1)
+	if predecessor == "" || err != nil || rollback.ID != view.ID {
+		t.Fatal(predecessor, rollback, err)
+	}
+}
+
 func TestProfileAnalysisActualExecutionResumeAuthorizationAndWindowWait(t *testing.T) {
 	ctx, s, c, i, a, g, p := coordinatorFixture(t, 100)
 	work := []analysis.Work{}

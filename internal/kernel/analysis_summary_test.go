@@ -20,6 +20,7 @@ func TestSummaryLimitsAndErrors(t *testing.T) {
 		{"OUF_ANALYSIS_PREVIEW_PAGE_SIZE", "0"}, {"OUF_ANALYSIS_PREVIEW_PAGE_SIZE", "129"},
 		{"OUF_ANALYSIS_SUMMARY_PAGE_BYTES", "4095"}, {"OUF_ANALYSIS_SUMMARY_PAGE_BYTES", "1048577"},
 		{"OUF_ANALYSIS_CURSOR_SECONDS", "0"}, {"OUF_ANALYSIS_CURSOR_SECONDS", "86401"},
+		{"OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS", "8"},
 	} {
 		t.Run(test.key+test.value, func(t *testing.T) {
 			t.Setenv(test.key, test.value)

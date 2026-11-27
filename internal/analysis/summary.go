@@ -35,7 +35,7 @@ type Limits struct {
 func SummaryLimits(m *manifest.Snapshot) (Limits, error) {
 	c, ok := Find(m, "source.analysis.read")
 	var l Limits
-	if !ok || json.Unmarshal(c.OperationalLimits, &l) != nil || l.MaxColumnReformulations < 0 || l.MaxColumnReformulations > 16 ||
+	if !ok || json.Unmarshal(c.OperationalLimits, &l) != nil || l.MaxColumnReformulations < 0 || l.MaxColumnReformulations > MaxColumnReformulations ||
 		l.PreviewPageSize < 1 || l.PreviewPageSize > 128 ||
 		l.SummaryPageBytes < 4096 || l.SummaryPageBytes > 1<<20 || l.SummaryCursorSeconds < 1 || l.SummaryCursorSeconds > 86400 {
 		return Limits{}, ErrInvalid

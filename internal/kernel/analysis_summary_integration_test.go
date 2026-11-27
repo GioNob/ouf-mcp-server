@@ -123,7 +123,7 @@ func TestLostEmptyCandidateDecisionResumesFromStatus(t *testing.T) {
 			}
 			switch choice {
 			case "source.analysis.plan":
-				args["intent"] = "Identificatore comunale della via"
+				args["intent"] = "Codice strada comunale"
 			case "semantic.propose":
 				maps.Copy(args, nextstep.Object{"semanticId": "ouf:test:Place", "artifactType": "CLASS", "namespace": "ouf",
 					"localName": "Place", "ownerRef": "owner", "authorityRef": "authority", "semanticVersion": "1.0.0",

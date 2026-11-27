@@ -78,6 +78,7 @@ func cloneInputs(p *Plan, inputs []Task, m *manifest.Snapshot, source string) er
 	// Residual discovery keys include the parent intent (including context).
 	// Recover that association from the batch inputs, including split batches.
 	residuals := map[string]Task{}
+	legacyResiduals := map[string]bool{}
 	split := map[string]bool{}
 	for _, t := range inputs {
 		if t.Tool != BatchTool {
@@ -96,6 +97,15 @@ func cloneInputs(p *Plan, inputs []Task, m *manifest.Snapshot, source string) er
 				fresh := t.ResidualTasks(p.ID, i, fallback)
 				for n, child := range old {
 					residuals[child.ID] = fresh[n]
+				}
+			}
+			for _, n := range t.Groups[i.ID] {
+				if description := t.DiscoveryText[n]; description != "" {
+					legacy := i
+					legacy.Text = description
+					legacy.ID = Digest([]string{i.ID, description})
+					legacyResiduals[ResidualTask(source, legacy, []int{n}, MaxResultBytes, false).ID] = true
+					legacyResiduals[ResidualTask(source, legacy, []int{n}, MaxResultBytes, true).ID] = true
 				}
 			}
 		}
@@ -117,6 +127,11 @@ func cloneInputs(p *Plan, inputs []Task, m *manifest.Snapshot, source string) er
 		if child, ok := residuals[t.ID]; ok {
 			child.AwaitParent = true
 			p.Tasks = append(p.Tasks, child)
+			continue
+		}
+		// The fresh batch can regenerate these children using the header.
+		// Carrying their old descriptive arguments forward would duplicate work.
+		if legacyResiduals[t.ID] {
 			continue
 		}
 		if t.Tool == BatchTool {
