@@ -186,7 +186,7 @@ func bypassesOwnerTiming(site string, n ast.Node) bool {
 		case *ast.Ident:
 			if callee.Name == "alternative" {
 				switch site {
-				case "discovery.go/emptyCandidates", "draft.go/draftCreateDecision", "draft.go/draftFailure",
+				case "discovery.go/discoveryDecisions", "discovery.go/reformulationOption", "draft.go/draftCreateDecision", "draft.go/draftFailure",
 					"draft.go/afterDraftRecoveryRead", "draft.go/installationLimitDecision", "engine.go/failure",
 					"summary.go/SummaryNext", "summary.go/ReplanNext", "summary.go/permissionHold":
 					return false

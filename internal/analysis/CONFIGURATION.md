@@ -4,7 +4,7 @@ Il manifest distribuito contiene i default del profilo T0 in `source.analysis.re
 
 | Parametro | Default | Intervallo e unità |
 |---|---:|---|
-| `OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS` | 2 | 0–16 nuove ricerche per ordinale del profilo e identità. Zero disabilita la riformulazione. Il consumo si ricostruisce dai task di discovery oltre il primo per ordinale. Le copie dello stesso input al cambio di epoca sono contate una volta. La tabella 018 funge da cache. |
+| `OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS` | 7 | 0–7 nuove ricerche per ordinale del profilo e identità, con un intento di 1–3 parole. Zero disabilita la riformulazione. Il consumo si ricostruisce dai task di discovery oltre il primo per ordinale. Le copie dello stesso input al cambio di epoca sono contate una volta. La tabella 018 funge da cache. |
 | `OUF_ANALYSIS_PREVIEW_PAGE_SIZE` | 128 | 1–128 colonne richieste per pagina owner |
 | `OUF_ANALYSIS_SUMMARY_PAGE_BYTES` | 65536 | 4096–1048576 byte, entro il budget del tool |
 | `OUF_ANALYSIS_CURSOR_SECONDS` | 900 | 1–86400 secondi dalla prima pagina, senza rinnovo alla continuazione |

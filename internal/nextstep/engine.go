@@ -930,9 +930,31 @@ func (e Engine) failure(c manifest.Capability, p manifest.Policy, args, obs Obje
 		code = "OWNER_REQUEST_FAILED"
 	}
 	status := fmt.Sprint(get(obs, nil, "Status|status"))
-	if c.ToolName == "source.analysis.plan" && code == analysis.ErrEpochChanged.Error() {
-		if id, ok := obs["analysisId"].(string); ok && analysis.ValidateID(id) == nil {
-			return e.ReplanNext(id, code)
+	if c.ToolName == "source.analysis.plan" {
+		switch code {
+		case analysis.ErrEpochChanged.Error():
+			if id, ok := obs["analysisId"].(string); ok && analysis.ValidateID(id) == nil {
+				return e.ReplanNext(id, code)
+			}
+		case analysis.ErrReformulationTermTooLong.Error():
+			message := "Riprova con un termine di 1–3 parole."
+			var retry Object
+			if args["replanOf"] != nil {
+				retry = Object{"replanOf": args["replanOf"], "requestId": args["requestId"], "column": args["column"], "commandKey": uuid.NewString()}
+			} else {
+				message = "Ripeti il piano con un termine di 1–3 parole in work.arguments.intent per ogni nuova ricerca di una colonna già cercata."
+				retry = Object{"assetId": args["assetId"], "profileId": args["profileId"], "expectedRevision": args["expectedRevision"]}
+				if args["commandKey"] != nil {
+					retry["commandKey"] = uuid.NewString()
+				}
+			}
+			return draftDecision(code, message, []Object{reformulationOption(c.ToolName, retry, code, message)})
+		case analysis.ErrReformulationExhausted.Error():
+			input := Object{"analysisId": args["replanOf"], "requestId": args["requestId"]}
+			if input["analysisId"] == nil {
+				input = Object{"analysisId": obs["analysisId"], "requestId": obs["requestId"]}
+			}
+			return e.discoveryDecisions(input, code, "Hai esaurito i tentativi per questa colonna.", false)
 		}
 	}
 	if id, ok := args["analysisId"].(string); ok && (c.ToolName == "source.analysis.step" || c.ToolName == "source.analysis.read") {

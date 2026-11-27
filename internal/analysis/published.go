@@ -240,14 +240,16 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 			p.Headers[n] = ""
 			continue
 		}
-		// Preview-generated wording describes remote discovery. The verified
-		// original label is the exact published lookup for this ordinal.
-		if ok && i.Text != name && (i.Text == ColumnIntent(name) || previewNames[n] == name) {
-			lookup := i
-			lookup.Text = name
-			if lookup.identify() == nil {
-				discoveryText[n], i = i.Text, lookup
+		// Keep preview wording for review. The verified header drives both
+		// the published lookup and the initial residual discovery.
+		if ok && usesVerifiedHeader(i.Text, previewNames[n], name) {
+			description := i.Text
+			i.Text = name
+			if i.identify() != nil {
+				p.Headers[n] = ""
+				continue
 			}
+			discoveryText[n] = description
 		}
 		if _, seen := columns[i.ID]; !seen {
 			ordered = append(ordered, i)
@@ -280,25 +282,18 @@ func BuildPublished(scope Scope, profile Profile, snapshot *manifest.Snapshot, h
 	return p, nil
 }
 
-// ResidualTasks restores discovery wording after the published lookup.
-// Legacy batches contain only the published intent.
+// ResidualTasks uses the published intent for the initial discovery.
 func (t Task) ResidualTasks(planID string, i Intent, fallback bool) []Task {
-	var tasks []Task
-	byText := map[string]int{}
-	for _, n := range t.Groups[i.ID] {
-		text := t.DiscoveryText[n]
-		if index, ok := byText[text]; ok && !fallback {
-			child := &tasks[index]
-			child.Columns = append(child.Columns, n)
-			continue
-		}
-		remote := i
-		if text != "" {
-			remote.Text = text
-			remote.ID = Digest([]string{i.ID, text})
-		}
-		byText[text] = len(tasks)
-		tasks = append(tasks, ResidualTask(planID, remote, []int{n}, MaxResultBytes, fallback))
+	columns := t.Groups[i.ID]
+	if len(columns) == 0 {
+		return nil
+	}
+	if !fallback {
+		return []Task{ResidualTask(planID, i, slices.Clone(columns), MaxResultBytes, false)}
+	}
+	tasks := make([]Task, 0, len(columns))
+	for _, n := range columns {
+		tasks = append(tasks, ResidualTask(planID, i, []int{n}, MaxResultBytes, true))
 	}
 	return tasks
 }
@@ -349,25 +344,38 @@ func intentOverrides(work []Work, width int) (map[int]Intent, error) {
 
 // Preserve v1 discovery inputs (including their wider intent and type
 // ranges). Contextual T1 inputs still need distinct persisted owner keys.
-func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expected int64, work []Work, epoch ...string) (Plan, error) {
+func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, headers []string, expected int64, work []Work, epoch ...string) (Plan, error) {
+	if !scope.Valid() || !profile.Valid() || expected < 0 || len(work) < 1 || len(work) > MaxPlanBatch ||
+		(len(headers) != 0 && len(headers) != profile.ColumnCount) {
+		return Plan{}, ErrInvalid
+	}
 	checksum, err := m.Checksum()
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{ID: AnalysisID(scope, profile, epoch...), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected}
+	p := Plan{ID: AnalysisID(scope, profile, epoch...), Scope: scope, Profile: profile, Manifest: checksum, ExpectedRevision: expected, Headers: headers}
 	if len(epoch) != 0 {
 		p.Epoch = epoch[0]
 	}
 	var legacy, contextual []Work
+	previewNames := make(map[int]string)
 	for _, w := range work {
 		var i Intent
 		if err := json.Unmarshal(w.Arguments, &i); err != nil {
 			return Plan{}, ErrInvalid
 		}
 		if i.Context == nil && i.Type != "DATATYPE" {
-			legacy = append(legacy, w)
+			if len(w.Arguments) > 8192 || len(w.Columns) < 1 || len(w.Columns) > 1024 {
+				return Plan{}, ErrInvalid
+			}
+			legacy = append(legacy, initialLegacyDiscovery(p.Headers, w, i.Text)...)
 		} else {
 			contextual = append(contextual, w)
+			if w.PreviewName != "" {
+				for _, n := range w.Columns {
+					previewNames[n] = w.PreviewName
+				}
+			}
 		}
 	}
 	overrides, err := intentOverrides(contextual, profile.ColumnCount)
@@ -379,17 +387,24 @@ func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expec
 		if !ok {
 			continue
 		}
+		var description string
+		if n < len(p.Headers) && usesVerifiedHeader(i.Text, previewNames[n], p.Headers[n]) {
+			description, i.Text = i.Text, p.Headers[n]
+		}
 		if err = i.identify(); err != nil {
 			return Plan{}, err
 		}
-		p.Tasks = append(p.Tasks, ResidualTask(p.ID, i, []int{n}, MaxResultBytes, true))
+		task := ResidualTask(p.ID, i, []int{n}, MaxResultBytes, true)
+		if description != "" {
+			task.DiscoveryText = map[int]string{n: description}
+		}
+		p.Tasks = append(p.Tasks, task)
 	}
 	if len(legacy) > 0 {
-		v, err := Build(scope, profile, m, expected, legacy, epoch...)
+		p, err = buildWork(p, m, legacy)
 		if err != nil {
 			return Plan{}, err
 		}
-		p.Tasks = append(p.Tasks, v.Tasks...)
 	}
 	for n := range p.Tasks {
 		p.Tasks[n].Compatibility = "PUBLISHED_BATCH_UNAVAILABLE"
@@ -398,4 +413,46 @@ func buildWithoutBatch(scope Scope, profile Profile, m *manifest.Snapshot, expec
 		}
 	}
 	return p, nil
+}
+
+func usesVerifiedHeader(intent, previewName, header string) bool {
+	return header != "" && intent != "" && intent != header && (intent == ColumnIntent(header) || previewName == header)
+}
+
+func initialLegacyDiscovery(headers []string, w Work, intent string) []Work {
+	if len(headers) == 0 {
+		return []Work{w}
+	}
+	var rewritten []Work
+	var unchanged []int
+	var args map[string]json.RawMessage
+	byHeader := make(map[string]int)
+	for _, n := range w.Columns {
+		if n < 0 || n >= len(headers) || !usesVerifiedHeader(intent, w.PreviewName, headers[n]) {
+			unchanged = append(unchanged, n)
+			continue
+		}
+		header := headers[n]
+		if index, ok := byHeader[header]; ok {
+			rewritten[index].Columns = append(rewritten[index].Columns, n)
+			continue
+		}
+		if args == nil {
+			_ = json.Unmarshal(w.Arguments, &args)
+		}
+		args["intent"], _ = json.Marshal(header)
+		task := w
+		task.Arguments, _ = json.Marshal(args)
+		task.Columns, task.discoveryText = []int{n}, intent
+		byHeader[header] = len(rewritten)
+		rewritten = append(rewritten, task)
+	}
+	if len(rewritten) == 0 {
+		return []Work{w}
+	}
+	if len(unchanged) > 0 {
+		w.Columns = unchanged
+		rewritten = append(rewritten, w)
+	}
+	return rewritten
 }

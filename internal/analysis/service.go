@@ -235,11 +235,13 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 			}
 			return c.Store.ReadAnalysis(ctx, scope, logicalID, checksum, 0, 128)
 		}
-		build := Build
+		var plan Plan
+		var buildErr error
 		if cap, ok := Find(c.Manifest, BatchTool); onlyDiscovery(work) && (!ok || cap.PublicationState == "INACTIVE") {
-			build = buildWithoutBatch
+			plan, buildErr = buildWithoutBatch(scope, retained.Profile, c.Manifest, nil, expected, work, epoch)
+		} else {
+			plan, buildErr = Build(scope, retained.Profile, c.Manifest, expected, work, epoch)
 		}
-		plan, buildErr := build(scope, retained.Profile, c.Manifest, expected, work, epoch)
 		if buildErr != nil {
 			return View{}, buildErr
 		}
@@ -319,15 +321,17 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	if onlyDiscovery(work) && available && batch.PublicationState == "REVOKED" {
 		return View{}, ErrUnavailable
 	}
-	build := Build
+	var plan Plan
 	if onlyDiscovery(work) {
-		build = buildWithoutBatch
+		plan, e = buildWithoutBatch(scope, profilePin, c.Manifest, headers, expected, work, epoch)
+	} else {
+		plan, e = Build(scope, profilePin, c.Manifest, expected, work, epoch)
+		plan.Headers = headers
 	}
-	plan, e := build(IdentityScope(i), profilePin, c.Manifest, expected, work, epoch)
 	if e != nil {
 		return View{}, e
 	}
-	plan.Headers, plan.Onboarding = headers, c.Onboarding
+	plan.Onboarding = c.Onboarding
 	return save(plan)
 }
 func (c Coordinator) Read(ctx context.Context, i orchestration.Identity, id string, offset, limit int) (View, error) {

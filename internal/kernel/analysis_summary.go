@@ -266,7 +266,7 @@ func configuredSummary(snapshot *manifest.Snapshot) (analysis.Limits, error) {
 	l.PreviewPageSize, preview = setting("OUF_ANALYSIS_PREVIEW_PAGE_SIZE", l.PreviewPageSize, 1, 128)
 	l.SummaryPageBytes, bytes = setting("OUF_ANALYSIS_SUMMARY_PAGE_BYTES", l.SummaryPageBytes, 4096, 1<<20)
 	l.SummaryCursorSeconds, ttl = setting("OUF_ANALYSIS_CURSOR_SECONDS", l.SummaryCursorSeconds, 1, 86400)
-	limit, err := setting("OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS", l.MaxColumnReformulations, 0, 16)
+	limit, err := setting("OUF_ANALYSIS_MAX_COLUMN_REFORMULATIONS", l.MaxColumnReformulations, 0, analysis.MaxColumnReformulations)
 	l.MaxColumnReformulations = limit
 	return l, errors.Join(preview, bytes, ttl, err)
 }

@@ -115,6 +115,12 @@
           "arguments": {
             "type": "object"
           },
+          "intentHint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "Indicazione per scegliere il termine da inserire in intent quando si riformula una ricerca."
+          },
           "human": {
             "$ref": "#/properties/human"
           },

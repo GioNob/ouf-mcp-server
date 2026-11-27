@@ -1,5 +1,5 @@
 {
-  "version": "1.19.0-next-discovery-v1",
+  "version": "1.19.1-next-discovery-v1",
   "nextErrors": [
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-", "code": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE"}, "action": "BLOCKED", "reason": "AUTH_GRANT_CONSTRAINTS_INAPPLICABLE", "actor": "AGENT", "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Rimuovi o svuota i vincoli elencati in violations, oppure usa constraints: null. Ripresenta la proposta corretta."}]},
     {"when": {"tool": "authorization.permissions.propose", "applicationRejection": "true", "proposalId": "-"}, "action": "BLOCKED", "reason": "$code", "actor": "AGENT", "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave.", "alternatives": [{"tool": "authorization.permissions.read", "args": {"view": "=ROLES"}, "message": "Rileggi il catalogo dei ruoli."}, {"tool": "authorization.permissions.propose", "copyInput": true, "args": {"commandKey": "#decisionKey"}, "message": "Correggi gli argomenti respinti e ripresenta la proposta con la nuova chiave."}]},
@@ -6908,7 +6908,7 @@
         "maxRetryAttempts": 128,
         "maxRetryElapsedSeconds": 86400
       },
-      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. Column intentHint is advisory preview metadata. Supply a descriptive Italian intent. To reformulate an empty discovery, supply replanOf, requestId, column, intent and a commandKey. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
+      "resultSemantics": "Plan revision and actual progress are durable across conversations. Completed planned calls do not prove discovery completion, a verified mapping or adoption. Saved evidence is historical; current owner validation is required before use. For the initial plan, use column intentHint to supply an Italian description. The first residual discovery uses the verified header. For each reformulation, use a new term of 1–3 words that expresses the concept. To reformulate an empty discovery, supply replanOf, requestId, column, intent and a commandKey. Retry windows are finite; UNKNOWN effects remain held. status observation ordinals are explicit planned polls, sequential and at least 31 seconds apart.",
       "securityNotes": [
         "Execution requires current permissions and available governed owner services",
         "Owned profile is obtained through Onboarding; no caller column count",
@@ -7036,7 +7036,7 @@
         "previewPageSize": 128,
         "summaryPageBytes": 65536,
         "summaryCursorSeconds": 900,
-        "maxColumnReformulations": 2,
+        "maxColumnReformulations": 7,
         "maxColumns": 1024,
         "maxTasks": 16384,
         "maxPlanBatch": 128,

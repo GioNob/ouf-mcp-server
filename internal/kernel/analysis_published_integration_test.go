@@ -266,8 +266,11 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 			}
 			t.Logf("MCP-50T-06 chatbot calls from plan through SUMMARY: %d (%d summary pages)", calls, summaryPages)
 		} else if tc.t1 {
-			if _, ok := owner.jobs["ente gestore"]; !ok {
-				t.Fatal("residual discovery lost the preview wording", owner.jobs)
+			if _, ok := owner.jobs["ente_gestore"]; !ok {
+				t.Fatal("residual discovery did not use the verified header", owner.jobs)
+			}
+			if _, ok := owner.jobs["ente gestore"]; ok {
+				t.Fatal("preview wording reached residual discovery", owner.jobs)
 			}
 			after = calls
 			if matched != 3 || ready != 15 || batches != 1 || jobs != 15 {

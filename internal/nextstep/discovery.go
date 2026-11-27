@@ -12,6 +12,7 @@ import (
 )
 
 const planIntentMessage = "Prima di chiamare source.analysis.plan, usa intentHint per riformulare ogni intent in italiano. Descrivi che cosa rappresenta la colonna senza copiare i valori di esempio."
+const reformulationIntentHint = "Scegli un termine di 1–3 parole. Prova la parola che esprime il concetto, un sinonimo, un concetto più generale o l’equivalente inglese."
 
 func permitsExamples(metadata Object) bool {
 	for _, key := range []string{"redacted", "valuesRedacted", "distinctValuesRedacted"} {
@@ -79,23 +80,31 @@ func intentHint(page, column Object, name string) Object {
 }
 
 func (e Engine) emptyCandidates(input Object) Object {
-	const reason = "DISCOVERY_NO_CANDIDATES"
+	return e.discoveryDecisions(input, "DISCOVERY_NO_CANDIDATES", "La ricerca si è conclusa senza candidati disponibili.", true)
+}
+
+func reformulationOption(tool string, args Object, reason, message string) Object {
+	option := alternative(tool, args, reason, message)
+	option["intentHint"] = reformulationIntentHint
+	return option
+}
+
+func (e Engine) discoveryDecisions(input Object, reason, message string, offerReformulation bool) Object {
 	id, _ := input["analysisId"].(string)
 	request, _ := input["requestId"].(string)
 	options := []Object{}
-	message := "La ricerca si è conclusa senza candidati disponibili."
-	if id == "" {
-		options = append(options, alternative("semantic.discovery.request", Object{"idempotencyKey": uuid.NewString()}, reason, "Riformula l’intento e completa tipo e lingue della nuova discovery."))
-		message += " Puoi riformulare l’intento e avviare una nuova discovery."
-	} else if e.ReformulationColumn != nil {
+	if offerReformulation && id == "" {
+		options = append(options, reformulationOption("semantic.discovery.request", Object{"idempotencyKey": uuid.NewString()}, reason, "Completa intent con un termine di 1–3 parole e indica tipo e lingue della nuova ricerca."))
+		message += " Puoi riprovare con un termine di 1–3 parole."
+	} else if offerReformulation && e.ReformulationColumn != nil {
 		if column, ok := e.ReformulationColumn(id, request); ok {
 			args := Object{"replanOf": id, "requestId": request, "column": column, "commandKey": uuid.NewString()}
-			options = append(options, alternative("source.analysis.plan", args, reason, "Completa intent con una nuova descrizione in italiano del significato della colonna indicata."))
-			message += " Puoi riformulare l’intento e ripetere la ricerca per la stessa colonna."
+			options = append(options, reformulationOption("source.analysis.plan", args, reason, "Completa intent con un nuovo termine di 1–3 parole per la colonna indicata."))
+			message += " Puoi riprovare con un termine di 1–3 parole per la stessa colonna."
 		}
 	}
 	proposal, exclusion := uuid.NewString(), uuid.NewString()
-	if id != "" && e.DecisionKeys != nil {
+	if id != "" && request != "" && e.DecisionKeys != nil {
 		var err error
 		proposal, exclusion, err = e.DecisionKeys(id, request)
 		if err != nil {

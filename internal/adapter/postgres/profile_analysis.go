@@ -208,7 +208,12 @@ func planAnalysis(ctx context.Context, tx pgx.Tx, p analysis.Plan) (analysis.Vie
 		analysis.Profile
 		Epoch string `json:"policyEpoch,omitempty"`
 	}{p.Profile, p.Epoch})
-	_, e := tx.Exec(ctx, `insert into ouf_mcp.profile_analysis(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum) values($1,$2,$3,$4,$5,$6) on conflict do nothing`, p.ID, p.Scope.Service, p.Scope.Principal, p.Scope.Tenant, raw, p.Manifest)
+	// Persist new plans under the manifest accepted by both releases during rollback.
+	storedManifest := manifestpkg.AnalysisPredecessor(p.Manifest)
+	if storedManifest == "" {
+		storedManifest = p.Manifest
+	}
+	_, e := tx.Exec(ctx, `insert into ouf_mcp.profile_analysis(analysis_id,service_principal_id,principal_id,tenant_id,profile,manifest_checksum) values($1,$2,$3,$4,$5,$6) on conflict do nothing`, p.ID, p.Scope.Service, p.Scope.Principal, p.Scope.Tenant, raw, storedManifest)
 	if e != nil {
 		return analysis.View{}, e
 	}

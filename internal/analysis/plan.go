@@ -71,6 +71,8 @@ type Work struct {
 	// Only status observations have a sequence. Each is useful planned work,
 	// never an automatic retry or a way to reset the underlying retry guard.
 	Observation int `json:"observation,omitempty"`
+
+	discoveryText string
 }
 type Task struct {
 	DiscoveryText map[int]string `json:"discoveryText,omitempty"`
@@ -333,12 +335,23 @@ func buildWork(p Plan, snapshot *manifest.Snapshot, work []Work) (Plan, error) {
 			return Plan{}, ErrInvalid
 		}
 		id := Digest([]any{w.Tool, json.RawMessage(w.Arguments), w.Observation})
-		if n, found := unique[id]; found {
+		n, found := unique[id]
+		if found {
 			p.Tasks[n].Columns = Union(p.Tasks[n].Columns, w.Columns)
-			continue
+		} else {
+			n = len(p.Tasks)
+			unique[id] = n
+			p.Tasks = append(p.Tasks, Task{ID: id, Work: w, State: "READY", MaxBytes: cap.Bytes, MaxTimeMS: cap.MS, MaxObjects: cap.Objects})
 		}
-		unique[id] = len(p.Tasks)
-		p.Tasks = append(p.Tasks, Task{ID: id, Work: w, State: "READY", MaxBytes: cap.Bytes, MaxTimeMS: cap.MS, MaxObjects: cap.Objects})
+		if w.discoveryText != "" {
+			task := &p.Tasks[n]
+			if task.DiscoveryText == nil {
+				task.DiscoveryText = make(map[int]string)
+			}
+			for _, column := range w.Columns {
+				task.DiscoveryText[column] = w.discoveryText
+			}
+		}
 	}
 	return p, nil
 }
@@ -396,7 +409,7 @@ func ValidateID(id string) error {
 	return nil
 }
 func SafeError(err error) string {
-	for _, e := range []error{ErrInvalid, ErrScope, ErrEpochChanged, ErrNotFound, ErrReplanState, ErrKeyReuse, ErrPolicyUnchanged, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
+	for _, e := range []error{ErrInvalid, ErrScope, ErrEpochChanged, ErrNotFound, ErrReplanState, ErrReformulationTermTooLong, ErrReformulationExhausted, ErrKeyReuse, ErrPolicyUnchanged, ErrConflict, ErrCapacity, ErrUnavailable, ErrFenced, orchestration.ErrUnauthorized} {
 		if errors.Is(err, e) {
 			return e.Error()
 		}
