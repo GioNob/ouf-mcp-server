@@ -121,7 +121,7 @@ func SplitBatch(t Task, shrink bool) []Task {
 		return nil
 	}
 	child := func(intents []Intent, limit int) Task {
-		return batchTask(intents, limit, t.Groups, t.MaxBytes)
+		return batchTask(intents, limit, t.Groups, t.DiscoveryText, t.MaxBytes)
 	}
 	if n := len(b.Intents); n > 1 {
 		return []Task{child(b.Intents[:n/2], b.Limit), child(b.Intents[n/2:], b.Limit)}

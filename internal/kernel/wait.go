@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 )
 
 type internalWaitReadKey struct{}
+type machineWaitReadKey struct{}
 
 type waitAdmission interface {
 	ChargeWait(context.Context, orchestration.Identity, string, int) error
@@ -174,6 +176,9 @@ func waitResult(changed bool, observation, next nextstep.Object) *mcp.CallToolRe
 
 func waitError(result *mcp.CallToolResult, next nextstep.Object) *mcp.CallToolResult {
 	body := ownerObject(result)
+	if body == nil {
+		body = nextstep.Object{}
+	}
 	body["changed"], body["observation"], body["next"] = false, nil, next
 	wire, _ := json.Marshal(body)
 	return &mcp.CallToolResult{IsError: true, StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(wire)}}}
@@ -198,19 +203,32 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	w := s.waits
 	binding := waitBinding(ctx)
 	ref, err := w.signer.Open(token, binding)
-	if err != nil {
+	var input struct{ ResumeArguments nextstep.Object }
+	decoder := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
+	decoder.UseNumber()
+	if err != nil || decoder.Decode(&input) != nil || !ref.RestoreArgs(input.ResumeArguments) {
 		return errorResult("WAIT_REFERENCE_INVALID", false)
 	}
 	t, ok := s.tools[ref.Read]
-	if !ok || t.capability.OperationClass != "READ" || ref.Read == "ouf.wait" || !s.valid(ref.Read, ref.Args) {
+	machine := len(ref.Terminal) != 0
+	if !ok || (!machine && t.capability.OperationClass != "READ") || ref.Read == "ouf.wait" || !s.valid(ref.Read, ref.Args) {
 		return errorResult("WAIT_REFERENCE_INVALID", false)
 	}
 	stop := func(code string) *mcp.CallToolResult {
-		result := waitResult(false, nil, ref.Block(code, "Consulta lo stato aggiornato della decisione."))
+		next := ref.Block(code, "Consulta lo stato aggiornato della decisione.")
+		if machine {
+			next = nextstep.ManualBlock(code, "Verifica la disponibilità dell’attesa prima di riprendere il lavoro.", "OPERATOR")
+		}
+		result := waitResult(false, nil, next)
 		result.IsError = true
 		return result
 	}
+	due, _ := time.Parse(time.RFC3339Nano, ref.NotBefore)
 	exp, err := time.Parse(time.RFC3339Nano, ref.Deadline)
+	if machine && ref.Deadline == "" && !due.IsZero() {
+		// A reference without an owner cutoff is usable for one finite window after it is due.
+		exp, err = due.Add(time.Duration(w.maxSeconds)*time.Second), nil
+	}
 	if err != nil || !time.Now().Before(exp) {
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
@@ -218,28 +236,11 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	// Refresh from a complete authorized observation before exposing a new
 	// link. Earlier semantic references could carry a URL supplied by Semantic.
 	refreshLink := func() bool {
-		return ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" ||
+		return !machine && ref.Read == "semantic.proposal.read" && ref.LinkOwner != "onboarding" ||
 			!linkEnd.IsZero() && !time.Now().Before(linkEnd)
 	}
 	scope := string(binding)
 	identity := ctx.Value(identityKey{}).(requestIdentity)
-	windowRefusal := func(result *mcp.CallToolResult) *mcp.CallToolResult {
-		outer := s.tools["ouf.wait"]
-		next := s.engine(ctx).Evaluate(outer.capability, s.manifest.NextPolicies[outer.capability.NextPolicy], nextstep.Object{"waitRef": token}, ownerObject(result), true)
-		if next["action"] == "POLL" {
-			next["deadline"] = ref.Deadline
-		}
-		return waitError(result, next)
-	}
-	if w.charge != nil {
-		if err := w.charge(ctx, identity.Identity); err != nil {
-			var refusal *orchestration.WindowBudgetExhaustedError
-			if !errors.As(err, &refusal) {
-				return stop("WAIT_ADMISSION_UNAVAILABLE")
-			}
-			return windowRefusal(governedCallErrorResult(err))
-		}
-	}
 	if !w.admit(scope) {
 		return stop("WAIT_CAPACITY_REACHED")
 	}
@@ -252,7 +253,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			duration = 10 * time.Second
 		}
 	}
-	if w.interval >= duration {
+	if !machine && w.interval >= duration {
 		return stop("WAIT_TRANSPORT_WINDOW_TOO_SHORT")
 	}
 	until := time.Now().Add(duration)
@@ -262,6 +263,42 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	ctx, cancel := context.WithDeadline(ctx, until)
 	defer cancel()
 
+	windowRefusal := func(result *mcp.CallToolResult) *mcp.CallToolResult {
+		body := ownerObject(result)
+		end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(body["windowEndsAt"]))
+		if err != nil || body["retryable"] != true {
+			return stop("WAIT_ADMISSION_UNAVAILABLE")
+		}
+		end, valid := orchestration.OwnerDue(body, time.Now(), end, "")
+		if !valid {
+			return stop("RETRY_WINDOW_UNAVAILABLE")
+		}
+		// A refused wait cannot use another owner's quota. Pace even this response,
+		// under the same local concurrency and transport limits as an admitted wait.
+		timer := time.NewTimer(time.Until(end))
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if ctx.Err() == context.Canceled {
+				return stop("WAIT_OBSERVATION_UNAVAILABLE")
+			}
+		}
+		if !time.Now().Before(exp) {
+			return stop("WAIT_DEADLINE_EXPIRED")
+		}
+		next := w.signer.Postpone(binding, ref, end, exp)
+		return waitError(result, next)
+	}
+	if w.charge != nil {
+		if err := w.charge(ctx, identity.Identity); err != nil {
+			var refusal *orchestration.WindowBudgetExhaustedError
+			if !errors.As(err, &refusal) {
+				return stop("WAIT_ADMISSION_UNAVAILABLE")
+			}
+			return windowRefusal(governedCallErrorResult(err))
+		}
+	}
 	args := ref.ReadArgs()
 	if refreshLink() {
 		args = ref.Args
@@ -280,7 +317,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	// when the outer request has its own idempotency key.
 	i.IdempotencyKey = ""
 	ctx = context.WithValue(ctx, identityKey{}, i)
-	ctx = context.WithValue(ctx, internalWaitReadKey{}, true)
+	// Machine observations traverse the normal target admission and owner budgets.
+	ctx = context.WithValue(ctx, internalWaitReadKey{}, !machine)
+	ctx = context.WithValue(ctx, machineWaitReadKey{}, machine)
 	authority, _ := json.Marshal([]any{scope, i.Delegation, i.AuthenticationContextRef, i.Claims, i.Scopes, token, ref.Read, args})
 	key := fmt.Sprintf("%x", sha256.Sum256(authority))
 
@@ -296,20 +335,39 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		if ctx.Err() == context.Canceled || time.Now().Before(until) {
 			return stop("WAIT_OBSERVATION_UNAVAILABLE")
 		}
-		if refreshLink() {
-			return waitResult(false, last, ref.Refresh())
+		if refreshLink() && !time.Now().Before(due) {
+			return waitResult(false, last, ref.Refresh(s.engine(ctx), nextstep.Object{"notBefore": due.UTC().Format(time.RFC3339Nano)}))
 		}
 		return waitResult(false, last, ref.Next(token))
 	}
-	ticks := time.NewTicker(w.interval)
-	defer ticks.Stop()
+	delay := w.interval
+	if machine {
+		delay = 0
+	}
+	timer := time.NewTimer(max(delay, time.Until(due)))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-		case <-ticks.C:
+		case <-timer.C:
 		}
+		timer.Reset(w.interval)
 		if ctx.Err() != nil || !time.Now().Before(until) {
 			return finish()
+		}
+		if s.analysisService != nil && (t.capability.OperationClass == "READ" || t.capability.OperationClass == "SEARCH") {
+			// Another observation can extend the clock after this token was signed.
+			saved, err := s.analysisService.SavedObservation(ctx, identity.Identity, t.capability.CapabilityID, t.capability.OperationClass, raw)
+			if err != nil {
+				return stop("OWNER_CLOCK_UNAVAILABLE")
+			}
+			if saved.Due.After(time.Now()) {
+				return waitResult(false, last, w.signer.Postpone(binding, ref, saved.Due, exp))
+			}
+		}
+		if machine && t.capability.OperationClass == "COMMAND" {
+			// Resume through the public entry point with the original arguments and admission gates.
+			return waitResult(false, nil, ref.ResumeCommand(s.engine(ctx)))
 		}
 		ch := w.group.DoChan(key, func() (any, error) {
 			if err := w.reads.waitFor(ctx, readScope, w.interval); err != nil {
@@ -349,10 +407,14 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 				if code, ok := body["code"].(string); ok && nextstep.AdmissionWindowCode(code) {
 					return windowRefusal(result)
 				}
-				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
-				denial := waitResult(false, nil, next)
-				denial.IsError = true
-				return denial
+				next := s.observedEngine(ctx, result).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
+				return waitError(result, next)
+			}
+			if machine && body["next"] != nil && summaryInput(ref.Read, ref.Args) {
+				structured, _ := result.StructuredContent.(nextstep.Object)
+				if projected, ok := structured["next"].(nextstep.Object); ok {
+					return waitResult(true, obs, projected)
+				}
 			}
 			if !ref.MatchesResource(obs) {
 				return stop("WAIT_RESOURCE_CHANGED")
@@ -367,17 +429,31 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			state := nextstep.ObservedState(obs)
 			stateChanged := obs["unchanged"] != true && obs["changed"] != false && ref.State != "" && state != "" && ref.State != state
 			invalidHandoff := ref.Decision == "CHOOSE_FILE" && (obs["legacy"] == true || obs["waitUntil"] == nil)
-			changed := nextstep.Version(obs) != ref.Version || stateChanged || invalidHandoff
-			if refreshLink() && (obs["unchanged"] == true || obs["changed"] == false) && len(args) != len(ref.Args) {
-				return waitResult(changed, obs, ref.Refresh())
+			version := nextstep.Version(obs)
+			if machine && version == "" {
+				version = nextstep.PollVersion(obs)
 			}
-			if changed || refreshLink() {
+			changed := version != ref.Version || stateChanged || invalidHandoff
+			if !machine && !changed {
+				at, valid := orchestration.OwnerDue(obs, time.Now(), time.Time{}, "")
+				if !valid {
+					return stop("RETRY_WINDOW_UNAVAILABLE")
+				}
+				if at.After(time.Now()) {
+					return waitResult(false, obs, w.signer.Postpone(binding, ref, at, exp))
+				}
+			}
+			if refreshLink() && (obs["unchanged"] == true || obs["changed"] == false) && len(args) != len(ref.Args) {
+				return waitResult(changed, obs, ref.Refresh(s.engine(ctx), obs))
+			}
+			if machine || changed || refreshLink() {
 				if ref.Decision == "CHOOSE_FILE" && state == "PENDING" && obs["legacy"] != true {
 					// The read contract omits pickerUrl. Reuse only the URL authenticated for this handoff.
 					body = maps.Clone(body)
 					body["pickerUrl"] = ref.URL
 				}
-				next := s.engine(ctx).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
+				next := s.observedEngine(ctx, result).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, false)
+				next = s.publishedNext(ctx, ref.Read, args, body, next)
 				return waitResult(changed, obs, next)
 			}
 		}

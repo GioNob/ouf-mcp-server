@@ -1,13 +1,13 @@
 package analysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"net/http"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -16,12 +16,13 @@ import (
 )
 
 type Coordinator struct {
-	CommandKey      string
-	Store           Store
-	Service         *orchestration.Service
-	Manifest        *manifest.Snapshot
-	Onboarding      bool
-	PreviewPageSize int
+	MaxColumnReformulations *int
+	CommandKey              string
+	Store                   Store
+	Service                 *orchestration.Service
+	Manifest                *manifest.Snapshot
+	Onboarding              bool
+	PreviewPageSize         int
 }
 
 func (c Coordinator) authorize(ctx context.Context, i orchestration.Identity, cap manifest.Capability) error {
@@ -137,6 +138,15 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 		}
 	}
 	save := func(p Plan) (View, error) {
+		if c.MaxColumnReformulations != nil {
+			p.MaxColumnReformulations = *c.MaxColumnReformulations
+		} else {
+			limits, err := SummaryLimits(c.Manifest)
+			if err != nil {
+				return View{}, err
+			}
+			p.MaxColumnReformulations = limits.MaxColumnReformulations
+		}
 		p.CommandKey, p.CommandDigest = c.CommandKey, intent
 		v, err := c.Store.PlanAnalysis(ctx, p)
 		if err == nil && c.CommandKey != "" && v.ID != p.ID {
@@ -362,7 +372,7 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 		RetryThreshold: orchestration.AdmissionRetryThreshold,
 		Maximum:        orchestration.Cost{ToolCalls: 1, DistinctObjects: task.MaxObjects, ResultBytes: task.MaxBytes},
 	})
-	f := Finish{State: "HELD", Code: "OUTCOME_REQUIRES_RECONCILIATION", ElapsedMS: time.Since(start).Milliseconds()}
+	f := Finish{State: "HELD", Code: "OUTCOME_REQUIRES_RECONCILIATION", ElapsedMS: time.Since(start).Milliseconds(), Observation: r.Observation}
 	if r.AttemptID != uuid.Nil {
 		f.AttemptID = r.AttemptID.String()
 	}
@@ -390,28 +400,44 @@ func (c Coordinator) Step(ctx context.Context, i orchestration.Identity, id, tas
 			f.Code = orchestration.SafeDenialReason(r.Problem.Code, "OWNER_AUTHORIZATION_DENIED")
 			f.PolicyVersion = r.Problem.PolicyVersion
 		}
-		if cap.OperationClass == "READ" && (r.Problem.Status == 429 || r.Problem.Status == 503 || transientPolicyDenial(r.Problem, bundleVersion)) {
-			delay := []time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(task.Attempts-1, 4)]
-			delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
-			f.NotBefore = time.Now().Add(delay)
-			if requested := retryAfter(r.Problem.RetryAfter, time.Now()); requested.After(f.NotBefore) {
-				f.NotBefore = requested
-			}
-			if task.Attempts < MaxRetryAttempts && f.NotBefore.Before(task.FirstAttemptAt.Add(24*time.Hour)) {
-				f.State = "WAITING"
-				f.Code = "TRANSIENT_OWNER_WAIT"
-			} else {
-				f.Code = "RETRY_BUDGET_EXHAUSTED"
-			}
-		}
 	} else if len(r.Body) > 0 && len(r.Body) <= int(task.MaxBytes) && json.Valid(r.Body) {
 		f.State = "SUCCEEDED"
 		f.Code = "OWNER_RESPONSE_SAVED_NOT_ADOPTED"
 		f.Calls = 1
 		f.Body = r.Body
+		if r.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE" {
+			f.State, f.Code, f.Body = "HELD", InvalidOwner, nil
+		}
+	}
+	transient := r.Observation.Reason == "OWNER_TIMEOUT" || (r.Problem != nil &&
+		(r.Problem.Status == 429 || r.Problem.Status == 503 || r.Problem.Status == 408 || transientPolicyDenial(r.Problem, bundleVersion)))
+	if cap.OperationClass == "READ" && !r.Replay && r.AttemptID != uuid.Nil && transient {
+		delay := []time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(task.Attempts-1, 4)]
+		delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
+		f.Calls = 1
+		var header string
+		if r.Problem != nil {
+			header = r.Problem.RetryAfter
+		}
+		var valid bool
+		f.NotBefore, valid = readRetryTime(r.Observation.At, delay, header, r.Body)
+		if r.Observation.Due.After(f.NotBefore) {
+			f.NotBefore = r.Observation.Due
+		}
+		switch {
+		case !valid || r.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE":
+			f.Code = InvalidOwner
+		case task.Attempts < MaxRetryAttempts && f.NotBefore.Before(task.FirstAttemptAt.Add(24*time.Hour)):
+			f.State, f.Code = "WAITING", "TRANSIENT_OWNER_WAIT"
+		default:
+			f.Code = "RETRY_BUDGET_EXHAUSTED"
+		}
 	}
 	if task.Tool == BatchTool {
 		f = c.batchFinish(task, id, r, callErr, f)
+	}
+	if r.Observation.Due.After(f.NotBefore) {
+		f.NotBefore = r.Observation.Due
 	}
 	// Reconciliation has its own bounded context. A disconnected MCP client must
 	// not erase an already observed outcome; a failed write leaves a fenced hold.
@@ -456,13 +482,13 @@ type OwnerDenial struct {
 
 func (*OwnerDenial) Error() string { return "owner authorization denied" }
 
-func retryAfter(value string, now time.Time) time.Time {
-	if n, e := strconv.ParseInt(value, 10, 64); e == nil && n >= 0 {
-		n = min(n, 86401)
-		return now.Add(time.Duration(n) * time.Second)
+func readRetryTime(now time.Time, backoff time.Duration, header string, body []byte) (time.Time, bool) {
+	var obs map[string]any
+	// An unstructured HTTP error can still supply Retry-After.
+	if body = bytes.TrimSpace(body); len(body) > 0 && body[0] == '{' {
+		if json.Unmarshal(body, &obs) != nil {
+			return time.Time{}, false
+		}
 	}
-	if at, e := http.ParseTime(value); e == nil {
-		return at
-	}
-	return time.Time{}
+	return orchestration.OwnerDue(obs, now, now.Add(backoff), header)
 }

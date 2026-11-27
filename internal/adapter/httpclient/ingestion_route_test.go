@@ -57,6 +57,7 @@ func TestIngestionReadUsesReviewedGatewayBinding(t *testing.T) {
 					t.Error("source filter or bounded arguments changed")
 				}
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "72")
 				_, _ = w.Write([]byte(`{"sourceId":"source-fixture","status":"OBSERVED"}`))
 			}))
 			defer server.Close()
@@ -73,7 +74,7 @@ func TestIngestionReadUsesReviewedGatewayBinding(t *testing.T) {
 				request.Arguments = json.RawMessage(`{"sourceId":"source-fixture","limit":10}`)
 				request.MaxResultBytes = 1024
 				response, err := client.Execute(context.Background(), request, time.Second)
-				if err != nil || response.Status != http.StatusOK || response.Problem != nil {
+				if err != nil || response.Status != http.StatusOK || response.Problem != nil || response.RetryAfter != "72" {
 					t.Fatalf("fixed route failed: status=%d err=%v", response.Status, err)
 				}
 			}
@@ -99,5 +100,23 @@ func TestIngestionReadCannotSelectAnotherRoute(t *testing.T) {
 		if err != nil || response.Status != http.StatusForbidden {
 			t.Fatalf("unexpected dispatch result: status=%d err=%v", response.Status, err)
 		}
+	}
+}
+
+func TestInterruptedOwnerBodyKeepsResponseClock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "72")
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("incomplete"))
+	}))
+	defer server.Close()
+	client, err := NewGatewayWithTokenSource(server.URL+"/internal/capabilities/v1/execute", StaticTokenSource("test-workload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := client.Execute(context.Background(), orchestration.GatewayRequest{CapabilityID: "ouf.semantic.discovery.status"}, time.Second)
+	if err == nil || out.Status != http.StatusServiceUnavailable || out.RetryAfter != "72" || out.Body != nil {
+		t.Fatal(out, err)
 	}
 }

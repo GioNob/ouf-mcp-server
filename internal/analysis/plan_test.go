@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/google/uuid"
@@ -18,6 +19,51 @@ func fixture(t *testing.T, n int) (Scope, Profile, *manifest.Snapshot) {
 	}
 	return Scope{"mcp", "actor", "tenant"}, Profile{uuid.NewString(), uuid.NewString(), 1, "sha256:" + strings.Repeat("a", 64), n}, m
 }
+func TestReadRetryTimeUsesLatestBound(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		header, nextAttempt, notBefore, want int
+	}{
+		{1, 2, 3, 5}, {90, 72, 60, 90}, {15, 72, 60, 72}, {15, 60, 72, 72},
+	} {
+		at := func(seconds int) time.Time { return now.Add(time.Duration(seconds) * time.Second) }
+		body, _ := json.Marshal(map[string]time.Time{"nextAttemptAt": at(tc.nextAttempt), "notBefore": at(tc.notBefore)})
+		got, valid := readRetryTime(now, 5*time.Second, fmt.Sprint(tc.header), body)
+		if !valid || !got.Equal(at(tc.want)) {
+			t.Fatal(tc, got, valid)
+		}
+	}
+}
+
+func TestReadRetryTimeEachOwnerBound(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	due := now.Add(72 * time.Second)
+	for _, tc := range []struct {
+		field string
+		value any
+		want  time.Time
+	}{
+		{"nextAttemptAt", due, due}, {"notBefore", due, due}, {"next_retry_at", due, due}, {"retryAt", due, due},
+		{"pollAfterSeconds", 72, due}, {"retryAfterSeconds", 72, due}, {"Retry-After", "72", due},
+		{"RetryAfter", "72", due}, {"recoveryState", "RETRY_WAIT", now.Add(5 * time.Second)},
+	} {
+		for _, nested := range []bool{false, true} {
+			fields := map[string]any{tc.field: tc.value}
+			if nested {
+				fields = map[string]any{"result": fields}
+			}
+			body, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, valid := readRetryTime(now, time.Second, "", body)
+			if !valid || !got.Equal(tc.want) {
+				t.Fatalf("%s nested=%t: got %v, valid=%t", tc.field, nested, got, valid)
+			}
+		}
+	}
+}
+
 func TestPlanActualWorkForWideProfiles(t *testing.T) {
 	for _, n := range []int{20, 50, 100, 200, 300, 400, 1024} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {

@@ -194,11 +194,39 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	}
 	call := func(tool string, owner any, failed bool) railObject {
 		t.Helper()
-		if next["tool"] != tool || (next["action"] != "CALL_TOOL" && next["action"] != "POLL") {
-			t.Fatalf("fixture expects %s; received %v", tool, next)
+		for next["action"] == "POLL" {
+			if next["tool"] != "ouf.wait" {
+				t.Fatal("client was asked to implement polling", next)
+			}
+			reg := s.tools[tool]
+			observed := false
+			reg.run = func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if req.Params.Name != tool || failed {
+					return nil, fmt.Errorf("unexpected owner read for %s", req.Params.Name)
+				}
+				observed = true
+				return &mcp.CallToolResult{StructuredContent: owner}, nil
+			}
+			s.tools[tool] = reg
+			args := next["arguments"].(railObject)
+			raw, _ := json.Marshal(railObject{"params": railObject{"name": "ouf.wait", "arguments": args}})
+			var req mcp.CallToolRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				t.Fatal(err)
+			}
+			result := s.wait(ctx, &req, args["waitRef"].(string))
+			check("ouf.wait", args, result)
+			if observed {
+				var delivered railObject
+				raw, _ := json.Marshal(ownerObject(result)["observation"])
+				if json.Unmarshal(raw, &delivered) != nil {
+					t.Fatal("missing owner observation")
+				}
+				return delivered
+			}
 		}
-		if next["action"] == "POLL" {
-			time.Sleep(time.Duration(next["pollAfterSeconds"].(float64)) * time.Second)
+		if next["tool"] != tool || next["action"] != "CALL_TOOL" {
+			t.Fatalf("fixture expects %s; received %v", tool, next)
 		}
 		args := next["arguments"].(railObject)
 		if !s.valid(tool, args) {
@@ -225,8 +253,8 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 			refusal := owner.(railObject)
 			var textBody railObject
 			if json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &textBody) != nil ||
-				!reflect.DeepEqual(textBody["next"], next) || next["action"] != "POLL" || next["tool"] != tool ||
-				!reflect.DeepEqual(next["arguments"], args) || next["deadline"] != refusal["windowEndsAt"] ||
+				!reflect.DeepEqual(textBody["next"], next) || next["action"] != "POLL" || next["tool"] != "ouf.wait" ||
+				next["arguments"].(railObject)["waitRef"] == nil ||
 				next["pollAfterSeconds"] != refusal["retryAfterSeconds"] {
 				t.Fatal("admission refusal lost retry", next)
 			}
@@ -305,15 +333,48 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	}
 
 	real := f.Steps
+	// The recorded discovery uses a different epoch from synctest. Translate
+	// its timestamps together, preserving the owner's original intervals.
+	observed, err := time.Parse(time.RFC3339Nano, real[4].Owner["completedAt"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shift := time.Since(observed)
+	for _, row := range real[4:6] {
+		for _, key := range []string{"completedAt", "createdAt", "nextAttemptAt", "budgetDeadline"} {
+			if raw, ok := row.Owner[key].(string); ok {
+				at, err := time.Parse(time.RFC3339Nano, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row.Owner[key] = at.Add(shift).UTC().Format(time.RFC3339Nano)
+			}
+		}
+	}
 	c := f.Continuation
+	observationArgs := func() railObject {
+		t.Helper()
+		args := next["arguments"].(railObject)
+		if next["action"] == "POLL" {
+			ref, err := s.waits.signer.Open(args["waitRef"].(string), waitBinding(ctx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ref.ReadArgs()
+		}
+		return args
+	}
 	replay := func(i int) railObject {
 		t.Helper()
 		row := real[i]
-		if !reflect.DeepEqual(next["arguments"], row.Input) {
+		if !reflect.DeepEqual(observationArgs(), row.Input) {
 			t.Fatal("recorded call differs", row.Tool, next)
 		}
 		if row.Error != nil {
-			return call(row.Tool, row.Error, true)
+			refusal := maps.Clone(row.Error)
+			seconds := refusal["retryAfterSeconds"].(float64)
+			refusal["windowEndsAt"] = time.Now().Add(time.Duration(seconds) * time.Second).UTC().Format(time.RFC3339Nano)
+			return call(row.Tool, refusal, true)
 		}
 		return call(row.Tool, row.Owner, false)
 	}
@@ -344,7 +405,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 	var tasks []railObject
 	for i, item := range work {
 		job := item.(railObject)
-		if job["arguments"].(railObject)["intent"] != columns[i]["name"] {
+		if job["arguments"].(railObject)["intent"] != analysis.ColumnIntent(columns[i]["name"].(string)) || job["intentHint"].(railObject)["originalName"] != columns[i]["name"] {
 			t.Fatal("plan lost column intent", i)
 		}
 		id := fmt.Sprintf("%064x", i+1)
@@ -376,14 +437,14 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		if i == 3 {
 			call("source.analysis.step", railObject{"state": "WAITING", "code": "ADMISSION_WINDOW_WAIT",
 				"taskId": task["taskId"], "notBefore": time.Now().Add(75 * time.Second).Format(time.RFC3339)}, false)
-			if next["action"] != "POLL" || !reflect.DeepEqual(next["arguments"], args) || next["pollAfterSeconds"] != float64(75) {
+			if next["action"] != "POLL" || next["tool"] != "ouf.wait" || next["pollAfterSeconds"] != float64(75) {
 				t.Fatal("task wait changed the governed retry", next)
 			}
 		}
 		call("source.analysis.step", receipt, false)
 		task["state"] = "SUCCEEDED"
 		budget["completedTasks"] = i + 1
-		query := next["arguments"].(railObject)
+		query := observationArgs()
 		if query["requestId"] != request || query["analysisId"] != aid {
 			t.Fatal("discovery observed a different job", next)
 		}
@@ -412,6 +473,11 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 			choose("source.analysis.read", nil)
 		default:
 			call("semantic.discovery.status", railObject{"state": "SUCCEEDED", "candidateCount": 0, "allowedActions": []string{"NONE"}}, false)
+		}
+		if next["tool"] == "semantic.discovery.candidates" {
+			// This rail follows the legacy list response back to the plan.
+			// The state-bearing empty page has a separate decision contract.
+			call("semantic.discovery.candidates", []railObject{}, false)
 		}
 		item, err := json.Marshal(outcome)
 		if err != nil {
@@ -465,7 +531,7 @@ func runNextCSV(t *testing.T, injectRefusals bool) {
 		call("semantic.approval.request", review, false)
 		approved := railObject{"state": "APPROVED", "version": strings.Repeat("d", 64)}
 		wait("semantic.proposal.read", approved)
-		if next["action"] != "POLL" || next["tool"] != "semantic.proposal.read" {
+		if next["action"] != "POLL" || next["tool"] != "ouf.wait" {
 			t.Fatal("approval must await publication", next)
 		}
 		call("semantic.proposal.read", active, false)

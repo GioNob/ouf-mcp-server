@@ -148,7 +148,7 @@ func cloneAnalysis(ctx context.Context, tx pgx.Tx, command analysis.ReplanComman
 	// Only inputs cross the epoch boundary. The source header lock fences
 	// task appends and finishes for the duration of the copy.
 	rows, err := tx.Query(ctx, `select jsonb_build_object('taskId',task_id,'tool',task->'tool','arguments',task->'arguments',
-		'columns',task->'columns','observation',task->'observation','intentOrdinals',task->'intentOrdinals','ownerIntent',task->'ownerIntent')
+		'discoveryText',task->'discoveryText','reformulated',task->'reformulated','columns',task->'columns','observation',task->'observation','intentOrdinals',task->'intentOrdinals','ownerIntent',task->'ownerIntent')
 		from ouf_mcp.profile_analysis_task where analysis_id=$1 order by ordinal limit $2`, source, analysis.MaxTasks+1)
 	if err != nil {
 		return out, err

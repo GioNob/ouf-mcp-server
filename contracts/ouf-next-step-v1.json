@@ -23,7 +23,7 @@
         "DONE",
         "BLOCKED"
       ],
-      "description": "CALL_TOOL: chiama subito `tool` con `arguments`. POLL: richiama `tool` con `arguments` dopo `pollAfterSeconds`, fino a uno stato in `terminalStates` o a `deadline`. WAIT_FOR_HUMAN: dai all'utente `human.reviewUrl` e `userMessage`, poi chiama subito il tool di attesa (`tool` = ouf.wait) con `arguments`; non chiedere all'utente di tornare in chat. DONE: obiettivo della catena raggiunto, riferisci `userMessage`. BLOCKED: nessuna azione automatica sicura; proponi all'utente solo le `alternatives`, nell'ordine dato."
+      "description": "CALL_TOOL: chiama `tool` con `arguments`. Quando il piano propone intentHint, descrivi prima in italiano il significato della colonna in intent. POLL: chiama subito ouf.wait con gli argomenti ricevuti. Il server gestisce il tempo di attesa e restituisce il prossimo passo. WAIT_FOR_HUMAN: dai all'utente `human.reviewUrl` e `userMessage`, poi chiama subito il tool di attesa (`tool` = ouf.wait) con `arguments`; non chiedere all'utente di tornare in chat. DONE: obiettivo della catena raggiunto, riferisci `userMessage`. BLOCKED: nessuna azione automatica sicura; proponi all'utente solo le `alternatives`, nell'ordine dato."
     },
     "reasonCode": {
       "type": "string",
@@ -181,7 +181,11 @@
         "required": [
           "pollAfterSeconds",
           "terminalStates"
-        ]
+        ],
+        "properties": {
+          "tool": {"const": "ouf.wait"},
+          "arguments": {"required": ["waitRef"], "properties": {"waitRef": {"type": "string", "minLength": 32, "maxLength": 1024, "pattern": "^[A-Za-z0-9_-]+$"}}}
+        }
       }
     },
     {
@@ -257,12 +261,13 @@
         "waitRef"
       ],
       "properties": {
+        "resumeArguments": {"type": "object"},
         "waitRef": {
           "type": "string",
           "minLength": 32, "maxLength": 1024, "pattern": "^[A-Za-z0-9_-]+$"
         }
       }
     },
-    "semantics": "waitRef è opaco, emesso dall'MCP dentro `next`, firmato e legato a principal, tenant, capability di lettura, risorsa, versione osservata (lockVersion/stateVersion) e deadline. L'MCP rilegge la capability di lettura legata ogni >= 5 s (lettura condizionale sulla versione quando l'owner la offre) per al massimo 45 s per chiamata. Risultato: {changed, observation, next}. Se nulla cambia entro 45 s: next = WAIT_FOR_HUMAN con lo stesso waitRef (il chatbot richiama subito). Dopo `deadline`: next = BLOCKED con le alternative dell'owner. Nessuna logica di business nel waitRef: lo stato viene sempre riletto dall'owner."
+    "semantics": "waitRef è opaco, emesso dall'MCP dentro `next`, firmato e legato a principal, tenant, capability di lettura, risorsa, versione osservata (lockVersion/stateVersion) e deadline. L'MCP rilegge la capability di lettura legata ogni >= 5 s (lettura condizionale sulla versione quando l'owner la offre) per al massimo 45 s per chiamata. Risultato: {changed, observation, next}. Se nulla cambia entro 45 s: next = WAIT_FOR_HUMAN con lo stesso waitRef (il chatbot richiama subito). Dopo `deadline`: next = BLOCKED con le alternative dell'owner. Per POLL il riferimento lega anche il primo istante consentito. Ogni tranche prematura restituisce ouf.wait. Alla scadenza il server rilegge lo stato oppure restituisce il comando da riprendere con gli argomenti originali. Gli eventuali resumeArguments sono vincolati al riferimento."
   }
 }

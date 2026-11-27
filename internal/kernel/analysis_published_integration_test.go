@@ -65,7 +65,7 @@ func (o *publishedPETOwner) Execute(ctx context.Context, r orchestration.Gateway
 			columns = append(columns, nextstep.Object{"ordinal": n, "name": o.columns[n]})
 		}
 		body = nextstep.Object{"assetId": args.AssetID, "profileId": args.ProfileID, "profileVersion": 1, "schemaHash": "sha256:" + strings.Repeat("a", 64),
-			"view": "COLUMNS", "columnCount": len(o.columns), "columns": columns, "offset": args.Offset, "nextOffset": end, "hasMore": end < len(o.columns)}
+			"view": "COLUMNS", "format": "CSV", "workflowState": "PROFILE_COLUMNS", "columnCount": len(o.columns), "columns": columns, "offset": args.Offset, "nextOffset": end, "hasMore": end < len(o.columns)}
 	case "ouf.semantic.search.batch":
 		o.batches++
 		var b analysis.Batch
@@ -120,6 +120,7 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 	if dsn == "" {
 		t.Skip("MCP_TEST_DATABASE_URL required")
 	}
+	t.Setenv("OUF_ANALYSIS_SUMMARY_PAGE_BYTES", "65536")
 	ctx := context.Background()
 	db, err := postgres.Open(ctx, dsn)
 	if err != nil {
@@ -138,6 +139,17 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 	if err != nil {
 		t.Fatal(err)
 	}
+	checksum, err := m.Checksum()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := m.CanonicalPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureManifest(ctx, checksum, m.Version, "mcp-manifest-v1", payload); err != nil {
+		t.Fatal(err)
+	}
 	before, after := 0, 0
 	for _, tc := range []struct {
 		width int
@@ -153,14 +165,36 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 		if tc.width == 1000 {
 			names[0], names[999] = "Straße", " STRASSE "
 			names[1] = "datatype-fixture"
-		}
-		for n := 0; n < min(18, len(names)); n++ {
-			typ := "PROPERTY"
-			if names[n] == "datatype-fixture" {
-				typ = "DATATYPE"
+			for n := 0; n < 18; n++ {
+				typ := "PROPERTY"
+				if names[n] == "datatype-fixture" {
+					typ = "DATATYPE"
+				}
+				args, _ := json.Marshal(map[string]any{"intent": names[n], "preferredLanguages": []string{"it"}, "requestedArtifactType": typ})
+				work = append(work, analysis.Work{Tool: "semantic.discovery.request", Arguments: args, Columns: []int{n}})
 			}
-			args, _ := json.Marshal(map[string]any{"intent": names[n], "preferredLanguages": []string{"it"}, "requestedArtifactType": typ})
-			work = append(work, analysis.Work{Tool: "semantic.discovery.request", Arguments: args, Columns: []int{n}})
+		}
+		owner := &publishedPETOwner{columns: names, store: db, plan: analysis.AnalysisID(scope, p), t1: tc.t1, jobs: map[string]string{}}
+		service := &orchestration.Service{Auth: analysisSDKAuth{}, Admission: publishedPETStore{db}, Gateway: owner, RequireDelegation: true, FingerprintKey: make([]byte, 32)}
+		session := revisionSession(t, service, "ouf.managed-source.preview ouf.semantic.search ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates")
+		name := "source.analysis.plan"
+		args := nextstep.Object{"assetId": p.AssetID, "profileId": p.ProfileID, "expectedRevision": 0, "work": work}
+		if tc.width == 18 {
+			preview, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "source.file.preview", Arguments: nextstep.Object{
+				"assetId": p.AssetID, "profileId": p.ProfileID, "view": "COLUMNS", "offset": 0, "limit": 18,
+			}})
+			if err != nil || preview.IsError {
+				t.Fatal(preview, err)
+			}
+			next := checkNext(t, nextContract(t), preview)
+			if next["action"] != "CALL_TOOL" || next["tool"] != name {
+				t.Fatal("preview did not generate a plan", next)
+			}
+			args = next["arguments"].(nextstep.Object)
+			raw, err := json.Marshal(args["work"])
+			if err != nil || json.Unmarshal(raw, &work) != nil || len(work) != 18 {
+				t.Fatal("incomplete generated plan", err)
+			}
 		}
 		if !tc.t1 {
 			legacy, err := analysis.Build(scope, p, m, 0, work)
@@ -172,12 +206,7 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 				t.Fatal(err)
 			}
 		}
-		owner := &publishedPETOwner{columns: names, store: db, plan: analysis.AnalysisID(scope, p), t1: tc.t1, jobs: map[string]string{}}
-		service := &orchestration.Service{Auth: analysisSDKAuth{}, Admission: publishedPETStore{db}, Gateway: owner, RequireDelegation: true, FingerprintKey: make([]byte, 32)}
-		session := revisionSession(t, service, "ouf.managed-source.preview ouf.semantic.search ouf.semantic.discovery ouf.semantic.discovery.status ouf.semantic.discovery.candidates")
-		name := "source.analysis.plan"
-		args := nextstep.Object{"assetId": p.AssetID, "profileId": p.ProfileID, "expectedRevision": 0, "work": work}
-		calls, delivered, matched, ready, blocked := 0, 0, 0, 0, 0
+		calls, summaryPages, delivered, matched, ready, blocked := 0, 0, 0, 0, 0, 0
 		for calls < 200 {
 			res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 			calls++
@@ -186,6 +215,7 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 			}
 			data := ownerObject(res)
 			if rows, ok := data["items"].([]any); ok && name == "source.analysis.read" && args["view"] == "SUMMARY" {
+				summaryPages++
 				for _, v := range rows {
 					row := v.(nextstep.Object)
 					if fmt.Sprint(row["ordinal"]) != fmt.Sprint(delivered) {
@@ -227,10 +257,18 @@ func TestPublishedNextOnlyRoundTrips(t *testing.T) { // MCP-50T-05, MCP-50T-06
 		jobs, batches := len(owner.jobs), owner.batches
 		owner.mu.Unlock()
 		if tc.width == 1000 {
-			if jobs != 16 || batches != 1 || blocked != 1 || matched == 0 {
-				t.Fatal(tc, batches, jobs, blocked, matched)
+			if jobs != 16 || batches != 1 || blocked != 1 || matched != 166 {
+				t.Fatalf("1000 columns: batches=%d jobs=%d blocked=%d matched=%d", batches, jobs, blocked, matched)
 			}
+			// One plan, one published batch, then step/status/candidates per residual job.
+			if summaryPages != 32 || calls != 1+batches+3*jobs+summaryPages {
+				t.Fatalf("1000 columns: calls=%d batches=%d jobs=%d summaryPages=%d", calls, batches, jobs, summaryPages)
+			}
+			t.Logf("MCP-50T-06 chatbot calls from plan through SUMMARY: %d (%d summary pages)", calls, summaryPages)
 		} else if tc.t1 {
+			if _, ok := owner.jobs["ente gestore"]; !ok {
+				t.Fatal("residual discovery lost the preview wording", owner.jobs)
+			}
 			after = calls
 			if matched != 3 || ready != 15 || batches != 1 || jobs != 15 {
 				t.Fatal(tc, matched, ready)

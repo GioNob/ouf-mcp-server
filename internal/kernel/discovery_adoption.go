@@ -5,8 +5,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -52,13 +54,22 @@ func resolveAdoptionReceiptSchema(recorded bool) (*jsonschema.Resolved, error) {
 	return schema.Resolve(nil)
 }
 
-func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, in orchestration.Invocation) *mcp.CallToolResult {
+func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, in orchestration.Invocation) (out *mcp.CallToolResult) {
 	result, err := service.Call(ctx, in)
+	defer func() { attachObservation(out, result.Observation) }()
 	switch {
-	case result.Replay || errors.Is(err, orchestration.ErrIdempotencyOutcomeUnknown) || (err != nil && result.AttemptID != uuid.Nil):
+	case errors.Is(err, orchestration.ErrIdempotencyOutcomeUnknown) || (err != nil && result.AttemptID != uuid.Nil):
+		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
+	case result.Replay:
+		if result.AttemptState == "FAILED" && orchestration.RecordedAdoptionRefusal(result.AdoptionRefusalCode) != "" {
+			return workflowError(map[string]any{"code": result.AdoptionRefusalCode, "recordedRefusal": true, "retryable": false})
+		}
+		if result.Observation.Due.After(time.Now()) || result.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE" {
+			return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
+		}
 		return readDiscoveryAdoptionReceipt(ctx, service, in)
 	case errors.Is(err, orchestration.ErrIdempotencyConflict):
-		return errorResult("IDEMPOTENCY_KEY_REUSE", false)
+		return workflowError(map[string]any{"code": "IDEMPOTENCY_KEY_REUSE", "status": 409, "retryable": false})
 	case errors.Is(err, orchestration.ErrUnauthorized):
 		return governedCallErrorResult(err)
 	case errors.Is(err, orchestration.ErrResultLimit):
@@ -72,7 +83,7 @@ func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, 
 		if denial := ownerDenialResult(result.Problem, in.AuthorizationCapabilityID); denial != nil {
 			return denial
 		}
-		return errorResult(result.Problem.Code, false)
+		return workflowError(map[string]any{"code": result.Problem.Code, "status": result.Problem.Status, "retryable": false})
 	}
 
 	var receipt map[string]any
@@ -85,10 +96,13 @@ func callDiscoveryAdoption(ctx context.Context, service *orchestration.Service, 
 	}
 	// A successful command can return a current adoption reference or just
 	// an acknowledgement. Only the owner can supply the historical result.
+	if result.Observation.Due.After(time.Now()) || result.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE" {
+		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
+	}
 	return readDiscoveryAdoptionReceipt(ctx, service, in)
 }
 
-func readDiscoveryAdoptionReceipt(ctx context.Context, service *orchestration.Service, in orchestration.Invocation) *mcp.CallToolResult {
+func readDiscoveryAdoptionReceipt(ctx context.Context, service *orchestration.Service, in orchestration.Invocation) (out *mcp.CallToolResult) {
 	receiptRead, ok := adoptionReceiptRead()
 	if !ok {
 		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
@@ -100,7 +114,17 @@ func readDiscoveryAdoptionReceipt(ctx context.Context, service *orchestration.Se
 	read.OperationClass = receiptRead.OperationClass
 	read.IdempotencyKey = uuid.NewString()
 	read.Arguments, _ = json.Marshal(map[string]string{"commandKey": in.IdempotencyKey})
+	saved, err := service.SavedObservation(ctx, read.Identity, read.CapabilityID, read.OperationClass, read.Arguments)
+	if err != nil {
+		return errorResult("OWNER_CLOCK_UNAVAILABLE", false)
+	}
+	if saved.Due.After(time.Now()) {
+		out = errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
+		attachObservation(out, saved)
+		return out
+	}
 	lookup, err := service.Call(ctx, read)
+	defer func() { attachObservation(out, lookup.Observation) }()
 	if errors.Is(err, orchestration.ErrUnauthorized) {
 		return governedCallErrorResult(err)
 	}
@@ -138,6 +162,29 @@ func boundAdoptionReceipt(arguments []byte, receipt map[string]any, body []byte)
 		return errorResult("SEMANTIC_RECEIPT_READ_REQUIRED", false)
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}
+}
+
+// Check the same proposal authorization context as invoke, without reserving
+// admission or issuing a command. An unavailable decision omits the option.
+func (s *workflowServer) canProposeSemantic(ctx context.Context) bool {
+	t, ok := s.tools["semantic.propose"]
+	i, identified := ctx.Value(identityKey{}).(requestIdentity)
+	if !ok || !identified || s.analysisService == nil || s.analysisService.Auth == nil || len(waitBinding(ctx)) == 0 {
+		return false
+	}
+	c := t.capability
+	if (len(c.AllowedActors) > 0 && !slices.Contains(c.AllowedActors, i.ActorType)) ||
+		(c.RequiredScope != "" && !slices.Contains(i.Scopes, c.RequiredScope)) {
+		return false
+	}
+	id, resource, err := semanticProposalAuthorization(c, []byte("{}"), i.TenantID)
+	if err != nil {
+		return false
+	}
+	d, err := s.analysisService.Auth.Authorize(ctx, orchestration.AuthorizationRequest{
+		Identity: i.Identity, CapabilityID: id, Resource: resource, Owner: c.Owner, OperationClass: c.OperationClass,
+	})
+	return err == nil && d.Allowed && d.DecisionRef != ""
 }
 
 var adoptionReceiptRead = sync.OnceValues(func() (manifest.Capability, bool) {

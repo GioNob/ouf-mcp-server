@@ -376,7 +376,7 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 			}
 			steps = append(steps, "ouf.wait")
 			if !tc.denyLink {
-				steps = append(steps, "semantic.proposal.read")
+				steps = append(steps, "ouf.wait")
 			}
 			for _, target := range steps {
 				result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
@@ -387,7 +387,7 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 				if result.IsError {
 					t.Fatal(tool, next)
 				}
-				if target == "ouf.wait" {
+				if target == "ouf.wait" && tool != "ouf.wait" {
 					if tc.denyLink {
 						checkPermissionAlternatives(t, next, semanticLinkID, "OWNER_AUTHORIZATION_DENIED")
 						break

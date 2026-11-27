@@ -62,15 +62,19 @@ func (p Profile) Valid() bool {
 }
 
 type Work struct {
-	Tool      string          `json:"tool"`
-	Arguments json.RawMessage `json:"arguments"`
-	Columns   []int           `json:"columns"`
+	// An advisory name from preview. Only the verified header can select a published lookup.
+	PreviewName string          `json:"-"`
+	Tool        string          `json:"tool"`
+	Arguments   json.RawMessage `json:"arguments"`
+	Columns     []int           `json:"columns"`
 	// Only status observations have a sequence. Each is useful planned work,
 	// never an automatic retry or a way to reset the underlying retry guard.
 	Observation int `json:"observation,omitempty"`
 }
 type Task struct {
-	Compatibility string `json:"compatibilityReason,omitempty"`
+	DiscoveryText map[int]string `json:"discoveryText,omitempty"`
+	Reformulated  bool           `json:"reformulated,omitempty"`
+	Compatibility string         `json:"compatibilityReason,omitempty"`
 	// Internal plan metadata is omitted from legacy task projections.
 	AwaitParent bool             `json:"awaitParent,omitempty"`
 	Epoch       string           `json:"policyEpoch,omitempty"`
@@ -129,6 +133,7 @@ type View struct {
 	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
 type Plan struct {
+	MaxColumnReformulations   int
 	Epoch, Visibility, Seed   string
 	CommandKey, CommandDigest string
 	Replan                    bool
@@ -143,6 +148,7 @@ type Plan struct {
 	Tasks            []Task
 }
 type Finish struct {
+	Observation            orchestration.OwnerObservation
 	PolicyVersion          *int64
 	Children               []Task
 	StopScope              bool

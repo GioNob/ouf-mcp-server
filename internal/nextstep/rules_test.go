@@ -43,8 +43,11 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 		"hasMore": true, "taskId": strings.Repeat("b", 64), "offset": 1, "columnCount": 3, "nextOffset": 16, "pageSize": 20, "limit": 10, "cursor": id, "nextCursor": id, "afterHandoffId": id,
 		"commandKey": id, "analysisId": strings.Repeat("a", 64),
 		"columns": []any{Object{"name": "tipologia", "distinctValuesComplete": false, "distinctValuesCursor": "opaque"}}, "result": Object{"requestId": id},
-		// The isolated ready and resume rules each need a task in their own state.
-		"tasks": []any{Object{"taskId": strings.Repeat("b", 64), "state": "READY"}, Object{"taskId": strings.Repeat("c", 64), "state": "WAITING"}},
+		// Use an elapsed deadline so the timed rule can project a direct step.
+		"tasks": []any{
+			Object{"taskId": strings.Repeat("b", 64), "state": "READY"},
+			Object{"taskId": strings.Repeat("c", 64), "state": "WAITING", "notBefore": "2026-01-01T00:00:00Z"},
+		},
 		"items": []any{Object{"assetId": id, "latestProfileId": id, "semanticId": "urn:example:teatro", "publicationSetId": id, "revisionId": id}},
 	}
 	for name, p := range s.NextPolicies {
@@ -87,6 +90,7 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 	engine := Engine{Now: time.Now, Valid: func(name string, args Object) bool {
 		return schemas[name] != nil && schemas[name].Validate(asJSON(t, args)) == nil
 	}}
+	engine = signedEngine(t, engine)
 	validTarget := func(name string, args Object, decision bool) bool {
 		schema := schemas[name]
 		if decision {
@@ -111,8 +115,35 @@ func TestEveryAutomaticRuleHasSchemaValidArguments(t *testing.T) {
 				rule.When = nil
 				input := asJSON(t, engine.project(rule, fixture, fixture))
 				policy := manifest.Policy{Read: p.Read, Rules: []manifest.Rule{rule}}
-				result := engine.Evaluate(c, policy, input, fixture, false)
+				owner := fixture
+				if c.ToolName == "ouf.ingestion.status" {
+					owner = maps.Clone(fixture)
+					delete(owner, "items") // Use the single-row representation.
+				}
+				result := engine.Evaluate(c, policy, input, owner, false)
 				check(t, result)
+				// Exercise every executable manifest continuation, including newly
+				// added CALL_TOOL rules, with an independent future owner bound.
+				if result["action"] == "CALL_TOOL" || result["action"] == "POLL" {
+					timed := maps.Clone(owner)
+					target := result["tool"]
+					if result["action"] == "POLL" {
+						target = pollTarget(t, engine, result).Read
+					}
+					due := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339Nano)
+					timed["notBefore"] = due
+					next := engine.Evaluate(c, policy, input, timed, false)
+					ref := pollTarget(t, engine, next)
+					if ref.Read != target || ref.NotBefore != due {
+						t.Fatal("manifest continuation bypassed its owner clock", next, ref)
+					}
+				}
+				if rule.Action == "POLL" {
+					ref := pollTarget(t, engine, result)
+					if ref.Read != rule.Tool || !engine.Valid(ref.Read, ref.Args) {
+						t.Fatal("poll lost its governed target", ref)
+					}
+				}
 				assertProgress(t, c.ToolName, input, asJSON(t, result))
 			})
 		}
@@ -141,7 +172,7 @@ func TestOwnerStateVocabularyIsCovered(t *testing.T) {
 	}
 	for _, family := range []struct{ policy, field, states string }{
 		{"onboarding", "workflowState|state", "DRAFT IN_REVIEW APPROVED ACTIVE SUPERSEDED REJECTED REVOKED CHANGES_REQUESTED COMMAND_ABSENT ERROR"},
-		{"discovery", "state", "PENDING RUNNING SUCCEEDED FAILED CANCELLED EXHAUSTED"},
+		{"discovery", "state", "PENDING RUNNING RETRY_WAIT SUCCEEDED FAILED CANCELLED EXHAUSTED"},
 		{"semanticDecision", "state", "DRAFT VALIDATED VALIDATION_FAILED UNDER_REVIEW APPROVED REJECTED EXPIRED ACTIVE DEPRECATED RETIRED UNKNOWN"},
 		{"ingestion", "runState|run_state", "AWAITING_START READY PREFLIGHT RUNNING DRAINING RETRY_WAIT SUCCEEDED COMPLETED COMPLETED_WITH_WARNINGS FAILED PAUSED ABORTED DISABLED BLOCKED"},
 		{"ingestion", "recoveryAction", "NONE AUTOMATIC_RETRY AUTOMATIC_RECONCILIATION HUMAN_RESUME_OR_ABORT HUMAN_ABORT_REQUIRED HUMAN_QUARANTINE_REVIEW HUMAN_SCHEDULE_REVIEW WAITING_FOR_PUBLICATION_VERIFICATION NEW_PUBLICATION_REQUIRED TERMINAL"},

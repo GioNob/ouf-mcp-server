@@ -13,6 +13,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+type planWorkInput struct {
+	analysis.Work
+	Hint struct{ OriginalName string } `json:"intentHint"`
+}
+
 func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if e := json.Unmarshal(c.InputSchema, &schema); e != nil {
@@ -30,7 +35,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
 			if summaryInput(c.ToolName, input) {
-				return summaryFailure(orchestration.ErrUnauthorized, ""), nil, nil
+				return server.summaryFailure(ctx, orchestration.ErrUnauthorized, ""), nil, nil
 			}
 			return actorOrDelegationDenial(i, ok), nil, nil
 		}
@@ -46,16 +51,24 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		store, ok := service.Admission.(analysis.Store)
 		if !ok {
 			if summaryInput(c.ToolName, input) {
-				return summaryFailure(errors.New("missing analysis store"), ""), nil, nil
+				return server.summaryFailure(ctx, errors.New("missing analysis store"), ""), nil, nil
 			}
 			return errorResult("ANALYSIS_STORE_NOT_BOUND", false), nil, nil
 		}
-		coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot, Onboarding: railCommand, PreviewPageSize: server.summaryLimits.PreviewPageSize}
+		coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot, Onboarding: railCommand, PreviewPageSize: server.summaryLimits.PreviewPageSize, MaxColumnReformulations: &server.summaryLimits.MaxColumnReformulations}
 		raw, _ := json.Marshal(input)
 		var out any
 		var err error
 		switch c.ToolName {
 		case "source.analysis.plan":
+			if _, retry := input["requestId"]; retry && replan != "" {
+				var r analysis.Reformulation
+				if json.Unmarshal(raw, &r) != nil {
+					return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
+				}
+				out, err = coordinator.Reformulate(ctx, i.Identity, replan, key, r, server.summaryLimits.MaxColumnReformulations)
+				break
+			}
 			if replan != "" {
 				out, err = coordinator.Replan(ctx, i.Identity, replan, key)
 				break
@@ -64,13 +77,18 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				AssetID          string          `json:"assetId"`
 				ProfileID        string          `json:"profileId"`
 				ExpectedRevision int64           `json:"expectedRevision"`
-				Work             []analysis.Work `json:"work"`
+				Work             []planWorkInput `json:"work"`
 			}
 			if json.Unmarshal(raw, &args) != nil {
 				return errorResult("ANALYSIS_INPUT_INVALID", false), nil, nil
 			}
+			work := make([]analysis.Work, len(args.Work))
+			for n, item := range args.Work {
+				work[n] = item.Work
+				work[n].PreviewName = item.Hint.OriginalName
+			}
 			coordinator.CommandKey = key
-			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, args.Work)
+			out, err = coordinator.Plan(ctx, i.Identity, args.AssetID, args.ProfileID, args.ExpectedRevision, work)
 		case "source.analysis.read":
 			if input["view"] != nil {
 				return server.analysisSummary(ctx, coordinator, i.Identity, input), nil, nil
@@ -102,7 +120,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				result.Meta = mcp.Meta{"ouf/httpStatus": 502}
 				return result, nil, nil
 			}
-			task.Epoch, task.OwnerIntent = "", ""
+			task.Epoch, task.OwnerIntent, task.DiscoveryText = "", "", nil
 			if task.Visibility != "" {
 				task.Visibility, task.OwnerKey, task.Groups, task.Arguments = "", "", nil, nil
 				if task.Tool == analysis.BatchTool {

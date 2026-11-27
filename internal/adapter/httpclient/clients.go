@@ -266,28 +266,29 @@ func (c *GatewayClient) Execute(ctx context.Context, in orchestration.GatewayReq
 	if limit < 1 {
 		limit = 1 << 20
 	}
-	var payload []byte
+	var out orchestration.GatewayResponse
 	res, e := c.Client.Do(req)
 	if e == nil {
 		defer res.Body.Close()
-		payload, e = io.ReadAll(io.LimitReader(res.Body, limit+1))
+		out.Status, out.RetryAfter, out.BackendRequestID = res.StatusCode, res.Header.Get("Retry-After"), res.Header.Get("X-Backend-Request-ID")
+		out.Body, e = io.ReadAll(io.LimitReader(res.Body, limit+1))
 	}
 	if e != nil {
+		out.Body = nil // A truncated response is never usable owner evidence.
 		if replacingAsset {
 			// The owner may have prepared the revision before the response was lost.
-			return orchestration.GatewayResponse{}, errors.New("SOURCE_REVIEW_READ_REQUIRED")
+			return out, errors.New("SOURCE_REVIEW_READ_REQUIRED")
 		}
-		return orchestration.GatewayResponse{}, e
+		return out, e
 	}
-	out := orchestration.GatewayResponse{Status: res.StatusCode, Body: payload, BackendRequestID: res.Header.Get("X-Backend-Request-ID")}
 	if res.StatusCode/100 != 2 {
 		var p orchestration.Problem
 		if replacingAsset && res.StatusCode == http.StatusServiceUnavailable {
 			p.Code = "SOURCE_REVIEW_READ_REQUIRED"
 		} else {
-			p = decodeOwnerProblem(payload, res.StatusCode)
+			p = decodeOwnerProblem(out.Body, res.StatusCode)
 		}
-		p.RetryAfter = res.Header.Get("Retry-After")
+		p.RetryAfter = out.RetryAfter
 		p.Status = res.StatusCode
 		out.Problem = &p
 	}

@@ -68,6 +68,29 @@ func assertProgress(t *testing.T, tool string, input, next Object) {
 	}
 }
 
+func signedEngine(t *testing.T, engine Engine) Engine {
+	t.Helper()
+	var err error
+	engine.Signer, err = NewSigner(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Binding = []byte("fixture/reader")
+	return engine
+}
+
+func pollTarget(t *testing.T, e Engine, next Object) WaitRef {
+	t.Helper()
+	args, _ := next["arguments"].(Object)
+	token, _ := args["waitRef"].(string)
+	ref, err := e.Signer.Open(token, e.Binding)
+	resume, _ := args["resumeArguments"].(Object)
+	if next["action"] != "POLL" || next["tool"] != "ouf.wait" || err != nil || !ref.RestoreArgs(resume) {
+		t.Fatal("invalid opaque poll", next, err)
+	}
+	return ref
+}
+
 func TestSameToolNumericArguments(t *testing.T) {
 	input := Object{"offset": json.Number("1e0")}
 	next := call("CALL_TOOL", "COLUMN_PAGE", "source.file.preview", Object{"offset": 1})
@@ -116,6 +139,7 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 	now := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
 	var onboardingLink LinkResult
 	e := Engine{
+		Signer: signer, Binding: binding,
 		Errors: s.NextErrors,
 		Valid: func(name string, args Object) bool {
 			return inputs[name] != nil && inputs[name].Validate(asJSON(t, args)) == nil
@@ -197,7 +221,12 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 			}
 			if tc.Target != "" {
 				args, ok := result["arguments"].(Object)
-				if !ok || result["tool"] != tc.Target || !e.Valid(tc.Target, args) {
+				targetTool := result["tool"]
+				if tc.Action == "POLL" {
+					ref := pollTarget(t, e, result)
+					targetTool, args = ref.Read, asJSON(t, ref.Args)
+				}
+				if !ok || targetTool != tc.Target || !e.Valid(tc.Target, args) {
 					t.Fatalf("invalid target %s %v", tc.Target, args)
 				}
 				if tc.NewCommand {
@@ -208,7 +237,8 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 					}
 					target := caps[tc.Target]
 					retry := e.Evaluate(target, s.NextPolicies[target.NextPolicy], args, Object{"Status": 503}, true)
-					if retry["action"] != "POLL" || !reflect.DeepEqual(retry["arguments"], args) {
+					ref := pollTarget(t, e, retry)
+					if ref.Read != tc.Target || !reflect.DeepEqual(asJSON(t, ref.Args), args) {
 						t.Fatal("retry changed command arguments", retry)
 					}
 				}
@@ -264,6 +294,10 @@ func TestOwnerTransitionsAndTargetArguments(t *testing.T) {
 				}
 				tool, _ = result["tool"].(string)
 				args, _ = result["arguments"].(Object)
+				if result["action"] == "POLL" {
+					ref := pollTarget(t, e, result)
+					tool, args = ref.Read, asJSON(t, ref.Args)
+				}
 				if tool != "" && !e.Valid(tool, args) {
 					t.Fatalf("invalid continuation %s", tool)
 				}

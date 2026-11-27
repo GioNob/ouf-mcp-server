@@ -66,8 +66,8 @@ func TestAdmissionRefusalOverMCP(t *testing.T) {
 			var text map[string]any
 			if json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &text) != nil || len(text) != 6 ||
 				text["code"] != code || text["retryable"] != true || !reflect.DeepEqual(text["next"], next) ||
-				next["action"] != "POLL" || next["tool"] != "source.file.profile" || !reflect.DeepEqual(next["arguments"], args) ||
-				next["deadline"] != text["windowEndsAt"] || next["pollAfterSeconds"] != float64(1) {
+				next["action"] != "POLL" || next["tool"] != "ouf.wait" || next["arguments"].(map[string]any)["waitRef"] == nil ||
+				next["pollAfterSeconds"].(float64) < 1 {
 				t.Fatal("client lost the governed retry", result)
 			}
 		})

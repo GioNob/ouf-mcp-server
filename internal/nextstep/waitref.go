@@ -1,6 +1,7 @@
 package nextstep
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -15,20 +16,24 @@ import (
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
 type WaitRef struct {
-	Read      string `json:"r"`
-	Args      Object `json:"a"`
-	State     string `json:"s,omitempty"`
-	Version   string `json:"v"`
-	Resource  string `json:"i,omitempty"`
-	Deadline  string `json:"d"`
-	URL       string `json:"u"`
-	Decision  string `json:"k"`
-	Reason    string `json:"c"`
-	LinkEnd   string `json:"e,omitempty"`
-	LinkOwner string `json:"o,omitempty"`
+	NotBefore string   `json:"n,omitempty"`
+	Terminal  []string `json:"t,omitempty"`
+	ArgsHash  string   `json:"h,omitempty"`
+	Read      string   `json:"r"`
+	Args      Object   `json:"a"`
+	State     string   `json:"s,omitempty"`
+	Version   string   `json:"v"`
+	Resource  string   `json:"i,omitempty"`
+	Deadline  string   `json:"d"`
+	URL       string   `json:"u"`
+	Decision  string   `json:"k"`
+	Reason    string   `json:"c"`
+	LinkEnd   string   `json:"e,omitempty"`
+	LinkOwner string   `json:"o,omitempty"`
 }
 
 type Signer struct{ cipher cipher.AEAD }
@@ -84,7 +89,7 @@ func (r WaitRef) MatchesResource(obs Object) bool {
 	if obs == nil {
 		return false
 	}
-	for _, field := range []string{"handoffId", "sourceId", "onboardingVersionId", "commandKey", "proposalId"} {
+	for _, field := range []string{"requestId", "jobId", "analysisId", "handoffId", "sourceId", "onboardingVersionId", "commandKey", "proposalId"} {
 		if expected, bound := r.Args[field]; bound {
 			if current, present := obs[field]; present {
 				s, ok := current.(string)
@@ -179,20 +184,19 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboar
 	if run || semantic {
 		switch onboardingLink.Status {
 		case LinkTransient:
-			delay, ok := retryDelay(Object{"RetryAfter": onboardingLink.RetryAfter}, now)
+			due, ok := orchestration.OwnerDue(obs, now, now.Add(time.Duration(orchestration.PollIntervalSeconds)*time.Second), onboardingLink.RetryAfter)
 			if !ok {
 				return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Chiedi all’operatore di verificare la finestra di ripresa.", "OPERATOR")
 			}
 			next := call("POLL", "OWNER_REVIEW_LINK_UNAVAILABLE", r.Tool, args)
-			next["userMessage"] = "Il collegamento di revisione è temporaneamente indisponibile. Attendi prima di rileggere lo stato."
-			next["pollAfterSeconds"], next["terminalStates"] = delay, []string{"WAIT_FOR_HUMAN", "BLOCKED", "DONE", "CALL_TOOL"}
+			next["terminalStates"] = []string{"WAIT_FOR_HUMAN", "BLOCKED", "DONE", "CALL_TOOL"}
 			if exp != nil {
-				if err != nil || !now.Add(time.Duration(delay)*time.Second).Before(deadline) {
+				if err != nil || !due.Before(deadline) {
 					return ManualBlock("RETRY_WINDOW_UNAVAILABLE", "Verifica la decisione nella THS. La finestra disponibile non consente un’altra lettura.", "HUMAN_THS")
 				}
 				next["deadline"] = deadline.UTC().Format(time.RFC3339Nano)
 			}
-			return next
+			return s.issuePoll(binding, next, obs, now, due)
 		case LinkAvailable:
 			link, linkEnd = onboardingLink.URL, onboardingLink.ExpiresAt
 		}
@@ -249,25 +253,134 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboar
 			ref.Deadline = original
 		}
 	}
-	body, err := json.Marshal(ref)
+	if at, valid := orchestration.OwnerDue(obs, now, time.Time{}, ""); !valid {
+		return manual("RETRY_WINDOW_UNAVAILABLE", "Verifica la finestra di ripresa.")
+	} else if at.After(now) {
+		ref.NotBefore = at.UTC().Format(time.RFC3339Nano)
+	}
+	token, err := s.seal(ref, binding)
 	if err != nil {
-		return Block("WAIT_REFERENCE_INVALID", r.Tool, "Recupera una nuova osservazione.")
-	}
-	nonce := make([]byte, s.cipher.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return Block("WAIT_UNAVAILABLE", r.Tool, "Consulta lo stato della decisione.")
-	}
-	token := base64.RawURLEncoding.EncodeToString(s.cipher.Seal(nonce, nonce, body, binding))
-	if len(token) > 1024 {
 		return manual("WAIT_REFERENCE_LIMIT", "Consulta lo stato della decisione.")
 	}
 	return ref.Next(token)
+}
+
+func (s *Signer) seal(ref WaitRef, binding []byte) (string, error) {
+	if s == nil || len(binding) == 0 {
+		return "", errors.New("missing wait configuration")
+	}
+	body, err := json.Marshal(ref)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, s.cipher.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(s.cipher.Seal(nonce, nonce, body, binding))
+	if len(token) > 1024 {
+		return "", errors.New("wait reference exceeds limit")
+	}
+	return token, nil
+}
+
+func argumentDigest(args Object) string {
+	raw, _ := json.Marshal(args)
+	sum := sha256.Sum256(raw)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// Machine observations may have no owner-supplied version. A digest of
+// the bounded projection still identifies a changed result in that case.
+func PollVersion(obs Object) string {
+	if version := Version(obs); version != "" {
+		return version
+	}
+	return argumentDigest(obs)
+}
+
+// Large inputs travel alongside the reference. Only the signed digest can
+// restore them, including the original command key and exact JSON numbers.
+func (r *WaitRef) RestoreArgs(args Object) bool {
+	if r.ArgsHash == "" {
+		return args == nil
+	}
+	if args == nil || argumentDigest(args) != r.ArgsHash {
+		return false
+	}
+	r.Args = args
+	return true
+}
+
+func (s *Signer) issuePoll(binding []byte, next, obs Object, now, due time.Time) Object {
+	read := next["tool"].(string)
+	if read == "ouf.wait" {
+		return ManualBlock("WAIT_OBSERVATION_REQUIRED", "Recupera il riferimento all’osservazione originale.", "OPERATOR")
+	}
+	args := next["arguments"].(Object)
+	reason := next["reasonCode"].(string)
+	deadline, _ := next["deadline"].(string)
+	ref := WaitRef{Read: read, Args: args, Reason: reason, Terminal: next["terminalStates"].([]string),
+		NotBefore: due.UTC().Format(time.RFC3339Nano), Deadline: deadline, State: ObservedState(obs), Version: PollVersion(obs)}
+	if read == "ouf.ingestion.status" {
+		ref.Resource = Resource(obs)
+	}
+	token, err := s.seal(ref, binding)
+	if err != nil && s != nil && len(binding) != 0 {
+		ref.ArgsHash, ref.Args = argumentDigest(args), nil
+		token, err = s.seal(ref, binding)
+		ref.Args = args
+	}
+	if err != nil {
+		return ManualBlock("WAIT_CONFIGURATION_REQUIRED", "Verifica la configurazione dell’attesa e l’identità del chiamante.", "OPERATOR")
+	}
+	return ref.pollNext(token, now)
+}
+
+// Postpone the same observation after a governed admission refusal. Preserve
+// both the original lower bound and the original expiration.
+func (s *Signer) Postpone(binding []byte, ref WaitRef, due, expiry time.Time) Object {
+	if previous, err := time.Parse(time.RFC3339Nano, ref.NotBefore); err == nil && previous.After(due) {
+		due = previous
+	}
+	ref.NotBefore = due.UTC().Format(time.RFC3339Nano)
+	ref.Deadline = expiry.UTC().Format(time.RFC3339Nano)
+	args := ref.Args
+	if ref.ArgsHash != "" {
+		ref.Args = nil
+	}
+	token, err := s.seal(ref, binding)
+	if err != nil {
+		return ManualBlock("WAIT_REFERENCE_LIMIT", "Verifica la finestra di ammissione.", "OPERATOR")
+	}
+	ref.Args = args
+	return ref.Next(token)
+}
+
+func (r WaitRef) pollNext(token string, now time.Time) Object {
+	args := Object{"waitRef": token}
+	if r.ArgsHash != "" {
+		args["resumeArguments"] = r.Args
+	}
+	next := call("POLL", r.Reason, "ouf.wait", args)
+	at, _ := time.Parse(time.RFC3339Nano, r.NotBefore)
+	remaining := min(max(at.Sub(now), 0), time.Hour)
+	next["pollAfterSeconds"] = max(1, int((remaining+time.Second-1)/time.Second))
+	next["terminalStates"] = r.Terminal
+	next["userMessage"] = "Chiama subito ouf.wait. Il server attende il momento indicato per proseguire."
+	if r.Deadline != "" {
+		next["deadline"] = r.Deadline
+	}
+	return next
 }
 
 // Only current owner-issued validators have these shapes. Legacy observations
 // use our base64 digest and therefore take the unconditional read path.
 func (r WaitRef) ReadArgs() Object {
 	args := maps.Clone(r.Args)
+	if len(r.Terminal) != 0 {
+		return args
+	}
 	switch r.Read {
 	case "source.onboarding.read":
 		if len(r.Version) == 71 && strings.HasPrefix(r.Version, "sha256:") {
@@ -282,6 +395,9 @@ func (r WaitRef) ReadArgs() Object {
 }
 
 func (r WaitRef) Next(token string) Object {
+	if len(r.Terminal) != 0 {
+		return r.pollNext(token, time.Now())
+	}
 	s := call("WAIT_FOR_HUMAN", r.Reason, "ouf.wait", Object{"waitRef": token})
 	s["deadline"] = r.Deadline
 	s["human"] = Object{"reviewUrl": r.URL, "decisionKind": r.Decision, "expiresAt": r.Deadline}
@@ -298,10 +414,20 @@ func (r WaitRef) Next(token string) Object {
 	return s
 }
 
-func (r WaitRef) Refresh() Object {
-	s := call("CALL_TOOL", "REFRESH_REVIEW_OBSERVATION", r.Read, r.Args)
-	s["userMessage"] = "Rileggi la decisione per aggiornare il collegamento di revisione."
+func (r WaitRef) Refresh(e Engine, obs Object) Object {
+	s := e.ownerCall("REFRESH_REVIEW_OBSERVATION", r.Read, r.Args, obs)
+	if s["action"] == "CALL_TOOL" {
+		s["userMessage"] = "Rileggi la decisione per aggiornare il collegamento di revisione."
+	}
 	return s
+}
+
+func (r WaitRef) ResumeCommand(e Engine) Object {
+	next := e.ownerCall(r.Reason, r.Read, r.Args, Object{"notBefore": r.NotBefore})
+	if next["action"] == "CALL_TOOL" {
+		next["userMessage"] = "La finestra è aperta. Riprendi il passo indicato."
+	}
+	return next
 }
 
 func (s *Signer) Open(token string, binding []byte) (WaitRef, error) {
@@ -315,7 +441,9 @@ func (s *Signer) Open(token string, binding []byte) (WaitRef, error) {
 	}
 	n := s.cipher.NonceSize()
 	plain, err := s.cipher.Open(nil, b[:n], b[n:], binding)
-	if err != nil || json.Unmarshal(plain, &ref) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(plain))
+	decoder.UseNumber()
+	if err != nil || decoder.Decode(&ref) != nil {
 		return WaitRef{}, errors.New("invalid wait reference")
 	}
 	return ref, nil

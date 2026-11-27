@@ -285,7 +285,7 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema,
 		Meta: mcp.Meta{"openai/fileParams": []string{"file"}}},
-		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (out *mcp.CallToolResult, structured any, outErr error) {
 			identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 			if !ok || identity.Delegation == "" || identity.ActorType != "HUMAN" {
 				return actorOrDelegationDenial(identity, ok), nil, nil
@@ -311,6 +311,7 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 				CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: 30 * time.Second,
 				RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 4096},
 				Upload: &orchestration.UploadStream{Reader: staged.File, Size: staged.Size, SHA256: staged.SHA256, FileID: descriptor.FileID}})
+			defer func() { attachObservation(out, result.Observation) }()
 			if err != nil {
 				return governedCallErrorResult(err), nil, nil
 			}
@@ -327,7 +328,7 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 			if !ok {
 				return errorResult("UPLOAD_OWNER_RESPONSE_INVALID", false), nil, nil
 			}
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(safe)}}}, nil, nil
+			return ownerContent(safe, result.RetryAfter), nil, nil
 		})
 }
 
@@ -468,7 +469,7 @@ func exceedsOnboardingArgumentLimit(c manifest.Capability, size int) bool {
 	return false
 }
 
-func invoke(ctx context.Context, c manifest.Capability, checksum string, args []byte, service *orchestration.Service, maxObjects, maxBytes int) (*mcp.CallToolResult, any, error) {
+func invoke(ctx context.Context, c manifest.Capability, checksum string, args []byte, service *orchestration.Service, maxObjects, maxBytes int) (out *mcp.CallToolResult, structured any, outErr error) {
 	identity, ok := ctx.Value(identityKey{}).(requestIdentity)
 	if !ok {
 		return errorResult("UNAUTHENTICATED", false), nil, nil
@@ -556,11 +557,13 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 		timeout = 10 * time.Second
 	}
 	internalRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
-	in := orchestration.Invocation{InternalWaitRead: internalRead, AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	machineRead, _ := ctx.Value(machineWaitReadKey{}).(bool)
+	in := orchestration.Invocation{MachineWaitRead: machineRead, InternalWaitRead: internalRead, AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
 	if c.ToolName == "semantic.discovery.adopt" {
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}
 	result, err := service.Call(ctx, in)
+	defer func() { attachObservation(out, result.Observation) }()
 	if err != nil {
 		return governedCallErrorResult(err), nil, nil
 	}
@@ -589,9 +592,12 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 				problem.Code = "OWNER_ARGUMENTS_REJECTED"
 			}
 		}
-		return ownerProblemResult(problem, result.Body), nil, nil
+		return ownerProblemAt(problem, result.Body, result.Observation.At), nil, nil
 	}
-	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result.Body)}}}
+	content := ownerContent(result.Body, result.RetryAfter)
+	if content.IsError {
+		return content, nil, nil
+	}
 	if isSourceRevisionCapability(c.CapabilityID) {
 		return content, json.RawMessage(result.Body), nil
 	}
@@ -831,12 +837,31 @@ func onboardingProblem(tool string, p *orchestration.Problem, body []byte) *mcp.
 	return workflowError(out)
 }
 
+// Keep successful response bytes intact for receipt validation and evidence.
+func ownerContent(body []byte, header string) *mcp.CallToolResult {
+	content := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}
+	if header != "" {
+		due, valid := orchestration.OwnerDue(nil, time.Now(), time.Time{}, header)
+		if !valid {
+			return errorResult("OWNER_PROBLEM_INVALID", false)
+		}
+		content.Meta = mcp.Meta{"ouf/ownerNotBefore": due.UTC().Format(time.RFC3339Nano)}
+	}
+	return content
+}
+
 func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallToolResult {
+	return ownerProblemAt(problem, body, time.Now())
+}
+
+func ownerProblemAt(problem *orchestration.Problem, body []byte, now time.Time) *mcp.CallToolResult {
 	// Only typed timing fields may accompany an owner problem on the retry rail.
 	type timing struct {
 		Retryable         *bool      `json:"retryable,omitempty"`
 		PollAfterSeconds  *int       `json:"pollAfterSeconds,omitempty"`
 		RetryAfterSeconds *int       `json:"retryAfterSeconds,omitempty"`
+		NotBefore         *time.Time `json:"notBefore,omitempty"`
+		NextAttemptAt     *time.Time `json:"nextAttemptAt,omitempty"`
 		WaitUntil         *time.Time `json:"waitUntil,omitempty"`
 		Deadline          *time.Time `json:"deadline,omitempty"`
 		ExpiresAt         *time.Time `json:"expiresAt,omitempty"`
@@ -847,6 +872,20 @@ func ownerProblemResult(problem *orchestration.Problem, body []byte) *mcp.CallTo
 	var flags timing
 	if json.Valid(body) && json.Unmarshal(body, &flags) != nil {
 		return errorResult("OWNER_PROBLEM_INVALID", false)
+	}
+	// Preserve the lower bound of the whole error (including a nested receipt)
+	// while exposing only typed fields from the owner's body.
+	if json.Valid(body) {
+		var obs map[string]any
+		if json.Unmarshal(body, &obs) == nil {
+			at, valid := orchestration.OwnerDue(obs, now, time.Time{}, problem.RetryAfter)
+			if !valid {
+				return errorResult("OWNER_PROBLEM_INVALID", false)
+			}
+			if at.After(now) {
+				flags.NotBefore = &at
+			}
+		}
 	}
 	projected := struct {
 		orchestration.Problem

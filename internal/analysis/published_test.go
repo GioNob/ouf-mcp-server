@@ -88,6 +88,31 @@ func TestPublishedPackingAndCrossPageOrdinals(t *testing.T) { // MCP-50T-03
 	}
 }
 
+func TestPublishedLookupAndAuthoredDiscoveryForSameHeader(t *testing.T) {
+	scope, profile, m := fixture(t, 2)
+	work := []Work{{Tool: "semantic.discovery.request", PreviewName: "ente_gestore", Columns: []int{0},
+		Arguments: json.RawMessage(`{"intent":"Ente responsabile della gestione","preferredLanguages":["it"],"requestedArtifactType":"PROPERTY"}`)}}
+	plan, err := BuildPublished(scope, profile, m, []string{"ente_gestore", "ente_gestore"}, work, "test", 0)
+	if err != nil || len(plan.Tasks) != 1 {
+		t.Fatal(plan, err)
+	}
+	parent := plan.Tasks[0]
+	var batch Batch
+	if err = json.Unmarshal(parent.Arguments, &batch); err != nil || len(batch.Intents) != 1 || batch.Intents[0].Text != "ente_gestore" {
+		t.Fatal(batch, err)
+	}
+	children := parent.ResidualTasks(plan.ID, batch.Intents[0], false)
+	if len(children) != 2 || children[0].OwnerKey == children[1].OwnerKey {
+		t.Fatal(children)
+	}
+	for n, want := range []string{"Ente responsabile della gestione", "ente_gestore"} {
+		var args struct{ Intent string }
+		if !slices.Equal(children[n].Columns, []int{n}) || json.Unmarshal(children[n].Arguments, &args) != nil || args.Intent != want {
+			t.Fatal(children[n], want)
+		}
+	}
+}
+
 func TestPublishedWholeBatchErrors(t *testing.T) { // MCP-50T-04
 	scope, p, m := fixture(t, 2)
 	plan, err := BuildPublished(scope, p, m, []string{"x", "y"}, nil, "fixture", 0)

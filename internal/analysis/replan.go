@@ -90,18 +90,21 @@ func cloneInputs(p *Plan, inputs []Task, m *manifest.Snapshot, source string) er
 			split[child.ID] = true
 		}
 		for _, i := range b.Intents {
-			cols := t.Groups[i.ID]
-			add := func(cols []int, fallback bool) {
-				old := ResidualTask(source, i, cols, MaxResultBytes, fallback)
-				residuals[old.ID] = ResidualTask(p.ID, i, cols, MaxResultBytes, fallback)
-			}
-			add(cols, false)
-			for _, n := range cols {
-				add([]int{n}, true)
+			for _, fallback := range []bool{false, true} {
+				old := t.ResidualTasks(source, i, fallback)
+				fresh := t.ResidualTasks(p.ID, i, fallback)
+				for n, child := range old {
+					residuals[child.ID] = fresh[n]
+				}
 			}
 		}
 	}
 	for _, t := range inputs {
+		// A column reformulation was bound to a completed request in the old epoch.
+		// Re-evaluate the original input before making any new decision.
+		if t.Reformulated {
+			continue
+		}
 		if len(t.Columns) == 0 || len(t.Columns) > p.Profile.ColumnCount {
 			return ErrInvalid
 		}
@@ -125,7 +128,7 @@ func cloneInputs(p *Plan, inputs []Task, m *manifest.Snapshot, source string) er
 			if err != nil || json.Unmarshal(t.Arguments, &b) != nil || b.Contract != BatchContract || b.Limit < 1 || b.Limit > l.Hits || len(b.Intents) < 1 || len(b.Intents) > l.MaxIntents {
 				return ErrInvalid
 			}
-			fresh := batchTask(b.Intents, b.Limit, t.Groups, l.ResponseBytes)
+			fresh := batchTask(b.Intents, b.Limit, t.Groups, t.DiscoveryText, l.ResponseBytes)
 			if len(fresh.Arguments) > l.RequestBytes || fresh.ID != t.ID || !slices.Equal(fresh.Columns, t.Columns) {
 				return ErrInvalid
 			}

@@ -68,7 +68,10 @@ func inheritRequests(ctx context.Context, tx pgx.Tx, id string, tasks []string) 
 	if len(tasks) == 0 {
 		return nil
 	}
-	return updateOutcomes(ctx, tx, id, `select c.ordinal,c.outcome as old,prior.outcome,prior.request_id,prior.next_tool
+	return updateOutcomes(ctx, tx, id, `select c.ordinal,c.outcome as old,case when prior.outcome->>'state'='NO_CANDIDATES'
+		then jsonb_build_object('state','BLOCKED','reasonCode','DISCOVERY_DECISION_REQUIRED','requestId',prior.request_id)
+		else prior.outcome end as outcome,prior.request_id,case when prior.outcome->>'state'='NO_CANDIDATES'
+		then 'semantic.discovery.candidates' else prior.next_tool end as next_tool
 		from ouf_mcp.analysis_column c cross join lateral (
 		  select x.outcome,x.request_id,x.next_tool from ouf_mcp.analysis_column x
 		  where x.analysis_id=c.analysis_id and x.task_id=c.task_id and x.request_id is not null
@@ -82,8 +85,10 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 	), proposed as materialized (`+proposalSQL+`), changed as (
 		update ouf_mcp.analysis_column c set outcome=p.outcome,request_id=p.request_id,next_tool=p.next_tool
 		from proposed p where c.analysis_id=$1 and c.ordinal=p.ordinal and not (select integrity_hold from head)
-		  and (p.old->>'state'='PENDING' or (p.old->>'reasonCode'='DISCOVERY_EVIDENCE_UNAVAILABLE'
-		     and p.outcome->>'state' in ('NO_CANDIDATES','CANDIDATES_READY')))
+		  and (p.old->>'state'='PENDING' or (p.old->>'state'='CANDIDATES_READY' and p.outcome->>'reasonCode'='DISCOVERY_DECISION_REQUIRED')
+		    or (p.old->>'reasonCode'='DISCOVERY_DECISION_REQUIRED' and p.outcome->>'state'='NO_CANDIDATES')
+		    or (p.old->>'reasonCode'='DISCOVERY_EVIDENCE_UNAVAILABLE'
+		     and (p.outcome->>'state' in ('NO_CANDIDATES','CANDIDATES_READY') or p.outcome->>'reasonCode'='DISCOVERY_DECISION_REQUIRED')))
 		  and (p.old is distinct from p.outcome or c.next_tool<>p.next_tool)
 		returning c.ordinal,p.old,c.outcome
 	), versions as (
@@ -97,7 +102,7 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 		  count(*) filter(where outcome->>'state'='BLOCKED') as nb,
 		  count(*) filter(where outcome->>'state'='MATCHED_PUBLISHED') as nm,
 		  count(*) filter(where outcome->>'state'='NO_CANDIDATES') as nz,
-		  count(*) filter(where outcome->>'state'='CANDIDATES_READY') as nr
+		  count(*) filter(where outcome->>'state'='CANDIDATES_READY') - count(*) filter(where old->>'state'='CANDIDATES_READY') as nr
 		from changed where old<>outcome
 	), stop as (
 		select not exists(select from changed c join proposed p using(ordinal) where p.next_tool<>'')
@@ -113,9 +118,29 @@ func updateOutcomes(ctx context.Context, tx pgx.Tx, id, proposalSQL string, para
 	return err
 }
 
-func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, now time.Time) error {
+func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, now time.Time, obs orchestration.OwnerObservation) error {
 	if t.Tool == analysis.BatchTool {
 		return savePublished(ctx, tx, id, t, analysis.Finish{})
+	}
+	if (t.Tool == "semantic.discovery.status" || t.Tool == "semantic.discovery.candidates") &&
+		(t.State == "SUCCEEDED" || !obs.At.IsZero()) {
+		var ref struct{ RequestID string }
+		if json.Unmarshal(t.Arguments, &ref) != nil || !analysis.CanonicalUUID(ref.RequestID) {
+			return analysis.ErrInvalid
+		}
+		if obs.At.IsZero() {
+			obs = orchestration.ObserveOwner(orchestration.GatewayResponse{Body: t.Result}, nil, now)
+		}
+		if t.NotBefore.After(obs.Due) {
+			obs.Due = t.NotBefore
+		}
+		saved, err := saveDiscoveryClock(ctx, tx, id, ref.RequestID, obs)
+		if err != nil {
+			return err
+		}
+		if t.State == "SUCCEEDED" {
+			return projectDiscovery(ctx, tx, id, t.Tool, ref.RequestID, t.Result, obs.At, saved.Due)
+		}
 	}
 	if t.State == "HELD" {
 		if orchestration.SafeDenialReason(t.Code, "") != "" || t.Code == "OWNER_AUTHORIZATION_DENIED" || t.Code == "OWNER_REQUEST_REJECTED" || t.Code == "RETRY_BUDGET_EXHAUSTED" || t.Code == "AUTHORIZATION_DENIED" {
@@ -132,12 +157,12 @@ func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, n
 		if !analysis.ValidEvidenceJSON(t.Result) || json.Unmarshal(t.Result, &ref) != nil || !analysis.CanonicalUUID(ref.RequestID) {
 			return projectOutcome(ctx, tx, id, t.Columns, "", analysis.Outcome{State: "BLOCKED", Reason: "DISCOVERY_EVIDENCE_UNAVAILABLE"}, "")
 		}
-		return projectOutcome(ctx, tx, id, t.Columns, ref.RequestID, analysis.Outcome{State: "PENDING", RequestID: ref.RequestID}, "semantic.discovery.status")
-	case "semantic.discovery.status", "semantic.discovery.candidates":
-		if json.Unmarshal(t.Arguments, &ref) != nil || !analysis.CanonicalUUID(ref.RequestID) {
-			return analysis.ErrInvalid
+		outcome, next := analysis.DiscoveryContinuation(ref.RequestID, t.Result, now, t.NotBefore, "semantic.discovery.status")
+		obs := orchestration.OwnerObservation{Due: outcome.NotBefore, Reason: "OWNER_OBSERVATION", Code: t.Code}
+		if _, err := saveDiscoveryClock(ctx, tx, id, ref.RequestID, obs); err != nil {
+			return err
 		}
-		return projectDiscovery(ctx, tx, id, t.Tool, ref.RequestID, t.Result, now)
+		return projectOutcome(ctx, tx, id, t.Columns, ref.RequestID, outcome, next)
 	default:
 		_, err := tx.Exec(ctx, `update ouf_mcp.analysis_column set next_tool='source.analysis.plan',task_id=null
 			where analysis_id=$1 and task_id=$2 and next_tool='source.analysis.step'`, id, t.ID)
@@ -145,32 +170,58 @@ func finishSummary(ctx context.Context, tx pgx.Tx, id string, t analysis.Task, n
 	}
 }
 
-func (s *Store) ObserveDiscovery(ctx context.Context, scope analysis.Scope, id, manifest, tool, request string, raw []byte) error {
+func saveDiscoveryClock(ctx context.Context, tx pgx.Tx, id, request string, obs orchestration.OwnerObservation) (orchestration.OwnerObservation, error) {
+	// 019 requires a timestamp. The observation time is an immediately elapsed
+	// floor for a response without a future due date.
+	if obs.Due.IsZero() {
+		obs.Due = time.Now().UTC().Truncate(time.Microsecond)
+	} else if us := obs.Due.Truncate(time.Microsecond); us.Before(obs.Due) {
+		obs.Due = us.Add(time.Microsecond)
+	}
+	err := tx.QueryRow(ctx, `insert into ouf_mcp.analysis_owner_due as w
+		(analysis_id,request_id,not_before,reason,observation_code,observation_status)
+		values ($1,$2,$3,$4,$5,$6) on conflict (analysis_id,request_id) do update set
+		not_before=greatest(w.not_before,excluded.not_before),
+		reason=case when excluded.not_before >= w.not_before then excluded.reason else w.reason end,
+		observation_code=excluded.observation_code,observation_status=excluded.observation_status
+		returning not_before,reason`, id, request, obs.Due, obs.Reason, obs.Code, obs.Status).Scan(&obs.Due, &obs.Reason)
+	return obs, err
+}
+
+// A nil evidence payload is an error observation. It can postpone the
+// request without replacing verified column evidence or storing an error body.
+func (s *Store) RecordDiscovery(ctx context.Context, scope analysis.Scope, id, manifest, tool, request string, raw []byte, obs orchestration.OwnerObservation) (orchestration.OwnerObservation, error) {
 	if !analysis.CanonicalUUID(request) {
-		return analysis.ErrInvalid
+		return obs, analysis.ErrInvalid
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return obs, err
 	}
 	defer tx.Rollback(ctx)
 	if _, _, err = analysisHeader(ctx, tx, scope, id, manifest); err != nil {
-		return err
+		return obs, err
 	}
 	var bound bool
 	if err = tx.QueryRow(ctx, `select exists(select from ouf_mcp.analysis_column where analysis_id=$1 and request_id=$2)`, id, request).Scan(&bound); err != nil {
-		return err
+		return obs, err
 	}
 	if !bound {
-		return analysis.ErrScope
+		return obs, analysis.ErrScope
 	}
-	if err = projectDiscovery(ctx, tx, id, tool, request, raw, time.Now()); err != nil {
-		if errors.Is(err, analysis.ErrProfile) {
-			return holdAnalysis(ctx, tx, id)
+	obs, err = saveDiscoveryClock(ctx, tx, id, request, obs)
+	if err != nil {
+		return obs, err
+	}
+	if raw != nil {
+		if err = projectDiscovery(ctx, tx, id, tool, request, raw, time.Now(), obs.Due); err != nil {
+			if errors.Is(err, analysis.ErrProfile) {
+				return obs, holdAnalysis(ctx, tx, id)
+			}
+			return obs, err
 		}
-		return err
 	}
-	return tx.Commit(ctx)
+	return obs, tx.Commit(ctx)
 }
 
 // Commit the hold under the already locked plan row. Conflicting owner
@@ -203,7 +254,7 @@ func checkAnalysisHold(ctx context.Context, tx pgx.Tx, id string) error {
 	return nil
 }
 
-func projectDiscovery(ctx context.Context, tx pgx.Tx, id, tool, request string, raw []byte, now time.Time) error {
+func projectDiscovery(ctx context.Context, tx pgx.Tx, id, tool, request string, raw []byte, now, floor time.Time) error {
 	var completion *int
 	err := tx.QueryRow(ctx, `select completed_count from ouf_mcp.analysis_job_completion
 		where analysis_id=$1 and request_id=$2`, id, request).Scan(&completion)
@@ -224,8 +275,59 @@ func projectDiscovery(ctx context.Context, tx pgx.Tx, id, tool, request string, 
 			completion = count
 		}
 	}
-	o, next := analysis.DiscoveryEvidenceWithCompletion(tool, request, raw, completion, now)
+	if tool == "semantic.discovery.candidates" {
+		empty := analysis.EmptyCandidatePage(request, raw)
+		if _, err = tx.Exec(ctx, `update ouf_mcp.analysis_column set empty_candidate_page=$3,
+			proposal_choice=case when $3 then coalesce(proposal_choice,gen_random_uuid()) end,
+			exclusion_choice=case when $3 then coalesce(exclusion_choice,gen_random_uuid()) end
+			where analysis_id=$1 and request_id=$2 and (empty_candidate_page<>$3 or ($3 and proposal_choice is null))`, id, request, empty); err != nil {
+			return err
+		}
+	}
+	o, next := analysis.DiscoveryEvidenceWithCompletion(tool, request, raw, completion, now, floor)
 	return projectOutcome(ctx, tx, id, nil, request, o, next)
+}
+
+// Both live summary paths select one column, then read only its task. Older
+// rows may have the owner's delay only in the original discovery receipt.
+const summaryTimingSQL = `jsonb_build_object(
+	'notBefore',w.not_before,'ownerDueReason',w.reason,
+	'decisionRequired',c.outcome->>'reasonCode'='DISCOVERY_DECISION_REQUIRED',
+	'nextAttemptAt',case when c.next_tool='source.analysis.step' then t.task->'notBefore' end,
+	'next_retry_at',case when c.next_tool='source.analysis.step'
+		and t.task->>'tool' in ('semantic.discovery.status','semantic.discovery.candidates')
+		then (select ` + plannedReadDue + plannedReadClocks + `where t.analysis_id=c.analysis_id and t.task_id=c.task_id) end,
+	'completedAt',t.task->'completedAt',
+	'result',case when c.request_id::text=t.task->'result'->>'requestId'
+		then t.task->'result' end)`
+
+func mergeSummaryTiming(h *analysis.Hint, raw []byte) error {
+	var obs map[string]any
+	if err := json.Unmarshal(raw, &obs); err != nil {
+		return err
+	}
+	if reason, ok := obs["ownerDueReason"].(string); ok {
+		h.OwnerReason = reason
+	}
+	if decision, ok := obs["decisionRequired"].(bool); ok {
+		h.DecisionRequired = decision
+	}
+	var floor time.Time
+	if h.NotBefore != "" {
+		var err error
+		floor, err = time.Parse(time.RFC3339Nano, h.NotBefore)
+		if err != nil {
+			return analysis.ErrProfile
+		}
+	}
+	due, valid := orchestration.OwnerDue(obs, time.Now(), floor, "")
+	if !valid {
+		return analysis.ErrProfile
+	}
+	if !due.IsZero() {
+		h.NotBefore = due.UTC().Format(time.RFC3339Nano)
+	}
+	return nil
 }
 
 const summaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome` + summaryVersionsSQL
@@ -292,12 +394,17 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	if pos.Last >= 0 && out.Seq != pos.Seq {
 		return out, analysis.ErrProfile
 	}
+	var timing []byte
 	if pos.Snapshot != uuid.Nil {
 		var raw []byte
 		var header string
-		err = scanSummaryRow(ctx, tx, &out, `select a.frozen_hint,coalesce(c.header,'') from ouf_mcp.analysis_summary_read a
-		 left join ouf_mcp.analysis_column c on a.frozen_hint->>'Tool'='source.analysis.plan' and c.analysis_id=a.analysis_id and c.ordinal=(a.frozen_hint->>'Ordinal')::int
-		 where a.analysis_id=$1 and a.snapshot_id=$2 and a.seq=$3 and a.frozen_hint is not null`, []any{id, pos.Snapshot, out.Seq}, &raw, &header)
+		err = scanSummaryRow(ctx, tx, &out, `select a.frozen_hint,case when a.frozen_hint->>'Tool'='source.analysis.plan' then coalesce(c.header,'') else '' end,
+		 `+summaryTimingSQL+` from ouf_mcp.analysis_summary_read a
+		 left join ouf_mcp.analysis_column c on c.analysis_id=a.analysis_id and c.ordinal=(a.frozen_hint->>'Ordinal')::int
+		 and coalesce(c.task_id,'')=a.frozen_hint->>'TaskID' and coalesce(c.request_id::text,'')=a.frozen_hint->>'RequestID'
+		 left join ouf_mcp.profile_analysis_task t on t.analysis_id=a.analysis_id and t.task_id=a.frozen_hint->>'TaskID'
+		 left join ouf_mcp.analysis_owner_due w on w.analysis_id=a.analysis_id and w.request_id=nullif(a.frozen_hint->>'RequestID','')::uuid
+		 where a.analysis_id=$1 and a.snapshot_id=$2 and a.seq=$3 and a.frozen_hint is not null`, []any{id, pos.Snapshot, out.Seq}, &raw, &header, &timing)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return out, analysis.ErrExpired
 		}
@@ -312,16 +419,29 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		if out.Hint.Reason == "" {
 			out.Hint.Reason = "OUTCOME_REQUIRES_RECONCILIATION"
 		}
-	} else if c.Pending > 0 {
-		err = scanSummaryRow(ctx, tx, &out, `select next_tool,coalesce(task_id,''),coalesce(request_id::text,''),ordinal,case when next_tool='source.analysis.plan' then header else '' end
-			from ouf_mcp.analysis_column where analysis_id=$1 and next_tool<>'' order by published_first desc,ordinal limit 1`, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header)
-	} else if c.Blocked == c.Total {
+	} else if c.Pending > 0 || c.Blocked > 0 {
+		err = scanSummaryRow(ctx, tx, &out, `select c.next_tool,coalesce(c.task_id,''),coalesce(c.request_id::text,''),c.ordinal,
+			case when c.next_tool='source.analysis.plan' then c.header else '' end,`+summaryTimingSQL+`
+			from (select * from ouf_mcp.analysis_column where analysis_id=$1 and next_tool<>'' order by published_first desc,ordinal limit 1) c
+			left join ouf_mcp.profile_analysis_task t using(analysis_id,task_id)
+			left join ouf_mcp.analysis_owner_due w on w.analysis_id=c.analysis_id and w.request_id=c.request_id`, []any{id}, &out.Hint.Tool, &out.Hint.TaskID, &out.Hint.RequestID, &out.Hint.Ordinal, &out.Hint.Header, &timing)
+	}
+	if errors.Is(err, pgx.ErrNoRows) && c.Blocked == c.Total {
 		err = scanSummaryRow(ctx, tx, &out, `select outcome->>'reasonCode' from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='BLOCKED' order by ordinal limit 1`, []any{id}, &out.Hint.Reason)
-	} else if out.Onboarding && c.Ready > 0 {
+	} else if pos.Snapshot == uuid.Nil && !out.Stopped && out.Hint.Reason == "" && c.Pending == 0 && c.Ready > 0 && out.Onboarding && out.Hint.Tool == "" {
 		err = scanSummaryRow(ctx, tx, &out, `select request_id::text from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='CANDIDATES_READY' order by ordinal limit 1`, []any{id}, &out.Hint.RequestID)
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
+	}
+	if len(timing) > 0 {
+		decision := out.Hint.DecisionRequired
+		if err := mergeSummaryTiming(&out.Hint, timing); err != nil {
+			return out, err
+		}
+		if pos.Snapshot != uuid.Nil {
+			out.Hint.DecisionRequired = decision
+		}
 	}
 	if page {
 		query := summaryPageSQL
