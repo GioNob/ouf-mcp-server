@@ -522,7 +522,11 @@ func (s *workflowServer) decorateResult(ctx context.Context, t registeredTool, a
 		structured["allowedForms"] = forms
 	}
 	var next nextstep.Object
-	if !result.IsError && successorUnavailable {
+	localBatchNext, _ := result.Meta[batchNextMeta].(nextstep.Object)
+	delete(result.Meta, batchNextMeta)
+	if batch && localBatchNext != nil {
+		next = localBatchNext
+	} else if !result.IsError && successorUnavailable {
 		id, _ := args["analysisId"].(string)
 		next = engine.AnalysisSuccessorFallback(id)
 	} else {

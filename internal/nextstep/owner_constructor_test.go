@@ -52,6 +52,12 @@ func init() {
 		return e.BatchNext("source.file.preview", Object{"mode": analysis.BatchMode},
 			Object{"assetId": "asset", "profileId": "profile", "schemaHash": "hash"}, false)
 	}})
+	registerOwnerProducer(Engine.BatchStatusNext, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+		return e.BatchStatusNext("analysis", "ANALYSIS_CONTINUE")
+	}})
+	registerOwnerProducer(Engine.BatchPageNext, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+		return e.BatchPageNext(Object{"analysisId": "analysis", "view": "BATCH"}, false)
+	}})
 	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
 		return e.AnalysisSuccessorFallback("analysis")
 	}})
@@ -191,7 +197,7 @@ func bypassesOwnerTiming(site string, n ast.Node) bool {
 		case *ast.Ident:
 			if callee.Name == "alternative" {
 				switch site {
-				case "discovery.go/discoveryDecisions", "discovery.go/reformulationOption", "draft.go/draftCreateDecision", "draft.go/draftFailure",
+				case "batch.go/BatchDecisionNext", "discovery.go/discoveryDecisions", "discovery.go/reformulationOption", "draft.go/draftCreateDecision", "draft.go/draftFailure",
 					"draft.go/afterDraftRecoveryRead", "draft.go/installationLimitDecision", "engine.go/failure",
 					"summary.go/SummaryNext", "summary.go/ReplanNext", "summary.go/permissionHold":
 					return false

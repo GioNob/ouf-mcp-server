@@ -250,7 +250,6 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	if !errors.Is(readErr, ErrScope) || expected != 0 {
 		return View{}, readErr
 	}
-	preview, _ := Find(c.Manifest, "source.file.preview")
 	limits, e := SummaryLimits(c.Manifest)
 	if e != nil {
 		return View{}, e
@@ -272,21 +271,11 @@ func (c Coordinator) Plan(ctx context.Context, i orchestration.Identity, asset, 
 	}
 	for len(headers) == 0 || len(headers) < profilePin.ColumnCount {
 		offset := len(headers)
-		args, _ := json.Marshal(map[string]any{"assetId": asset, "profileId": profile, "view": "COLUMNS", "offset": offset, "limit": limits.PreviewPageSize})
-		r, e := c.Service.Call(ctx, orchestration.Invocation{Identity: i, CapabilityID: preview.CapabilityID, Owner: preview.Owner, OperationClass: "READ", GatewayBindingRef: preview.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(), Window: orchestration.AdmissionWindow, Timeout: 10 * time.Second, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 1 << 20}})
+		body, e := c.readPreviewPage(ctx, i, checksum, asset, profile, offset, limits.PreviewPageSize)
 		if e != nil {
 			return View{}, e
 		}
-		if r.Problem != nil && r.Problem.Status == http.StatusForbidden {
-			return View{}, &OwnerDenial{ReasonCode: r.Problem.Code, CapabilityID: preview.CapabilityID, PolicyVersion: r.Problem.PolicyVersion}
-		}
-		if r.Problem != nil && (r.Problem.Status == 503 || r.Problem.Status == 429) {
-			return View{}, ErrUnavailable
-		}
-		if r.Replay || r.Problem != nil {
-			return View{}, ErrProfile
-		}
-		page, names, err := previewPage(r.Body, asset, profile, profilePin, offset, limits.PreviewPageSize)
+		page, names, err := previewPage(body, asset, profile, profilePin, offset, limits.PreviewPageSize)
 		if err != nil {
 			return View{}, err
 		}

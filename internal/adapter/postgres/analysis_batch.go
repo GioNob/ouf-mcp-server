@@ -21,9 +21,12 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 	var raw []byte
 	var stored string
 	var revision int64
-	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision from ouf_mcp.profile_analysis
+	var initialized bool
+	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision,
+		exists(select from ouf_mcp.analysis_counts where analysis_id=$1)
+		from ouf_mcp.profile_analysis
 		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode'=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision)
+		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &initialized)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchStart{}, analysis.ErrScope
 	}
@@ -35,7 +38,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		!pin.Profile.Valid() || id != analysis.BatchAnalysisID(scope, pin.Profile, pin.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrProfile
 	}
-	return analysis.BatchStart{ID: id, Profile: pin.Profile, Epoch: pin.Epoch, Revision: revision}, nil
+	return analysis.BatchStart{ID: id, Profile: pin.Profile, Epoch: pin.Epoch, Revision: revision, Initialized: initialized}, nil
 }
 
 func (s *Store) ReadBatchStart(ctx context.Context, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
@@ -55,10 +58,7 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 	if !scope.Valid() || !start.Profile.Valid() || start.ID != analysis.BatchAnalysisID(scope, start.Profile, start.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrInvalid
 	}
-	asView := func(v analysis.BatchStart, err error) (analysis.View, error) {
-		return analysis.View{ID: v.ID, Profile: v.Profile, Revision: v.Revision, Epoch: v.Epoch}, err
-	}
-	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, func(tx pgx.Tx) (analysis.View, error) {
+	initialize := func(tx pgx.Tx) (analysis.View, error) {
 		raw, err := json.Marshal(batchProfile{Profile: start.Profile, Mode: analysis.BatchMode, Epoch: start.Epoch})
 		if err != nil {
 			return analysis.View{}, err
@@ -71,13 +71,140 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		if err != nil {
 			return analysis.View{}, err
 		}
-		retained, err := readBatchStart(ctx, tx, scope, start.ID, checksum)
-		if err == nil && retained.Profile != start.Profile {
-			err = analysis.ErrProfile
+		if err = lockBatchAnalysis(ctx, tx, scope, start.ID); err != nil {
+			return analysis.View{}, err
 		}
-		return asView(retained, err)
-	}, func(target string) (analysis.View, error) {
-		return asView(s.ReadBatchStart(ctx, scope, target, checksum))
+		retained, err := readBatchStart(ctx, tx, scope, start.ID, checksum)
+		if err != nil {
+			return analysis.View{}, err
+		}
+		if retained.Profile != start.Profile {
+			return analysis.View{}, analysis.ErrProfile
+		}
+		if !retained.Initialized {
+			if err = initializeBatchColumns(ctx, tx, scope, checksum, start); err != nil {
+				return analysis.View{}, err
+			}
+		}
+		return analysis.View{ID: retained.ID, Profile: retained.Profile, Revision: retained.Revision, Epoch: retained.Epoch}, nil
+	}
+	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, initialize, func(target string) (analysis.View, error) {
+		if target != start.ID {
+			return analysis.View{}, analysis.ErrProfile
+		}
+		// A 66a receipt may refer to a profile pin without any columns yet.
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return analysis.View{}, err
+		}
+		defer tx.Rollback(ctx)
+		view, err := initialize(tx)
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		return view, err
 	})
-	return analysis.BatchStart{ID: v.ID, Profile: v.Profile, Epoch: v.Epoch, Revision: v.Revision}, err
+	return analysis.BatchStart{ID: v.ID, Profile: v.Profile, Epoch: v.Epoch, Revision: v.Revision, Initialized: err == nil}, err
+}
+
+func lockBatchAnalysis(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id string) error {
+	var found bool
+	err := tx.QueryRow(ctx, `select true from ouf_mcp.profile_analysis
+		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode'=$5
+		for no key update`, id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return analysis.ErrScope
+	}
+	return err
+}
+
+func initializeBatchColumns(ctx context.Context, tx pgx.Tx, scope analysis.Scope, checksum string, start analysis.BatchStart) error {
+	pin, err := json.Marshal(start.Profile)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `with verified as materialized (
+		select (h.n-1)::int as ordinal,h.name,p.batch_columns->((h.n-1)::int) as col
+		from ouf_mcp.analysis_preview_progress p cross join lateral unnest(p.headers) with ordinality as h(name,n)
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4
+		and p.manifest_checksum=$5 and p.profile=$6 and cardinality(p.headers)=$7 and p.batch_columns is not null
+	), initial as (
+		insert into ouf_mcp.analysis_column(analysis_id,ordinal,header,next_tool,outcome)
+		select $1,ordinal,name,'',case when col->>'intent'='' then
+			'{"state":"BLOCKED","reasonCode":"ANALYSIS_COLUMN_INVALID"}'::jsonb else '{"state":"PENDING"}'::jsonb end
+		from verified returning analysis_id,ordinal,outcome
+	), versions as (
+		insert into ouf_mcp.analysis_column_version select analysis_id,ordinal,1,outcome from initial
+	), states as (
+		insert into ouf_mcp.analysis_batch_column(analysis_id,ordinal,state,due_at,intent,metadata)
+		select i.analysis_id,i.ordinal,case when v.col->>'intent'='' then 'CLOSED' else 'PENDING' end,
+			case when v.col->>'intent'<>'' then transaction_timestamp() end,v.col->>'intent',v.col-'intent'
+		from initial i join verified v using(ordinal) returning state
+	)
+	insert into ouf_mcp.analysis_counts(analysis_id,seq,total,blocked,pending,onboarding)
+	select $1,1,count(*),count(*) filter(where state='CLOSED'),count(*) filter(where state='PENDING'),true
+	from states having count(*)=$7`, start.ID, scope.Service, scope.Principal, scope.Tenant, checksum, pin, start.Profile.ColumnCount)
+	if err == nil && tag.RowsAffected() != 1 {
+		err = analysis.ErrProfile
+	}
+	return err
+}
+
+func (s *Store) BatchPreviewProgress(ctx context.Context, scope analysis.Scope, id, checksum, epoch string) (analysis.Profile, int, error) {
+	var pin analysis.Profile
+	var raw []byte
+	var offset int
+	err := s.pool.QueryRow(ctx, `select profile,cardinality(headers) from ouf_mcp.analysis_preview_progress
+		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4
+		and manifest_checksum=$5 and batch_columns is not null`, id, scope.Service, scope.Principal, scope.Tenant, checksum).Scan(&raw, &offset)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pin, 0, nil
+	}
+	if err == nil && (json.Unmarshal(raw, &pin) != nil || !pin.Valid() || id != analysis.BatchAnalysisID(scope, pin, epoch) || offset > pin.ColumnCount) {
+		err = analysis.ErrProfile
+	}
+	return pin, offset, err
+}
+
+func (s *Store) SaveBatchPreviewPage(ctx context.Context, scope analysis.Scope, id, checksum, epoch string, pin analysis.Profile, offset int, columns []analysis.BatchPreviewColumn) error {
+	if !scope.Valid() || !pin.Valid() || id != analysis.BatchAnalysisID(scope, pin, epoch) ||
+		offset < 0 || len(columns) == 0 || len(columns) > 128 || offset+len(columns) > pin.ColumnCount {
+		return analysis.ErrProfile
+	}
+	names := make([]string, len(columns))
+	for n, col := range columns {
+		names[n] = col.Name
+	}
+	profile, err := json.Marshal(pin)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(columns)
+	if err != nil {
+		return err
+	}
+	if offset == 0 {
+		tag, err := s.pool.Exec(ctx, `insert into ouf_mcp.analysis_preview_progress
+			(analysis_id,service_principal_id,principal_id,tenant_id,manifest_checksum,profile,headers,batch_columns)
+			values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing`, id, scope.Service, scope.Principal, scope.Tenant, checksum, profile, names, data)
+		if err != nil || tag.RowsAffected() == 1 {
+			return err
+		}
+	}
+	tag, err := s.pool.Exec(ctx, `update ouf_mcp.analysis_preview_progress set headers=headers || $7::text[],batch_columns=batch_columns || $8::jsonb
+		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and manifest_checksum=$5
+		and profile=$6 and batch_columns is not null and cardinality(headers)=$9`, id, scope.Service, scope.Principal, scope.Tenant, checksum, profile, names, data, offset)
+	if err != nil || tag.RowsAffected() == 1 {
+		return err
+	}
+	var samePage bool
+	err = s.pool.QueryRow(ctx, `select exists(select from ouf_mcp.analysis_preview_progress p
+		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and manifest_checksum=$5
+		and profile=$6 and headers[$9+1:$9+cardinality($7::text[])]=$7
+		and (select jsonb_agg(value order by n) from jsonb_array_elements(p.batch_columns) with ordinality as b(value,n)
+		     where n>$9 and n<=$9+cardinality($7::text[]))=$8)`, id, scope.Service, scope.Principal, scope.Tenant, checksum, profile, names, data, offset).Scan(&samePage)
+	if err == nil && !samePage {
+		err = analysis.ErrProfile
+	}
+	return err
 }

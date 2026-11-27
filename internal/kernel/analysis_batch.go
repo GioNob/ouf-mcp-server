@@ -14,6 +14,7 @@ import (
 )
 
 const batchResultMeta = "ouf/internalBatchResult"
+const batchNextMeta = "ouf/internalBatchNext"
 const batchResultText = "Il risultato dell’analisi a lotti è in structuredContent."
 
 type boundedBatchWire struct {
@@ -141,13 +142,6 @@ func batchUnavailable(id string) *mcp.CallToolResult {
 		body["analysisId"] = id
 	}
 	return markBatchResult(workflowError(body))
-}
-
-func batchStatus(start analysis.BatchStart) *mcp.CallToolResult {
-	return markBatchResult(&mcp.CallToolResult{StructuredContent: nextstep.Object{
-		"analysisId": start.ID, "mode": analysis.BatchMode, "revision": start.Revision,
-		"phase": "BLOCKED", "counts": analysis.Counts{Total: start.Profile.ColumnCount, Pending: start.Profile.ColumnCount},
-	}})
 }
 
 func (s *workflowServer) batchPreview(ctx context.Context, c manifest.Capability, checksum string, input nextstep.Object, service *orchestration.Service) (*mcp.CallToolResult, any, error) {

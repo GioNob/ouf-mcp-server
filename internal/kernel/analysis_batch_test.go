@@ -60,8 +60,27 @@ func (s *batchSDKStore) LookupBatchStartCommand(_ context.Context, scope analysi
 func (s *batchSDKStore) SaveBatchStart(_ context.Context, scope analysis.Scope, _, key, digest string, start analysis.BatchStart) (analysis.BatchStart, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	start.Initialized = true
 	s.scope, s.key, s.digest, s.start = scope, key, digest, start
 	return start, nil
+}
+
+func (*batchSDKStore) BatchPreviewProgress(context.Context, analysis.Scope, string, string, string) (analysis.Profile, int, error) {
+	return analysis.Profile{}, 0, nil
+}
+
+func (*batchSDKStore) SaveBatchPreviewPage(context.Context, analysis.Scope, string, string, string, analysis.Profile, int, []analysis.BatchPreviewColumn) error {
+	return nil
+}
+
+func (s *batchSDKStore) ReadBatch(ctx context.Context, scope analysis.Scope, id, checksum string, _ func(analysis.BatchOffer) ([]analysis.BatchOfferItem, error)) (analysis.BatchRead, error) {
+	start, err := s.ReadBatchStart(ctx, scope, id, checksum)
+	count := start.Profile.ColumnCount
+	return analysis.BatchRead{BatchStart: start, Phase: "RUNNING", Reason: nextstep.AnalysisRunning, Counts: analysis.Counts{Total: count, Pending: count}}, err
+}
+
+func (*batchSDKStore) ReadBatchColumn(context.Context, analysis.Scope, string, string, string, int, int) (analysis.BatchOffer, analysis.BatchOfferItem, error) {
+	return analysis.BatchOffer{}, analysis.BatchOfferItem{}, analysis.ErrScope
 }
 
 func TestBatchPreviewStartAndLegacyWire(t *testing.T) {
@@ -96,7 +115,7 @@ func TestBatchPreviewStartAndLegacyWire(t *testing.T) {
 	plan := call(session, "source.analysis.plan", args)
 	body = assertBatchWire(t, contract, plan)
 	id := analysis.BatchAnalysisID(scope, pin, "")
-	if plan.IsError || id == legacyID || body["analysisId"] != id || body["phase"] != "BLOCKED" || body["mode"] != analysis.BatchMode {
+	if plan.IsError || id == legacyID || body["analysisId"] != id || body["phase"] != "RUNNING" || body["mode"] != analysis.BatchMode {
 		t.Fatal("batch start was not retained independently", body)
 	}
 	planWire, _ := json.Marshal(plan)
@@ -108,11 +127,13 @@ func TestBatchPreviewStartAndLegacyWire(t *testing.T) {
 	if !bytes.Equal(status, planWire) {
 		t.Fatal("failed to resume the batch shape with analysisId only")
 	}
-	for _, view := range []string{"BATCH", "SUMMARY"} {
-		reply := call(session, "source.analysis.read", nextstep.Object{"analysisId": id, "view": view})
-		if body := assertBatchWire(t, contract, reply); !reply.IsError || body["code"] != nextstep.BatchUnavailable || body["analysisId"] != id {
-			t.Fatal(view, body)
-		}
+	wait := call(session, "source.analysis.read", nextstep.Object{"analysisId": id, "view": "BATCH"})
+	if body := assertBatchWire(t, contract, wait); wait.IsError || body["phase"] != "RUNNING" || body["analysisId"] != id {
+		t.Fatal(body)
+	}
+	summary := call(session, "source.analysis.read", nextstep.Object{"analysisId": id, "view": "SUMMARY"})
+	if body := assertBatchWire(t, contract, summary); !summary.IsError || body["code"] != nextstep.BatchUnavailable || body["analysisId"] != id {
+		t.Fatal(body)
 	}
 	decision := nextstep.Object{"analysisId": id, "batchId": profile, "commandKey": asset, "expectedRevision": 0,
 		"decisions": []any{nextstep.Object{"ordinal": 0, "action": "EXCLUDE", "reason": "Fuori dal mapping"}}}
@@ -220,6 +241,67 @@ func assertBatchWire(t *testing.T, contract *jsonschema.Resolved, result *mcp.Ca
 		t.Fatal("batch result contained an unfixed text projection")
 	}
 	return body
+}
+
+func TestPackBatchOfferKeepsFirstExampleWhenSecondDoesNotFit(t *testing.T) {
+	s := &workflowServer{key: make([]byte, 32)}
+	engine := nextstep.Engine{}
+	scope := analysis.Scope{Service: "test", Principal: "user", Tenant: "tenant"}
+	expires := time.Now().Add(time.Minute).Unix()
+	first := json.RawMessage(`"via Roma 1"`)
+	second, err := json.Marshal(strings.Repeat("<", 256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := strings.Repeat("x", 5800)
+	full := analysis.BatchOffer{
+		ID: "11111111-1111-4111-8111-111111111111", AnalysisID: strings.Repeat("a", 64),
+		Items: []analysis.BatchOfferItem{{Item: analysis.BatchItem{
+			Name: "Address", Intent: "address", Attempt: 1, RemainingAttempts: 7,
+			RequestID: "22222222-2222-4222-8222-222222222222", CandidateCount: 1,
+			BatchColumnMetadata: analysis.BatchColumnMetadata{
+				DataType: "string",
+				Examples: []json.RawMessage{first, second},
+			},
+			Candidates: []analysis.BatchCandidate{{
+				ID: "33333333-3333-4333-8333-333333333333", Label: label, Term: "urn:example:address", Score: 0.9,
+			}},
+			Allowed: []string{"ADOPT", "REFORMULATE", "EXCLUDE", "PROPOSE"},
+		}}},
+	}
+	wireSize := func(offer analysis.BatchOffer) int {
+		t.Helper()
+		body, next := s.batchOfferBody(engine, scope, offer, expires)
+		body["next"] = next
+		wire, err := json.Marshal(nextstep.Object{
+			"_meta":             mcp.Meta{mcp.MetaKeyServerInfo: &mcp.Implementation{Name: "ouf-mcp-server", Version: "0.1.0"}},
+			"content":           []mcp.Content{&mcp.TextContent{Text: batchResultText}},
+			"structuredContent": body,
+			"resultType":        "complete",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(wire)
+	}
+	if size := wireSize(full); size <= analysis.BatchMaxResultBytes {
+		t.Fatalf("fixture unexpectedly fits with both examples: %d bytes", size)
+	}
+	packed, err := s.packBatchOffer(engine, scope, full, expires)
+	if err != nil || len(packed) != 1 {
+		t.Fatalf("pack batch offer: items=%d err=%v", len(packed), err)
+	}
+	item := packed[0].Item
+	if len(item.Examples) != 1 || !bytes.Equal(item.Examples[0], first) || item.Candidates[0].Label != label {
+		t.Fatalf("unexpected packed examples or candidate label: examples=%d labelBytes=%d", len(item.Examples), len(item.Candidates[0].Label))
+	}
+	if pos, more := batchColumnStart(item); !more || pos != (batchColumnPosition{kind: batchExampleDetail, index: 1}) {
+		t.Fatalf("continuation did not point to the omitted example: %+v, %t", pos, more)
+	}
+	full.Items = packed
+	if size := wireSize(full); size > analysis.BatchMaxResultBytes {
+		t.Fatalf("packed result exceeds the batch budget: %d bytes", size)
+	}
 }
 
 func TestBatchResultBudgetCountsEscapingAndWaitEnvelope(t *testing.T) {
