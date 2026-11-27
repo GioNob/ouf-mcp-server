@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // OwnerObservation is the body-free record retained with an attempt. A zero
@@ -26,18 +28,56 @@ type OwnerObservation struct {
 	Status int
 }
 
+// DiscoveryObservationSelector uses the same key for status and candidates.
+func DiscoveryObservationSelector(key []byte, requestID string) string {
+	selector, _ := DiscoveryObservationSelectors(key, requestID)
+	return selector
+}
+
+// DiscoveryObservationSelectors returns the canonical write selector and the
+// historical lookup selector for this spelling, when different. During the
+// owner's wait window, a plan without the original spelling can miss a legacy
+// clock and a rollback can miss a canonical clock on an uppercase public read.
+func DiscoveryObservationSelectors(key []byte, requestID string) (selector, legacySelector string) {
+	if requestID == "" {
+		return "", ""
+	}
+	selector, legacySelector, _ = discoveryObservationReference(key, requestID)
+	return selector, legacySelector
+}
+
+func discoveryObservationReference(key []byte, requestID string) (selector, legacySelector, canonical string) {
+	const capability = "ouf.semantic.discovery.status"
+	if id, err := uuid.Parse(requestID); err == nil {
+		canonical = id.String()
+		if canonical != requestID {
+			legacySelector = observationHMAC(key, capability, map[string]any{"requestId": requestID})
+			requestID = canonical
+		}
+	}
+	return observationHMAC(key, capability, map[string]any{"requestId": requestID}), legacySelector, canonical
+}
+
 // The lookup key excludes the MCP analysis envelope. Status and candidates
 // observe the same discovery request. An adoption is reconciled by commandKey.
 func observationSelector(key []byte, capability, class string, args []byte) string {
+	selector, _, _ := observationReference(key, capability, class, args)
+	return selector
+}
+
+func observationReference(key []byte, capability, class string, args []byte) (selector, legacySelector, request string) {
 	var fields map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.UseNumber()
 	if decoder.Decode(&fields) != nil || fields == nil {
-		return ""
+		return "", "", ""
 	}
 	delete(fields, "analysisId")
 	switch capability {
 	case "ouf.semantic.discovery.status", "ouf.semantic.discovery.candidates":
+		if raw, ok := fields["requestId"].(string); ok {
+			return discoveryObservationReference(key, raw)
+		}
 		capability = "ouf.semantic.discovery.status"
 		fields = map[string]any{"requestId": fields["requestId"]}
 	case "ouf.semantic.discovery.adopt", "ouf.semantic.proposal.read":
@@ -47,9 +87,13 @@ func observationSelector(key []byte, capability, class string, args []byte) stri
 		}
 	default:
 		if class != "READ" && class != "SEARCH" {
-			return ""
+			return "", "", ""
 		}
 	}
+	return observationHMAC(key, capability, fields), "", ""
+}
+
+func observationHMAC(key []byte, capability string, fields map[string]any) string {
 	raw, _ := json.Marshal([]any{"owner-observation-v1", capability, fields})
 	mac := hmac.New(sha256.New, key)
 	mac.Write(raw)
@@ -60,13 +104,17 @@ type observationReader interface {
 	ReadOwnerObservation(context.Context, Identity, string) (OwnerObservation, error)
 }
 
+type discoveryObservationReader interface {
+	ReadDiscoveryObservation(context.Context, Identity, string, string, string) (OwnerObservation, error)
+}
+
 func (s Service) SavedObservation(ctx context.Context, id Identity, capability, class string, args []byte) (OwnerObservation, error) {
-	reader, ok := s.Admission.(observationReader)
-	if !ok {
-		return OwnerObservation{}, nil
+	selector, legacySelector, request := observationReference(s.FingerprintKey, capability, class, args)
+	if reader, ok := s.Admission.(discoveryObservationReader); ok && request != "" {
+		return reader.ReadDiscoveryObservation(ctx, id, selector, legacySelector, request)
 	}
-	selector := observationSelector(s.FingerprintKey, capability, class, args)
-	if selector == "" {
+	reader, ok := s.Admission.(observationReader)
+	if !ok || selector == "" {
 		return OwnerObservation{}, nil
 	}
 	return reader.ReadOwnerObservation(ctx, id, selector)

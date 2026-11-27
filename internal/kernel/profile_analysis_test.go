@@ -40,6 +40,9 @@ func (*analysisSDKStore) ClaimAnalysisTask(context.Context, analysis.Scope, stri
 func (*analysisSDKStore) FinishAnalysisTask(context.Context, analysis.Scope, string, string, string, analysis.Finish) (analysis.Task, error) {
 	return analysis.Task{}, analysis.ErrScope
 }
+func (*analysisSDKStore) ReadAnalysisSuccessor(context.Context, analysis.Scope, string, string, analysis.Task) (*analysis.TaskResume, error) {
+	return nil, analysis.ErrScope
+}
 
 type analysisSDKAuth struct{}
 

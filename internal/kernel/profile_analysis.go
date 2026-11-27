@@ -59,6 +59,8 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		raw, _ := json.Marshal(input)
 		var out any
 		var err error
+		var successor *analysis.TaskResume
+		var successorUnavailable bool
 		switch c.ToolName {
 		case "source.analysis.plan":
 			if _, retry := input["requestId"]; retry && replan != "" {
@@ -115,6 +117,8 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			}
 			var task analysis.Task
 			task, err = coordinator.Step(ctx, i.Identity, args.AnalysisID, args.TaskID)
+			successor = task.Successor
+			successorUnavailable = task.SuccessorUnavailable
 			if task.Code == analysis.InvalidOwner {
 				result := errorResult(analysis.InvalidOwner, false)
 				result.Meta = mcp.Meta{"ouf/httpStatus": 502}
@@ -159,6 +163,12 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		if err != nil || len(body) > 1<<20 {
 			return errorResult("ANALYSIS_RESULT_LIMIT", false), nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil, nil
+		result := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}
+		if successorUnavailable {
+			result.Meta = mcp.Meta{"ouf/analysisSuccessorUnavailable": true}
+		} else if successor != nil {
+			result.Meta = mcp.Meta{"ouf/analysisSuccessor": successor}
+		}
+		return result, nil, nil
 	})
 }

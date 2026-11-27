@@ -122,7 +122,20 @@ func addWorkflowTool[T any](s *workflowServer, tool *mcp.Tool, handle func(conte
 		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 			return errorResult("INVALID_TOOL_ARGUMENTS", false), nil
 		}
+		publicDiscovery := s.analysisService != nil && (tool.Name == "semantic.discovery.status" || tool.Name == "semantic.discovery.candidates")
+		if publicDiscovery {
+			args, _ := any(input).(nextstep.Object)
+			if request, ok := args["requestId"].(string); ok {
+				selector, legacySelector := orchestration.DiscoveryObservationSelectors(s.analysisService.FingerprintKey, request)
+				ctx = analysis.WithPublicObservation(ctx, selector, legacySelector, request)
+			}
+		}
 		result, structured, err := handle(ctx, req, input)
+		if publicDiscovery && result != nil && result.IsError && ownerObject(result)["code"] == analysis.ErrObservationInterval.Error() {
+			// Keep the saved transport clock attached by invoke. The normal
+			// error policy signs the wait for this retryable pre-dispatch refusal.
+			result.Content = errorResult(analysis.ErrObservationInterval.Error(), true).Content
+		}
 		if structured != nil && err == nil {
 			body, e := json.Marshal(structured)
 			var v map[string]any
@@ -443,6 +456,10 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	}
 	// The transport clock guides next without changing the owner output schema.
 	engine := s.observedEngine(ctx, result)
+	engine.AnalysisSuccessor, _ = result.Meta["ouf/analysisSuccessor"].(*analysis.TaskResume)
+	successorUnavailable, _ := result.Meta["ouf/analysisSuccessorUnavailable"].(bool)
+	delete(result.Meta, "ouf/analysisSuccessor")
+	delete(result.Meta, "ouf/analysisSuccessorUnavailable")
 	delete(result.Meta, "ouf/ownerObservation")
 	if result.Meta["ouf/ownerNotBefore"] != nil {
 		delete(structured, "transportNotBefore")
@@ -466,9 +483,15 @@ func (s *workflowServer) decorate(ctx context.Context, t registeredTool, args ma
 	if result.IsError && obs["code"] == "INVALID_TOOL_ARGUMENTS" {
 		structured["allowedForms"] = t.forms
 	}
-	next := engine.Evaluate(c, p, args, obs, result.IsError)
-	if !result.IsError {
-		next = s.publishedNext(ctx, c.ToolName, args, obs, next)
+	var next nextstep.Object
+	if !result.IsError && successorUnavailable {
+		id, _ := args["analysisId"].(string)
+		next = engine.AnalysisSuccessorFallback(id)
+	} else {
+		next = engine.Evaluate(c, p, args, obs, result.IsError)
+		if !result.IsError {
+			next = s.publishedNext(ctx, c.ToolName, args, obs, next)
+		}
 	}
 	structured["next"] = next
 	if result.IsError && structured["code"] == nil {

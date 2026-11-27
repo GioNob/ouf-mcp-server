@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/GioNob/ouf-mcp-server/internal/recovery"
 	"github.com/GioNob/ouf-mcp-server/internal/reprocessing"
@@ -24,7 +25,10 @@ var ErrBudgetExhausted = errors.New("orchestration budget exhausted")
 var ErrIdempotencyOutcomeUnknown = orchestration.ErrIdempotencyOutcomeUnknown
 var ErrGroupLocked = errors.New("equivalence group locked by uncertain attempt")
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool        *pgxpool.Pool
+	statusTasks statusTaskCache
+}
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
@@ -223,6 +227,16 @@ func (s *Store) reserveOnce(ctx context.Context, in orchestration.AdmissionReque
 	if err = tx.QueryRow(ctx, "select transaction_timestamp()").Scan(&now); err != nil {
 		return orchestration.AdmissionDecision{}, err
 	}
+	if selector, legacySelector, request := analysis.PublicObservation(ctx); selector != "" && in.OperationClass == "READ" &&
+		(in.CapabilityID == "ouf.semantic.discovery.status" || in.CapabilityID == "ouf.semantic.discovery.candidates") {
+		saved, err := readDiscoveryObservation(ctx, tx, analysis.IdentityScope(in.Identity), selector, legacySelector, request)
+		if err != nil {
+			return orchestration.AdmissionDecision{}, errors.New("OWNER_CLOCK_UNAVAILABLE")
+		}
+		if saved.Due.After(now) {
+			return orchestration.AdmissionDecision{Observation: saved}, analysis.ErrObservationInterval
+		}
+	}
 	windowStart := now.Truncate(in.Window)
 	windowEnd := windowStart.Add(in.Window)
 	windowID := uuid.New()
@@ -356,16 +370,88 @@ func (s *Store) Reconcile(ctx context.Context, id uuid.UUID, actual orchestratio
 	return tx.Commit(ctx)
 }
 
+const ownerObservationScope = ` from ouf_mcp.tool_attempt
+	where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner_selector=`
+const latestOwnerDue = ` and owner_selector is not null and owner_due is not null order by owner_due desc,attempt_id limit 1`
+const ownerObservationColumns = `owner_due,owner_due_reason,owner_code,owner_status`
+
+// Both branches are identity-scoped. The plan branch can look up each clock
+// by its primary key from the analyses found by profile_analysis_actor.
+func discoveryObservationQuery(selector, legacySelector, request string) string {
+	return `select ` + ownerObservationColumns + ` from (
+		select attempt.*,k.source from unnest(array[` + selector + `,` + legacySelector + `]::text[]) with ordinality as k(selector,source)
+		cross join lateral (select ` + ownerObservationColumns + ownerObservationScope + `k.selector` + latestOwnerDue + `) attempt
+		where k.selector is not null
+		union all
+		(select w.not_before,w.reason,w.observation_code,w.observation_status,3
+		from ouf_mcp.profile_analysis p join ouf_mcp.analysis_owner_due w on w.analysis_id=p.analysis_id
+		where p.service_principal_id=$1 and p.principal_id=$2 and p.tenant_id=$3 and w.request_id=` + request + `
+		order by w.not_before desc,p.analysis_id limit 1)
+	) observations order by owner_due desc,source limit 1`
+}
+
+type ownerObservationQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 func (s *Store) ReadOwnerObservation(ctx context.Context, identity orchestration.Identity, selector string) (orchestration.OwnerObservation, error) {
+	return readOwnerObservation(ctx, s.pool, analysis.IdentityScope(identity), selector)
+}
+
+func (s *Store) ReadDiscoveryObservation(ctx context.Context, identity orchestration.Identity, selector, legacySelector, request string) (orchestration.OwnerObservation, error) {
+	return readDiscoveryObservation(ctx, s.pool, analysis.IdentityScope(identity), selector, legacySelector, request)
+}
+
+func readDiscoveryObservation(ctx context.Context, q ownerObservationQueryer, scope analysis.Scope, selector, legacySelector, request string) (orchestration.OwnerObservation, error) {
+	id, err := uuid.Parse(request)
+	if err != nil {
+		return readOwnerObservation(ctx, q, scope, selector)
+	}
+	return scanOwnerObservation(q.QueryRow(ctx, discoveryObservationQuery("$4", "nullif($5,'')", "$6"),
+		scope.Service, scope.Principal, scope.Tenant, selector, legacySelector, id))
+}
+
+func readOwnerObservation(ctx context.Context, q ownerObservationQueryer, scope analysis.Scope, selector string) (orchestration.OwnerObservation, error) {
+	return scanOwnerObservation(q.QueryRow(ctx, `select `+ownerObservationColumns+ownerObservationScope+`$4`+latestOwnerDue,
+		scope.Service, scope.Principal, scope.Tenant, selector))
+}
+
+func scanOwnerObservation(row pgx.Row) (orchestration.OwnerObservation, error) {
 	var obs orchestration.OwnerObservation
-	err := s.pool.QueryRow(ctx, `select owner_due,owner_due_reason,owner_code,owner_status from ouf_mcp.tool_attempt
-		where service_principal_id=$1 and principal_id=$2 and tenant_id=$3 and owner_selector=$4
-		and owner_due is not null order by owner_due desc,attempt_id limit 1`,
-		identity.ServicePrincipalID, identity.PrincipalID, identity.TenantID, selector).Scan(&obs.Due, &obs.Reason, &obs.Code, &obs.Status)
+	err := row.Scan(&obs.Due, &obs.Reason, &obs.Code, &obs.Status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return obs, nil
 	}
 	return obs, err
+}
+
+func readOwnerDues(ctx context.Context, tx pgx.Tx, scope analysis.Scope, selectors map[string]string) (map[string]time.Time, error) {
+	if len(selectors) == 0 {
+		return nil, nil
+	}
+	keys, requests := make([]string, 0, len(selectors)), make([]string, 0, len(selectors))
+	for request, selector := range selectors {
+		keys, requests = append(keys, selector), append(requests, request)
+	}
+	// One statement for the page, using the same lookup as public reads.
+	rows, err := tx.Query(ctx, `select ref.request,observation.owner_due
+		from unnest($4::text[],$5::text[]) as ref(key,request) cross join lateral
+		(`+discoveryObservationQuery("ref.key", "null::text", "ref.request::uuid")+`) observation`,
+		scope.Service, scope.Principal, scope.Tenant, keys, requests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	dues := make(map[string]time.Time, len(selectors))
+	for rows.Next() {
+		var request string
+		var due time.Time
+		if err := rows.Scan(&request, &due); err != nil {
+			return nil, err
+		}
+		dues[request] = due
+	}
+	return dues, rows.Err()
 }
 
 func (s *Store) Dispatch(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) error {

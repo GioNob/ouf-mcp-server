@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -84,6 +85,12 @@ type Task struct {
 	Visibility  string           `json:"visibilityDigest,omitempty"`
 	ID          string           `json:"taskId"`
 	Work
+	// Set only on a plan page. An empty projection marks a missing predecessor.
+	Predecessor *TaskResume `json:"-"`
+	// Set only on a successful step to construct its continuation.
+	Successor            *TaskResume `json:"-"`
+	SuccessorUnavailable bool        `json:"-"`
+
 	State          string          `json:"state"`
 	Code           string          `json:"code,omitempty"`
 	PolicyVersion  *int64          `json:"policyVersion,omitempty"`
@@ -115,6 +122,14 @@ type Budget struct {
 	Waiting              int   `json:"waitingTasks"`
 	Held                 int   `json:"heldTasks"`
 }
+
+// TaskResume projects the next eligible time of a related task.
+type TaskResume struct {
+	ID        string    `json:"taskId"`
+	State     string    `json:"state"`
+	NotBefore time.Time `json:"notBefore"`
+}
+
 type View struct {
 	Epoch         string  `json:"-"`
 	StopReason    string  `json:"-"`
@@ -132,6 +147,26 @@ type View struct {
 	CoveredColumns  int `json:"columnsWithPlannedWork"`
 	EvidenceColumns int `json:"columnsWithCompletedPlannedWork"`
 }
+
+func (v View) MarshalJSON() ([]byte, error) {
+	type plainView View
+	if !slices.ContainsFunc(v.Tasks, func(t Task) bool { return t.Predecessor != nil }) {
+		return json.Marshal(plainView(v))
+	}
+	type pageTask struct {
+		Task
+		Predecessor *TaskResume `json:"predecessor,omitempty"`
+	}
+	tasks := make([]pageTask, len(v.Tasks))
+	for n, task := range v.Tasks {
+		tasks[n] = pageTask{Task: task, Predecessor: task.Predecessor}
+	}
+	return json.Marshal(struct {
+		plainView
+		Tasks []pageTask `json:"tasks"`
+	}{plainView(v), tasks})
+}
+
 type Plan struct {
 	MaxColumnReformulations   int
 	Epoch, Visibility, Seed   string
@@ -169,6 +204,7 @@ type Store interface {
 	ReadAnalysisTask(context.Context, Scope, string, string, string) (Task, error)
 	ClaimAnalysisTask(context.Context, Scope, string, string, string) (Task, error)
 	FinishAnalysisTask(context.Context, Scope, string, string, string, Finish) (Task, error)
+	ReadAnalysisSuccessor(context.Context, Scope, string, string, Task) (*TaskResume, error)
 }
 
 func Digest(v any) string {
@@ -213,6 +249,19 @@ func Build(scope Scope, profile Profile, snapshot *manifest.Snapshot, expected i
 	return buildWork(p, snapshot, work)
 }
 
+func validateDiscoveryArguments(w Work) error {
+	if w.Tool != "semantic.discovery.status" && w.Tool != "semantic.discovery.candidates" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	var request string
+	if len(w.Arguments) > 8192 || json.Unmarshal(w.Arguments, &fields) != nil ||
+		json.Unmarshal(fields["requestId"], &request) != nil || len(request) != 36 || uuid.Validate(request) != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func buildWork(p Plan, snapshot *manifest.Snapshot, work []Work) (Plan, error) {
 	unique := map[string]int{}
 	for _, w := range work {
@@ -229,6 +278,9 @@ func buildWork(p Plan, snapshot *manifest.Snapshot, work []Work) (Plan, error) {
 			}
 		} else if w.Observation != 0 {
 			return Plan{}, ErrInvalid
+		}
+		if err := validateDiscoveryArguments(w); err != nil {
+			return Plan{}, err
 		}
 		var value map[string]any
 		if json.Unmarshal(w.Arguments, &value) != nil || value == nil {

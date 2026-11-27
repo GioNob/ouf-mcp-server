@@ -35,54 +35,153 @@ func analysisHeader(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, ma
 	return p, rev, nil
 }
 
-// Project the same request clock in a plan page and under the claim's header
-// lock. The predecessor may be outside the page returned to the client.
-const plannedReadClocks = ` from ouf_mcp.profile_analysis_task t
-	left join ouf_mcp.analysis_owner_due w on w.analysis_id=t.analysis_id
-		and w.request_id=case when t.task->>'tool' in ('semantic.discovery.status','semantic.discovery.candidates')
-			then (t.task->'arguments'->>'requestId')::uuid end
-	left join ouf_mcp.profile_analysis_task prior on prior.analysis_id=t.analysis_id
-		and t.task->>'tool'='semantic.discovery.status' and (t.task->>'observation')::int>1
-		and prior.task->>'tool'=t.task->>'tool' and prior.task->'arguments'=t.task->'arguments'
-		and (prior.task->>'observation')::int=(t.task->>'observation')::int-1
-		and prior.task->>'state'='SUCCEEDED' `
+const plannedReadRequest = `case when t.task->>'tool' in ('semantic.discovery.status','semantic.discovery.candidates')
+	then (t.task->'arguments'->>'requestId')::uuid end`
+const plannedReadTaskKeys = plannedReadRequest + ` as request_id,
+	case when t.task->>'tool'='semantic.discovery.status' then (t.task->>'observation')::int end as observation,
+	t.task->>'state' as state,(t.task->>'notBefore')::timestamptz as not_before`
+const statusPacingFloor = `greatest((t.task->>'notBefore')::timestamptz,
+	(t.task->>'completedAt')::timestamptz + interval '31 seconds')`
 
-const plannedReadDue = `greatest(w.not_before,(prior.task->>'notBefore')::timestamptz,
-	(prior.task->>'completedAt')::timestamptz + interval '31 seconds')`
+// Build one predecessor per UUID and observation for the single analysis.
+// The status tool is fixed on both sides. Equivalent retained tasks can have
+// different IDs. Prefer a success with the latest pacing floor, then plan order.
+const plannedReadPredecessors = `status_predecessors as materialized (
+	select distinct on (request_id,observation) t.task_id,` + plannedReadTaskKeys + `,
+		case when t.task->>'state'='SUCCEEDED' then ` + statusPacingFloor + ` end as successor_not_before
+	from ouf_mcp.profile_analysis_task t
+	where t.task->>'tool'='semantic.discovery.status' and t.task->>'awaitParent' is distinct from 'true'
+		and t.analysis_id=`
+const plannedReadPredecessorOrder = ` order by request_id,observation,(t.task->>'state'='SUCCEEDED') desc nulls last,
+	successor_not_before desc nulls last,t.ordinal)`
+const plannedReadPredecessorsByAnalysis = `with ` + plannedReadPredecessors + `$1` + plannedReadPredecessorOrder
+const plannedReadPredecessorsByRequest = `with ` + plannedReadPredecessors + `$1
+	and ` + plannedReadRequest + `=($2::jsonb->>'requestId')::uuid and (t.task->>'observation')::int=$3::int` + plannedReadPredecessorOrder
+const plannedReadPredecessorJoin = ` left join status_predecessors prior
+	on prior.request_id=t.request_id and prior.observation=t.observation-1 `
 
-func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, error) {
-	// Never load potentially large evidence bodies or intent arguments for totals.
-	rows, err := tx.Query(ctx, `select t.task-'discoveryText'-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey'-'policyEpoch'-'ownerIntent',
-		`+plannedReadDue+plannedReadClocks+`where t.analysis_id=$1 order by t.ordinal`, id)
+const predecessorSucceeded = `prior.state='SUCCEEDED'`
+const blockedPredecessor = `t.state in ('READY','WAITING') and t.observation>1 and (` + predecessorSucceeded + `) is not true`
+const plannedReadClockJoins = ` left join ouf_mcp.analysis_owner_due w on w.analysis_id=t.analysis_id
+	and w.request_id=t.request_id ` + plannedReadPredecessorJoin
+const plannedReadClocks = ` from (
+	select t.analysis_id,t.task_id,t.ordinal,t.task,` + plannedReadTaskKeys + `
+	from ouf_mcp.profile_analysis_task t where t.analysis_id=$1
+) t ` + plannedReadClockJoins
+const plannedReadDue = `greatest(w.not_before,prior.successor_not_before)`
+
+// Read the whole analysis for its totals and dependencies, omitting large
+// evidence and intent fields. An empty predecessor ID signals a missing link.
+const analysisTasksSQL = plannedReadPredecessorsByAnalysis + `
+	select t.task-'discoveryText'-'result'-'arguments'-'intentOrdinals'-'visibilityDigest'-'ownerKey'-'policyEpoch'-'ownerIntent',
+	` + plannedReadDue + `,t.request_id::text,
+	case when ` + blockedPredecessor + ` then coalesce(prior.task_id::text,'') end` + plannedReadClocks + `order by t.ordinal`
+
+type plannedRead struct {
+	request     string
+	predecessor *string
+	resume      analysis.TaskResume
+}
+
+func analysisTasks(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Task, map[string]plannedRead, error) {
+	rows, err := tx.Query(ctx, analysisTasksSQL, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	tasks := []analysis.Task{}
+	reads := make(map[string]plannedRead)
 	for rows.Next() {
 		var raw []byte
 		var t analysis.Task
 		var due *time.Time
-		if err = rows.Scan(&raw, &due); err != nil {
-			return nil, err
+		var request, predecessor *string
+		if err = rows.Scan(&raw, &due, &request, &predecessor); err != nil {
+			return nil, nil, err
 		}
 		if err = json.Unmarshal(raw, &t); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if due != nil && due.After(t.NotBefore) && (t.State == "READY" || t.State == "WAITING") {
 			t.NotBefore = *due
 		}
+		if request != nil && !t.AwaitParent {
+			reads[t.ID] = plannedRead{request: *request, predecessor: predecessor,
+				resume: analysis.TaskResume{ID: t.ID, State: t.State, NotBefore: t.NotBefore}}
+		}
 		tasks = append(tasks, t)
 	}
-	return tasks, rows.Err()
+	return tasks, reads, rows.Err()
 }
-func analysisView(id string, p analysis.Profile, rev int64, tasks []analysis.Task, offset, limit int) analysis.View {
+
+func analysisView(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id string, p analysis.Profile, rev int64, offset, limit int) (analysis.View, error) {
+	tasks, reads, err := analysisTasks(ctx, tx, id)
+	if err != nil {
+		return analysis.View{}, err
+	}
 	tasks = slices.DeleteFunc(tasks, func(t analysis.Task) bool { return t.AwaitParent })
 	budget, covered, complete := analysis.Calculate(tasks)
-	end := min(len(tasks), offset+limit)
-	start := min(offset, len(tasks))
-	return analysis.View{ID: id, Revision: rev, Profile: p, Budget: budget, Tasks: tasks[start:end], Offset: offset, HasMore: end < len(tasks), CoveredColumns: covered, EvidenceColumns: complete}
+	start := min(len(tasks), offset)
+	end := min(len(tasks), start+limit)
+	view := analysis.View{ID: id, Revision: rev, Profile: p, Budget: budget, Tasks: tasks[start:end],
+		Offset: offset, HasMore: end < len(tasks), CoveredColumns: covered, EvidenceColumns: complete}
+
+	selectors := make(map[string]string)
+	for _, t := range view.Tasks {
+		read, ok := reads[t.ID]
+		if ok && (t.State == "READY" || t.State == "WAITING") && selectors[read.request] == "" {
+			if selector := analysis.DiscoveryObservationSelector(ctx, read.request); selector != "" {
+				selectors[read.request] = selector
+			}
+		}
+	}
+	dues, err := readOwnerDues(ctx, tx, scope, selectors)
+	if err != nil {
+		return analysis.View{}, err
+	}
+	resolvePredecessor := predecessorResolver(func(id string) plannedRead { return reads[id] })
+	for n := range view.Tasks {
+		t := &view.Tasks[n]
+		read, ok := reads[t.ID]
+		if !ok || (t.State != "READY" && t.State != "WAITING") {
+			continue
+		}
+		due := dues[read.request]
+		if due.After(t.NotBefore) {
+			t.NotBefore = due
+		}
+		if read.predecessor == nil {
+			continue
+		}
+		resume := resolvePredecessor(*read.predecessor)
+		if resume.ID != "" && due.After(resume.NotBefore) {
+			resume.NotBefore = due
+		}
+		t.Predecessor = &resume
+	}
+	return view, nil
 }
+
+// Each link decreases the observation number. Cache the root (including a
+// missing link) for every visited task, even when it is outside the page.
+func predecessorResolver(lookup func(string) plannedRead) func(string) analysis.TaskResume {
+	roots := make(map[string]analysis.TaskResume)
+	var resolve func(string) analysis.TaskResume
+	resolve = func(id string) analysis.TaskResume {
+		if root, found := roots[id]; found {
+			return root
+		}
+		read := lookup(id)
+		root := read.resume
+		if read.predecessor != nil {
+			root = resolve(*read.predecessor)
+		}
+		roots[id] = root
+		return root
+	}
+	return resolve
+}
+
 func (s *Store) PlanAnalysis(ctx context.Context, p analysis.Plan) (analysis.View, error) {
 	if p.CommandKey != "" {
 		return s.planCommand(ctx, p.Scope, p.Manifest, p.CommandKey, p.CommandDigest, func(tx pgx.Tx) (analysis.View, error) {
@@ -142,7 +241,7 @@ func planAnalysis(ctx context.Context, tx pgx.Tx, p analysis.Plan) (analysis.Vie
 			return analysis.View{}, e
 		}
 	}
-	tasks, e := analysisTasks(ctx, tx, p.ID)
+	tasks, _, e := analysisTasks(ctx, tx, p.ID)
 	if e != nil {
 		return analysis.View{}, e
 	}
@@ -231,11 +330,10 @@ func planAnalysis(ctx context.Context, tx pgx.Tx, p analysis.Plan) (analysis.Vie
 			return analysis.View{}, e
 		}
 	}
-	tasks, e = analysisTasks(ctx, tx, p.ID)
+	v, e := analysisView(ctx, tx, p.Scope, p.ID, p.Profile, rev, 0, 128)
 	if e != nil {
 		return analysis.View{}, e
 	}
-	v := analysisView(p.ID, p.Profile, rev, tasks, 0, 128)
 	if e = publishedMetadata(ctx, tx, &v); e != nil {
 		return analysis.View{}, e
 	}
@@ -254,11 +352,10 @@ func (s *Store) ReadAnalysis(ctx context.Context, scope analysis.Scope, id, mani
 	if e != nil {
 		return analysis.View{}, e
 	}
-	tasks, e := analysisTasks(ctx, tx, id)
+	v, e := analysisView(ctx, tx, scope, id, p, rev, offset, limit)
 	if e != nil {
 		return analysis.View{}, e
 	}
-	v := analysisView(id, p, rev, tasks, offset, limit)
 	if e = publishedMetadata(ctx, tx, &v); e != nil {
 		return v, e
 	}
@@ -312,6 +409,7 @@ func (s *Store) ReadAnalysisTask(ctx context.Context, scope analysis.Scope, id, 
 	t.Fence = ""
 	return t, tx.Commit(ctx)
 }
+
 func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id, taskID, manifest string) (analysis.Task, error) {
 	var t analysis.Task
 	tx, e := s.pool.Begin(ctx)
@@ -379,16 +477,31 @@ func (s *Store) ClaimAnalysisTask(ctx context.Context, scope analysis.Scope, id,
 	}
 	if t.Tool == "semantic.discovery.status" || t.Tool == "semantic.discovery.candidates" {
 		var due *time.Time
+		var request string
 		var predecessorReady bool
-		if e = tx.QueryRow(ctx, `select `+plannedReadDue+`,prior.task_id is not null`+plannedReadClocks+
-			`where t.analysis_id=$1 and t.task_id=$2`, id, taskID).Scan(&due, &predecessorReady); e != nil {
+		if e = tx.QueryRow(ctx, plannedReadPredecessorsByRequest+`
+			select `+plannedReadDue+`,coalesce((`+predecessorSucceeded+`),false),coalesce(t.request_id::text,'')`+plannedReadClocks+
+			`where t.task_id=$4`, id, t.Arguments, t.Observation-1, taskID).Scan(&due, &predecessorReady, &request); e != nil {
 			return t, e
 		}
 		if t.Observation > 1 && !predecessorReady {
 			return t, analysis.ErrConflict
 		}
-		if due != nil && due.After(now) && due.After(t.NotBefore) {
-			t.State, t.Code, t.NotBefore = "WAITING", "OBSERVATION_INTERVAL", *due
+		bound := t.NotBefore
+		if due != nil && due.After(bound) {
+			bound = *due
+		}
+		if selector := analysis.DiscoveryObservationSelector(ctx, request); selector != "" {
+			saved, err := readDiscoveryObservation(ctx, tx, scope, selector, "", request)
+			if err != nil {
+				return t, err
+			}
+			if saved.Due.After(bound) {
+				bound = saved.Due
+			}
+		}
+		if bound.After(now) && (t.State != "WAITING" || bound.After(t.NotBefore)) {
+			t.State, t.Code, t.NotBefore = "WAITING", analysis.ErrObservationInterval.Error(), bound
 			if e = saveAnalysisTask(ctx, tx, id, t); e != nil {
 				return t, e
 			}

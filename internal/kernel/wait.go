@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -406,6 +407,13 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			if result.IsError {
 				if code, ok := body["code"].(string); ok && nextstep.AdmissionWindowCode(code) {
 					return windowRefusal(result)
+				}
+				if machine && summaryInput(ref.Read, ref.Args) && body["code"] == analysis.ErrExpired.Error() {
+					// The typed continuation retains the owner-clock check for validation.
+					structured, _ := result.StructuredContent.(nextstep.Object)
+					if projected, ok := structured["next"].(nextstep.Object); ok {
+						return waitError(result, projected)
+					}
 				}
 				next := s.observedEngine(ctx, result).Evaluate(t.capability, s.manifest.NextPolicies[t.capability.NextPolicy], args, body, true)
 				return waitError(result, next)

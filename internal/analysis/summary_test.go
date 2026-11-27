@@ -11,7 +11,8 @@ import (
 )
 
 func TestSummaryDiscoveryEvidence(t *testing.T) {
-	const job = "11111111-1111-4111-8111-111111111111"
+	const job = "abcdef01-2345-4abc-8def-0123456789ab"
+	const uppercaseJob = "ABCDEF01-2345-4ABC-8DEF-0123456789AB"
 	const candidate = "22222222-2222-4222-8222-222222222222"
 	now := time.Unix(1893492000, 0).UTC()
 	for _, test := range []struct{ name, tool, raw, state, reason, next string }{
@@ -25,6 +26,8 @@ func TestSummaryDiscoveryEvidence(t *testing.T) {
 		{"expired list", "candidates", `{"state":"SUCCEEDED","completedCandidateCount":1,"candidates":[]}`, "BLOCKED", DiscoveryDecisionRequired, "semantic.discovery.candidates"},
 		{"old list without attestation", "candidates", `{"state":"SUCCEEDED","candidates":[{"candidate_id":"` + candidate + `"}]}`, "BLOCKED", "DISCOVERY_EVIDENCE_UNAVAILABLE", ""},
 		{"positive list", "candidates", `{"state":"SUCCEEDED","completedCandidateCount":1,"candidates":[{"candidate_id":"` + candidate + `"}]}`, "CANDIDATES_READY", "", ""},
+		{"same request in uppercase", "candidates", `{"requestId":"` + uppercaseJob + `","state":"SUCCEEDED","completedCandidateCount":1,"candidates":[{"candidate_id":"` + candidate + `","requestId":"` + uppercaseJob + `"}]}`, "CANDIDATES_READY", "", ""},
+		{"wrong candidate request", "candidates", `{"state":"SUCCEEDED","completedCandidateCount":1,"candidates":[{"candidate_id":"` + candidate + `","requestId":"` + candidate + `"}]}`, "BLOCKED", "DISCOVERY_EVIDENCE_UNAVAILABLE", ""},
 		{"wrong job", "status", `{"requestId":"` + candidate + `","state":"SUCCEEDED","completedCandidateCount":0}`, "BLOCKED", "DISCOVERY_EVIDENCE_UNAVAILABLE", ""},
 		{"duplicate count", "status", `{"state":"SUCCEEDED","completedCandidateCount":2,"completedCandidateCount":0}`, "BLOCKED", "DISCOVERY_EVIDENCE_UNAVAILABLE", ""},
 		{"malformed candidate", "candidates", `{"state":"SUCCEEDED","candidates":[{}]}`, "BLOCKED", "DISCOVERY_EVIDENCE_UNAVAILABLE", ""},
