@@ -1,0 +1,47 @@
+name: Analysis batch load smoke
+
+on:
+  push:
+    paths: ['internal/**', 'go.mod', 'go.sum', '.github/workflows/analysis-batch-load.yml']
+  pull_request:
+    paths: ['internal/**', 'go.mod', 'go.sum', '.github/workflows/analysis-batch-load.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  reduced:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mcp
+          POSTGRES_PASSWORD: mcp
+          POSTGRES_DB: mcp_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mcp -d mcp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      MCP_TEST_DATABASE_URL: postgres://mcp:mcp@localhost:5432/mcp_test?sslmode=disable
+      OUF_BATCH_LOAD_PROFILE: small
+      OUF_BATCH_LOAD_REPORT_DIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.4', cache: true}
+      - name: Compile the tagged test
+        run: go test -c -tags=batchload -o "$RUNNER_TEMP/batch-load.test" ./internal/kernel
+      - name: Run 30 analyses with 5 users and 100 columns
+        working-directory: internal/kernel
+        run: timeout 115s "$RUNNER_TEMP/batch-load.test" -test.run '^TestBatchLoadQualification$' -test.timeout=105s -test.v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: d103-batch-load-small
+          path: |
+            ${{ runner.temp }}/ouf-batch-load-*/report.json
+            ${{ runner.temp }}/ouf-batch-load-*/report.md
+          if-no-files-found: error
