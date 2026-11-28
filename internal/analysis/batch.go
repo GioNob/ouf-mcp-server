@@ -25,6 +25,7 @@ type BatchStart struct {
 	CreatedAt   time.Time `json:"-"`
 	Epoch       string
 	Authority   string
+	Mandate     BatchMandate `json:"-"`
 	Revision    int64
 	Initialized bool
 }
@@ -58,14 +59,19 @@ func BatchPreviewProfile(body []byte, asset, profile string, limit int) (Profile
 	return pin, err
 }
 
-func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, asset, profile, hash, key string) (BatchStart, error) {
+func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, asset, profile, hash, key, proof string) (BatchStart, error) {
 	store, ok := c.Store.(BatchStore)
-	if !ok {
+	mandates, configured := c.Store.(BatchMandateStartStore)
+	gateway, _ := ctx.Value(batchMandateContextKey{}).(BatchMandateGateway)
+	if !ok || !configured || gateway == nil {
 		return BatchStart{}, ErrUnavailable
+	}
+	if i.ActorType != "HUMAN" || i.Delegation == "" || proof == "" {
+		return BatchStart{}, orchestration.ErrUnauthorized
 	}
 	command, err := uuid.Parse(key)
 	if !CanonicalUUID(asset) || !CanonicalUUID(profile) || err != nil || command.String() != key || command.Version() != 4 ||
-		command.Variant() != uuid.RFC4122 || hash != strings.ToLower(hash) {
+		command.Variant() != uuid.RFC4122 || !ValidBatchHash(hash) {
 		return BatchStart{}, ErrInvalid
 	}
 	epoch, err := c.Epoch(ctx, i)
@@ -78,7 +84,8 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 	}
 	scope := IdentityScope(i)
 	authority := BatchAuthorityBinding(i)
-	intent := Digest([]string{BatchMode, asset, profile, hash})
+	profileHash := "sha256:" + hash
+	intent := Digest([]string{BatchMode, asset, profile, profileHash})
 	if start, found, err := store.LookupBatchStartCommand(ctx, scope, checksum, key, intent); found || err != nil {
 		if err == nil && start.Epoch != epoch {
 			err = ErrEpochChanged
@@ -86,8 +93,11 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 		if err == nil && start.Authority != "" && start.Authority != authority {
 			err = ErrScope
 		}
-		if err != nil || start.Initialized {
+		if err != nil {
 			return start, err
+		}
+		if start.Initialized && start.Mandate.StartRef != "" {
+			return c.issueBatchMandate(ctx, mandates, gateway, start, proof)
 		}
 	}
 	id := BatchAnalysisID(scope, Profile{AssetID: asset, ProfileID: profile}, epoch)
@@ -95,24 +105,44 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 	if err != nil && !errors.Is(err, ErrScope) {
 		return BatchStart{}, err
 	}
+	if start.Mandate.StartRef != "" {
+		if start.Mandate.CommandKey == key && start.Authority == authority && start.Profile.SchemaHash == profileHash {
+			return c.issueBatchMandate(ctx, mandates, gateway, start, proof)
+		}
+		return BatchStart{}, ErrConflict
+	}
+	prepared, err := gateway.Prepare(ctx, proof)
+	if err != nil {
+		return BatchStart{}, err
+	}
+	binding, valid := DecodeBatchStartBinding(prepared.StartBinding)
+	if !ValidBatchHash(epoch) || !ValidBatchAttempt(prepared.Ref) || prepared.Generation != 1 || prepared.Version != 0 ||
+		prepared.State != "PENDING" || prepared.AnalysisID != "" || prepared.ExpiresAtMs <= 0 ||
+		!valid || !binding.matches(i, prepared.Ref, asset, profile, hash, key) {
+		return BatchStart{}, ErrUnavailable
+	}
 	if !start.Initialized {
-		pin, err := c.prepareBatchProfile(ctx, i, store, checksum, id, epoch, asset, profile, hash, start.Profile)
+		pin, err := c.prepareBatchProfile(ctx, i, store, checksum, id, epoch, asset, profile, profileHash, start.Profile)
 		if err != nil {
 			return BatchStart{}, err
 		}
 		start = BatchStart{ID: id, Profile: pin, Epoch: epoch, Authority: authority}
 	}
-	if start.Profile.SchemaHash != hash {
+	if start.Profile.SchemaHash != profileHash {
 		return BatchStart{}, ErrProfile
 	}
-	saved, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start)
+	pending := BatchMandate{StartRef: prepared.Ref, StartBinding: prepared.StartBinding, CommandKey: key, Generation: prepared.Generation}
+	saved, err := mandates.SaveBatchMandateStart(ctx, scope, checksum, key, intent, start, pending)
 	if err == nil && saved.Epoch != epoch {
 		err = ErrEpochChanged
 	}
 	if err == nil && saved.Authority != "" && saved.Authority != authority {
 		err = ErrScope
 	}
-	return saved, err
+	if err != nil {
+		return saved, err
+	}
+	return c.issueBatchMandate(ctx, mandates, gateway, saved, proof)
 }
 
 func (c Coordinator) prepareBatchProfile(ctx context.Context, i orchestration.Identity, store BatchStore, checksum, id, epoch, asset, profile, hash string, retained Profile) (Profile, error) {

@@ -66,6 +66,23 @@ func (s *batchSDKStore) SaveBatchStart(_ context.Context, scope analysis.Scope, 
 	return start, nil
 }
 
+func (s *batchSDKStore) SaveBatchMandateStart(ctx context.Context, scope analysis.Scope, sum, key, digest string, start analysis.BatchStart, pending analysis.BatchMandate) (analysis.BatchStart, error) {
+	start.Mandate = pending
+	return s.SaveBatchStart(ctx, scope, sum, key, digest, start)
+}
+
+func (s *batchSDKStore) CommitBatchMandate(_ context.Context, _ string, _ analysis.BatchMandate, view analysis.BatchMandateView, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.start.Mandate.Ref, s.start.Mandate.Binding = view.Ref, view.MandateBinding
+	s.start.Mandate.State = view.State
+	return nil
+}
+
+func (*batchSDKStore) HoldBatchMandateStart(context.Context, string, analysis.BatchMandate, string) error {
+	return nil
+}
+
 func (*batchSDKStore) BatchPreviewProgress(context.Context, analysis.Scope, string, string, string) (analysis.Profile, int, error) {
 	return analysis.Profile{}, 0, nil
 }
@@ -92,9 +109,9 @@ func TestBatchPreviewStartAndLegacyWire(t *testing.T) {
 	pin := analysis.Profile{AssetID: asset, ProfileID: profile, Version: 1, SchemaHash: "sha256:" + strings.Repeat("a", 64), ColumnCount: 1024}
 	legacyID := analysis.AnalysisID(scope, pin)
 	store := &batchSDKStore{legacy: analysis.View{ID: legacyID, Profile: pin, Budget: analysis.Budget{PlannedCalls: 1}, Tasks: []analysis.Task{}}}
-	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: store,
+	service := &orchestration.Service{RequireDelegation: true, Auth: mandateTestAuth{analysisSDKAuth{}}, Admission: store,
 		FingerprintKey: make([]byte, 32), Gateway: &analysisSDKGateway{asset: asset, profile: profile}}
-	session := revisionSessionForScope(t, service, scope, granted)
+	session := revisionSessionForScope(t, service, scope, granted, mandateTestIngress(t, &mandateTestIssuer{}, scope, granted))
 	contract := nextContract(t)
 	call := func(session *mcp.ClientSession, tool string, args nextstep.Object) *mcp.CallToolResult {
 		t.Helper()
@@ -110,12 +127,12 @@ func TestBatchPreviewStartAndLegacyWire(t *testing.T) {
 	args := next["arguments"].(nextstep.Object)
 	if preview.IsError || body["columnCount"] != json.Number("1024") || body["columns"] != nil ||
 		next["action"] != "CALL_TOOL" || next["reasonCode"] != "PLAN_COLUMN_DISCOVERY" || next["tool"] != "source.analysis.plan" ||
-		next["alternatives"] != nil || len(args) != 5 || args["mode"] != analysis.BatchMode || args["schemaHash"] != pin.SchemaHash {
+		next["alternatives"] != nil || len(args) != 5 || args["mode"] != analysis.BatchMode || args["schemaHash"] != strings.TrimPrefix(pin.SchemaHash, "sha256:") {
 		t.Fatal("batch preview did not emit a single verified start", body)
 	}
 	plan := call(session, "source.analysis.plan", args)
 	body = assertBatchWire(t, contract, plan)
-	id := analysis.BatchAnalysisID(scope, pin, "")
+	id := analysis.BatchAnalysisID(scope, pin, mandateTestEpoch)
 	if plan.IsError || id == legacyID || body["analysisId"] != id || body["phase"] != "RUNNING" || body["mode"] != analysis.BatchMode {
 		t.Fatal("batch start was not retained independently", body)
 	}

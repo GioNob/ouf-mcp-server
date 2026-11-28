@@ -2,12 +2,9 @@ package kernel
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -251,47 +248,6 @@ func TestBatchWorkerPostgresLongUnicodeHeaderGoesToDiscovery(t *testing.T) {
 			t.Fatal("discovery did not receive the complete column intent")
 		}
 	}
-}
-
-func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
-	store, _, worker, _, i, id := batchWorkerFixture(t, 32)
-	worker.Authorities = new(analysis.BatchAuthorities)
-	proof, err := json.Marshal(map[string]any{"v": 1, "purpose": "mcp-execute", "exp": time.Now().Add(30 * time.Second).Unix()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	i.Delegation = base64.RawURLEncoding.EncodeToString(proof) + ".fixture"
-	worker.Authorities.Observe(id, i)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	done := make(chan struct{})
-	go func() {
-		worker.Run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		close(done)
-	}()
-	defer func() {
-		cancel()
-		<-done
-	}()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	sum, _ := worker.Manifest.Checksum()
-	for ctx.Err() == nil {
-		read, err := store.ReadBatch(ctx, analysis.IdentityScope(i), id, sum, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if read.Counts.Pending == 0 {
-			if read.Counts.Ready != 1 || read.Counts.Zero != 1 || read.Counts.Matched != 30 {
-				t.Fatal("background worker did not preserve exact outcomes", read.Counts)
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-		case <-ticker.C:
-		}
-	}
-	t.Fatal("the queue did not advance until completion without a client")
 }
 
 func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {

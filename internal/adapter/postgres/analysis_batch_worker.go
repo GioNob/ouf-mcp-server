@@ -24,7 +24,9 @@ const extendBatchRoutePause = `insert into ouf_mcp.analysis_batch_route_pause(wo
 const batchClaimHead = `with available as materialized (
 	select route.work_stage from (values ('PUBLISHED','PUBLISHED'),('REQUEST','REQUEST'),('STATUS','STATUS'),
 		('CANDIDATES','CANDIDATES'),('REFORMULATE','REQUEST'),('ADOPT','ADOPT'),('PROPOSE','PROPOSE'),('DRAFT','DRAFT')) route(work_stage,owner_route)
-	where not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=route.owner_route and p.due_at>$2)
+	where ($3=0 or ($3=1 and route.work_stage in ('PUBLISHED','REQUEST','STATUS','CANDIDATES'))
+		or ($3=2 and route.work_stage in ('ADOPT','PROPOSE','DRAFT')))
+	and ($4 or not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=route.owner_route and p.due_at>$2))
 	and not exists(select from ouf_mcp.analysis_batch_column live
 		where live.state='RUNNING' and live.fence is not null and live.due_at>$2
 		and case when live.work_stage='REFORMULATE' then 'REQUEST' else live.work_stage end=route.owner_route)
@@ -33,10 +35,24 @@ select b.ordinal,b.state,b.work_stage,b.published_solo,coalesce(b.dispatch_fence
 from available r cross join lateral (
 	select b.* from ouf_mcp.analysis_batch_column b
 	where b.analysis_id=$1 and b.work_stage=r.work_stage and b.state in ('PENDING','RUNNING') and b.due_at<=$2
+	and ($3<>1 or $4 or b.mandate_not_before is null or b.mandate_not_before<=$2)
+	and ($3<>1 or b.choice_key is null)
 	order by b.due_at,b.ordinal limit 1 for update of b skip locked
 ) b order by b.due_at,b.ordinal limit 1`
 
 func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, checksum, authority string, now time.Time, limit int) (analysis.BatchWork, error) {
+	return s.claimBatchWork(ctx, scope, id, checksum, authority, now, limit, 0)
+}
+
+func (s *Store) ClaimMandatedBatch(ctx context.Context, scope analysis.Scope, id, checksum string, now time.Time, limit int) (analysis.BatchWork, error) {
+	return s.claimBatchWork(ctx, scope, id, checksum, "", now, limit, 1)
+}
+
+func (s *Store) ClaimBatchDecisionWork(ctx context.Context, scope analysis.Scope, id, checksum, authority string, now time.Time, limit int) (analysis.BatchWork, error) {
+	return s.claimBatchWork(ctx, scope, id, checksum, authority, now, limit, 2)
+}
+
+func (s *Store) claimBatchWork(ctx context.Context, scope analysis.Scope, id, checksum, authority string, now time.Time, limit, rail int) (analysis.BatchWork, error) {
 	if limit < 1 || limit > 64 {
 		return analysis.BatchWork{}, analysis.ErrInvalid
 	}
@@ -49,8 +65,12 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	if err != nil || !start.Initialized {
 		return analysis.BatchWork{}, err
 	}
-	if start.Authority != "" && start.Authority != authority {
+	if rail != 1 && start.Authority != "" && start.Authority != authority {
 		return analysis.BatchWork{}, analysis.ErrScope
+	}
+	if rail == 1 && (start.Mandate.State == "" || start.Mandate.State == "PENDING") ||
+		rail == 0 && start.Mandate.StartRef != "" {
+		return analysis.BatchWork{}, nil
 	}
 	var held, locked bool
 	err = tx.QueryRow(ctx, `select stopped or integrity_hold from ouf_mcp.analysis_counts
@@ -69,12 +89,23 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	if err != nil || active >= 2 || tenantActive {
 		return analysis.BatchWork{}, err
 	}
-	work := analysis.BatchWork{AnalysisID: id, Epoch: start.Epoch, Profile: start.Profile, Fence: uuid.NewString(), LeaseUntil: now.Add(analysis.BatchLease)}
+	work := analysis.BatchWork{AnalysisID: id, Epoch: start.Epoch, Profile: start.Profile, Mandate: start.Mandate,
+		Fence: uuid.NewString(), LeaseUntil: now.Add(analysis.BatchLease)}
+	if rail == 1 && start.Mandate.State == "ACTIVE" {
+		err = tx.QueryRow(ctx, `select exists(select from ouf_mcp.analysis_batch_column
+			where analysis_id=$1 and choice_key is null and state in ('PENDING','RUNNING')
+			and (retry_attempts>0 or mandate_not_before is not null or (state='RUNNING' and transport_fence=fence)))`, id).
+			Scan(&work.CheckMandate)
+		if err != nil {
+			return analysis.BatchWork{}, err
+		}
+	}
 	var ordinal, attempts int
 	var state string
 	var solo bool
 	var started *time.Time
-	err = tx.QueryRow(ctx, batchClaimHead, id, now).Scan(&ordinal, &state, &work.Stage, &solo, &work.PreviousFence, &attempts, &started)
+	err = tx.QueryRow(ctx, batchClaimHead, id, now, rail, rail == 1 && start.Mandate.State != "ACTIVE").
+		Scan(&ordinal, &state, &work.Stage, &solo, &work.PreviousFence, &attempts, &started)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchWork{}, nil
 	}
@@ -86,7 +117,8 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 		rows, err := tx.Query(ctx, `select ordinal from ouf_mcp.analysis_batch_column
 			where analysis_id=$1 and state='PENDING' and work_stage='PUBLISHED' and not published_solo
 			and due_at<=$2 and ordinal<>$3 and retry_attempts=$4 and retry_started_at is not distinct from $5
-			order by due_at,ordinal limit $6 for update skip locked`, id, now, ordinal, attempts, started, limit-1)
+			and ($7<>1 or choice_key is null)
+			order by due_at,ordinal limit $6 for update skip locked`, id, now, ordinal, attempts, started, limit-1, rail)
 		if err != nil {
 			return analysis.BatchWork{}, err
 		}
@@ -99,8 +131,8 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	rows, err := tx.Query(ctx, `with claimed as (
 		update ouf_mcp.analysis_batch_column set state='RUNNING',due_at=$3,fence=$4
 		where analysis_id=$1 and ordinal=any($2::int[])
-		returning ordinal,intent,retry_attempts,retry_started_at,owner_deadline,completed_count,choice_key
-	) select b.ordinal,b.intent,b.retry_attempts,b.retry_started_at,b.owner_deadline,b.completed_count,
+		returning ordinal,intent,retry_attempts,retry_started_at,owner_deadline,completed_count,choice_key,discovery_arguments_hash
+	) select b.ordinal,b.intent,b.retry_attempts,b.retry_started_at,b.owner_deadline,b.completed_count,coalesce(b.discovery_arguments_hash::text,''),
 		coalesce(c.request_id::text,''),coalesce(d.effect_key::text,''),d.effect_arguments,coalesce(d.requested_revision_id::text,'')
 		from claimed b join ouf_mcp.analysis_column c on c.analysis_id=$1 and c.ordinal=b.ordinal
 		left join ouf_mcp.analysis_batch_choice d on d.analysis_id=$1 and d.ordinal=b.ordinal and d.command_key=b.choice_key
@@ -111,7 +143,7 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	work.Columns, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (analysis.BatchWorkColumn, error) {
 		var col analysis.BatchWorkColumn
 		var retryStarted, ownerEnd *time.Time
-		err := row.Scan(&col.Ordinal, &col.Intent, &col.RetryAttempts, &retryStarted, &ownerEnd, &col.CompletedCount,
+		err := row.Scan(&col.Ordinal, &col.Intent, &col.RetryAttempts, &retryStarted, &ownerEnd, &col.CompletedCount, &col.DiscoveryHash,
 			&col.RequestID, &col.EffectKey, &col.EffectArguments, &col.EffectRevision)
 		if retryStarted != nil {
 			col.RetryStarted = *retryStarted
@@ -155,8 +187,8 @@ func (s *Store) BatchDiscoveryReceipt(ctx context.Context, scope analysis.Scope,
 	return result, err
 }
 
-// Persist the attempt before the call. A crash cannot lose either the spent
-// attempt or the transport key to look up the eventual Semantic receipt.
+// Reserve the transport fence before the call. Mandated dispatch is accounted
+// for after the Gateway outcome, since the Gateway performs admission.
 func (s *Store) BeginBatchDispatch(ctx context.Context, job analysis.BatchWork, ordinals []int, now time.Time) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -164,14 +196,23 @@ func (s *Store) BeginBatchDispatch(ctx context.Context, job analysis.BatchWork, 
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_batch_column b
-		set retry_attempts=retry_attempts+1,retry_started_at=coalesce(retry_started_at,$4),
-		dispatch_fence=case when $6 then b.dispatch_fence else $2 end,reconcile_fence=$2
+		set retry_attempts=retry_attempts+case when $8='' then 1 else 0 end,
+		retry_started_at=case when $8='' then coalesce(retry_started_at,$4) else retry_started_at end,
+		dispatch_fence=case when $6 then b.dispatch_fence else $2 end,reconcile_fence=$2,
+		mandate_arguments_hash=nullif($8::text,''),
+		discovery_arguments_hash=case when $8<>'' and $5='REQUEST' then $8 else b.discovery_arguments_hash end,
+		mandate_not_before=case when $8<>'' and $5 in ('STATUS','CANDIDATES') then $4+interval '31 seconds' end,
+		transport_fence=case when $8<>'' then $2 else b.transport_fence end
 		where b.analysis_id=$1 and b.fence=$2 and b.ordinal=any($3::int[]) and b.state='RUNNING' and b.due_at>$4
 		and b.work_stage=$5 and b.reconcile_fence is distinct from b.fence and b.dispatch_fence is distinct from b.fence
 		and b.retry_attempts<128 and (b.retry_started_at is null or b.retry_started_at+interval '24 hours'>$4)
 		and not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=$7 and p.due_at>$4)
+		and ($8='' or (b.choice_key is null and exists(select from ouf_mcp.analysis_batch_mandate m
+			where m.analysis_id=$1 and m.state='ACTIVE' and m.mandate_ref=nullif($9,'')::uuid and m.generation=$10)))
+		and ($8='' or $5<>'REQUEST' or b.discovery_arguments_hash is null or b.discovery_arguments_hash=$8)
 		and not (select stopped or integrity_hold from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1)`,
-		job.AnalysisID, job.Fence, ordinals, now, job.Stage, job.ReconcileOnly, job.Route())
+		job.AnalysisID, job.Fence, ordinals, now, job.Stage, job.ReconcileOnly, job.Route(),
+		job.DispatchHash, job.Mandate.Ref, job.Mandate.Generation)
 	if err != nil {
 		return err
 	}
@@ -216,18 +257,20 @@ func (s *Store) dispatchBatchAttempt(ctx context.Context, batch analysis.BatchDi
 }
 
 type batchWorkRow struct {
-	Ordinal         int                       `json:"ordinal"`
-	Stage           string                    `json:"stage"`
-	State           string                    `json:"state"`
-	Due             *time.Time                `json:"due"`
-	OwnerEnd        *time.Time                `json:"owner_end"`
-	RetryStarted    *time.Time                `json:"retry_started"`
-	RetryAttempts   int                       `json:"retry_attempts"`
-	Outcome         analysis.Outcome          `json:"outcome"`
-	Candidates      []analysis.BatchCandidate `json:"candidates,omitempty"`
-	EvidenceVersion string                    `json:"evidence_version"`
-	CompletedCount  *int                      `json:"completed_count"`
-	PublishedSolo   bool                      `json:"published_solo"`
+	Ordinal          int                       `json:"ordinal"`
+	Stage            string                    `json:"stage"`
+	State            string                    `json:"state"`
+	Due              *time.Time                `json:"due"`
+	OwnerEnd         *time.Time                `json:"owner_end"`
+	RetryStarted     *time.Time                `json:"retry_started"`
+	RetryAttempts    int                       `json:"retry_attempts"`
+	Outcome          analysis.Outcome          `json:"outcome"`
+	Candidates       []analysis.BatchCandidate `json:"candidates,omitempty"`
+	EvidenceVersion  string                    `json:"evidence_version"`
+	CompletedCount   *int                      `json:"completed_count"`
+	PublishedSolo    bool                      `json:"published_solo"`
+	DiscoveryBinding string                    `json:"discovery_binding"`
+	CheckMandate     bool                      `json:"check_mandate"`
 }
 
 func batchTimestamp(t time.Time) *time.Time {
@@ -248,7 +291,7 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 	for _, result := range results {
 		data = append(data, batchWorkRow{result.Ordinal, result.Stage, result.State, batchTimestamp(result.Due),
 			batchTimestamp(result.OwnerEnd), batchTimestamp(result.RetryStarted), result.RetryAttempts, result.Outcome,
-			result.Candidates, result.EvidenceVersion, result.CompletedCount, result.PublishedSolo})
+			result.Candidates, result.EvidenceVersion, result.CompletedCount, result.PublishedSolo, result.DiscoveryBinding, result.CheckMandate})
 	}
 	raw, err := json.Marshal(data)
 	if err != nil {
@@ -278,6 +321,40 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 	if changed != len(results) {
 		return analysis.ErrConflict
 	}
+	mandated := job.Mandate.Ref != "" && (job.Stage == analysis.BatchPublished || job.Stage == analysis.BatchRequest ||
+		job.Stage == analysis.BatchStatus || job.Stage == analysis.BatchCandidates)
+	if mandated && !pause.IsZero() {
+		// The route pause was written at the observation checkpoint.
+		pause = time.Time{}
+	}
+	if mandated {
+		for _, result := range results {
+			code := result.Outcome.Reason
+			var terminal string
+			switch code {
+			case "MANDATE_REVOKED":
+				terminal = "REVOKED"
+			case "MANDATE_EXPIRED", "ANALYSIS_MANDATE_EXPIRED":
+				terminal = "EXPIRED"
+			case "MANDATE_VERSION_CHANGED", "MANDATE_GENERATION_CHANGED", "MANDATE_NOT_FOUND", "CURRENT_RIGHTS_DENIED",
+				"RIGHTS_CHANGED", "POLICY_CHANGED", "POLICY_EPOCH_CHANGED", "ANALYSIS_POLICY_EPOCH_CHANGED", "PRINCIPAL_INACTIVE":
+				terminal = "HELD"
+			}
+			if terminal == "" {
+				continue
+			}
+			_, err = tx.Exec(ctx, `with stopped as (
+				update ouf_mcp.analysis_batch_mandate set state=$4,reason_code=$5,control_due=null,control_fence=null
+				where analysis_id=$1 and mandate_ref=$2 and generation=$3 and state='ACTIVE' returning analysis_id
+			) update ouf_mcp.analysis_batch_column b set due_at=least(b.due_at,$6) from stopped
+				where b.analysis_id=stopped.analysis_id and b.choice_key is null and b.state='PENDING'`,
+				job.AnalysisID, job.Mandate.Ref, job.Mandate.Generation, terminal, code, now)
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
 	if !pause.IsZero() {
 		if _, err = tx.Exec(ctx, extendBatchRoutePause, job.Route(), pause); err != nil {
 			return err
@@ -300,12 +377,15 @@ const finishBatchWorkSQL = `with head as materialized (
 	select * from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1
 ), input as materialized (
 	select * from jsonb_to_recordset($4::jsonb) as v(ordinal int,stage text,state text,due timestamptz,owner_end timestamptz,
-		retry_started timestamptz,retry_attempts int,outcome jsonb,candidates jsonb,evidence_version text,completed_count int,published_solo boolean)
+		retry_started timestamptz,retry_attempts int,outcome jsonb,candidates jsonb,evidence_version text,completed_count int,published_solo boolean,
+		discovery_binding text,check_mandate boolean)
 ), finished as (
 	update ouf_mcp.analysis_batch_column b set state=v.state,work_stage=coalesce(nullif(v.stage,''),b.work_stage),
 		due_at=v.due,fence=null,retry_started_at=v.retry_started,retry_attempts=v.retry_attempts,owner_deadline=v.owner_end,
 		dispatch_fence=case when v.state='PENDING' and v.stage=b.work_stage then b.dispatch_fence end,
 		candidates=coalesce(v.candidates,'[]'),evidence_version=v.evidence_version,completed_count=v.completed_count,
+		discovery_binding=coalesce(nullif(v.discovery_binding,''),b.discovery_binding),
+		mandate_not_before=case when v.check_mandate then v.due end,
 		published_solo=b.published_solo or v.published_solo
 	from input v where b.analysis_id=$1 and b.ordinal=v.ordinal and b.state='RUNNING' and b.fence=$2 and b.due_at>$3
 		and not (select stopped or integrity_hold from head)

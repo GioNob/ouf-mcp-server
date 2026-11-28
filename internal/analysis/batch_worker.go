@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strings"
@@ -37,6 +36,9 @@ type BatchWork struct {
 	LeaseUntil                                     time.Time
 	Columns                                        []BatchWorkColumn
 	ReconcileOnly                                  bool
+	CheckMandate                                   bool
+	Mandate                                        BatchMandate
+	DispatchHash                                   string
 }
 
 type batchDispatchKey struct{}
@@ -72,6 +74,7 @@ type BatchWorkColumn struct {
 	CompletedCount            *int
 	EffectKey, EffectRevision string
 	EffectArguments           []byte
+	DiscoveryHash             string
 }
 
 type BatchWorkResult struct {
@@ -86,6 +89,8 @@ type BatchWorkResult struct {
 	TrafficMetric                      string
 	PublishedSolo                      bool
 	EffectState, EffectCode, EffectRef string
+	DiscoveryBinding                   string
+	CheckMandate                       bool
 }
 
 type BatchWorkerStore interface {
@@ -97,11 +102,11 @@ type BatchWorkerStore interface {
 }
 
 type BatchWorker struct {
-	Store       BatchWorkerStore
-	Service     *orchestration.Service
-	Manifest    *manifest.Snapshot
-	Authorities *BatchAuthorities
-	Now         func() time.Time
+	Store    BatchWorkerStore
+	Service  *orchestration.Service
+	Manifest *manifest.Snapshot
+	Mandates BatchMandateGateway
+	Now      func() time.Time
 }
 
 func (w BatchWorker) now() time.Time {
@@ -114,20 +119,31 @@ func (w BatchWorker) now() time.Time {
 // Run serves the queue independently of MCP request lifetimes. DB leases
 // enforce the same limits across replicas. An idle worker polls locally.
 func (w BatchWorker) Run(ctx context.Context, logger *slog.Logger) {
+	w.runLoop(ctx, logger, w.RunDue, 2)
+}
+
+func (w BatchWorker) RunDecisionEffects(ctx context.Context, logger *slog.Logger, authorities *BatchDecisionAuthorities) {
+	w.runLoop(ctx, logger, func(ctx context.Context) (bool, error) {
+		id, identity, expires := authorities.next(w.now())
+		if id == "" {
+			return false, nil
+		}
+		return w.runInteractive(ctx, id, identity, expires, true)
+	}, 1)
+}
+
+func (w BatchWorker) runLoop(ctx context.Context, logger *slog.Logger, work func(context.Context) (bool, error), concurrency int) {
 	var workers sync.WaitGroup
-	for range 2 {
+	for range concurrency {
 		workers.Go(func() {
 			for ctx.Err() == nil {
 				delay := 250 * time.Millisecond
-				id, identity, expires := w.Authorities.next(w.now())
-				if id != "" {
-					worked, err := w.RunOnce(ctx, id, identity, expires)
-					if err != nil && ctx.Err() == nil {
-						logger.Warn("batch analysis worker checkpoint unavailable")
-						delay = time.Second
-					} else if worked {
-						continue
-					}
+				worked, err := work(ctx)
+				if err != nil && ctx.Err() == nil {
+					logger.Warn("batch analysis worker checkpoint unavailable")
+					delay = time.Second
+				} else if worked {
+					continue
 				}
 				timer := time.NewTimer(delay)
 				select {
@@ -142,6 +158,10 @@ func (w BatchWorker) Run(ctx context.Context, logger *slog.Logger) {
 }
 
 func (w BatchWorker) RunOnce(ctx context.Context, id string, i orchestration.Identity, expires time.Time) (bool, error) {
+	return w.runInteractive(ctx, id, i, expires, w.Mandates != nil)
+}
+
+func (w BatchWorker) runInteractive(ctx context.Context, id string, i orchestration.Identity, expires time.Time, decisionsOnly bool) (bool, error) {
 	scope := IdentityScope(i)
 	now := w.now()
 	if !scope.Valid() || i.ActorType != "HUMAN" || i.Delegation == "" || !expires.After(now.Add(batchCallTime+time.Second)) {
@@ -160,15 +180,33 @@ func (w BatchWorker) RunOnce(ctx context.Context, id string, i orchestration.Ide
 		return false, err
 	}
 	claimCtx, stopClaim := context.WithTimeout(ctx, 2*time.Second)
-	job, err := w.Store.ClaimBatchWork(claimCtx, scope, id, checksum, BatchAuthorityBinding(i), now, limits.MaxIntents)
+	claim := w.Store.ClaimBatchWork
+	if decisionsOnly {
+		store, ok := w.Store.(interface {
+			ClaimBatchDecisionWork(context.Context, Scope, string, string, string, time.Time, int) (BatchWork, error)
+		})
+		if !ok {
+			stopClaim()
+			return false, ErrUnavailable
+		}
+		claim = store.ClaimBatchDecisionWork
+	}
+	job, err := claim(claimCtx, scope, id, checksum, BatchAuthorityBinding(i), now, limits.MaxIntents)
 	stopClaim()
 	if err != nil || len(job.Columns) == 0 {
 		return false, err
 	}
+	return w.runClaim(ctx, i, scope, checksum, job, limits, expires)
+}
+
+func (w BatchWorker) runClaim(ctx context.Context, i orchestration.Identity, scope Scope, checksum string, job BatchWork, limits BatchLimits, expires time.Time) (bool, error) {
 	// Bound the call by its durable clocks. The I/O and the
 	// subsequent checkpoint never hold the queue transaction open.
-	now = w.now()
-	deadline := minTime(job.LeaseUntil, expires)
+	now := w.now()
+	deadline := job.LeaseUntil
+	if !expires.IsZero() {
+		deadline = minTime(deadline, expires)
+	}
 	for _, col := range job.Columns {
 		// Already expired columns still need a checkpoint. They are never dispatched.
 		if end := col.RetryStarted.Add(batchBudget); !col.RetryStarted.IsZero() && end.After(now) {
@@ -205,20 +243,27 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 		return nil, time.Time{}, err
 	}
 	c := Coordinator{Service: w.Service, Manifest: w.Manifest}
-	epoch, err := c.Epoch(ctx, i)
-	if err != nil || epoch != job.Epoch {
-		code := "ANALYSIS_AUTHORITY_UNAVAILABLE"
-		if errors.Is(err, orchestration.ErrUnauthorized) {
-			code = "AUTHORIZATION_DENIED"
-		} else if err == nil {
-			code = ErrEpochChanged.Error()
+	mandated := job.Mandate.StartRef != "" && !batchDecisionEffectStage(job.Stage)
+	if mandated {
+		if results, pause, stop, err := w.checkBatchMandate(ctx, job); stop {
+			return results, pause, err
 		}
-		return batchBlock(job, code), time.Time{}, nil
+	} else {
+		epoch, err := c.Epoch(ctx, i)
+		if err != nil || epoch != job.Epoch {
+			code := "ANALYSIS_AUTHORITY_UNAVAILABLE"
+			if errors.Is(err, orchestration.ErrUnauthorized) {
+				code = "AUTHORIZATION_DENIED"
+			} else if err == nil {
+				code = ErrEpochChanged.Error()
+			}
+			return batchBlock(job, code), time.Time{}, nil
+		}
 	}
 	if job.Stage == BatchPublished {
 		return w.published(ctx, i, checksum, job, limits)
 	}
-	if job.Stage == BatchAdopt || job.Stage == BatchPropose || job.Stage == BatchDraft {
+	if batchDecisionEffectStage(job.Stage) {
 		return w.decisionEffect(ctx, i, checksum, job)
 	}
 	col := job.Columns[0]
@@ -242,7 +287,7 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 		args, _ = json.Marshal(map[string]any{"requestedArtifactType": "PROPERTY", "intent": col.Intent,
 			"preferredLanguages": limits.Languages, "idempotencyKey": ownerKey})
 		admissionKey = job.Fence
-		if job.PreviousFence != "" {
+		if job.PreviousFence != "" && !mandated {
 			prior, e := w.Store.BatchDiscoveryReceipt(ctx, IdentityScope(i), job.PreviousFence, args)
 			if e != nil {
 				return nil, time.Time{}, e
@@ -285,15 +330,37 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 		return batchBlock(job, "RETRY_BUDGET_EXHAUSTED"), time.Time{}, nil
 	}
 	ordinals := []int{col.Ordinal}
-	if err := w.begin(ctx, job, ordinals); err != nil {
-		return nil, time.Time{}, err
+	var r orchestration.Result
+	var binding string
+	var callErr error
+	if mandated {
+		if job.DispatchHash, callErr = BatchArgumentsHash(args); callErr != nil {
+			return nil, time.Time{}, callErr
+		}
+		if job.Stage == BatchRequest && col.DiscoveryHash != "" && col.DiscoveryHash != job.DispatchHash {
+			return batchBlock(job, "ANALYSIS_DISCOVERY_KEY_CONFLICT"), time.Time{}, nil
+		}
+	}
+	if mandated {
+		var err error
+		r, binding, callErr, err = w.dispatchMandate(ctx, job, ordinals, tool, args, 0)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+	} else {
+		if err := w.begin(ctx, job, ordinals); err != nil {
+			return nil, time.Time{}, err
+		}
+		r, callErr = w.call(job.dispatchContext(ctx, ordinals), i, checksum, job, tool, args, admissionKey, 0, 0, 0)
 	}
 	col = job.Columns[0]
-	r, callErr := w.call(job.dispatchContext(ctx, ordinals), i, checksum, job, tool, args, admissionKey, 0, 0, 0)
 	if r.Observation.At.IsZero() && ctx.Err() != nil {
 		return nil, time.Time{}, ctx.Err()
 	}
 	if callErr != nil || r.Problem != nil || r.Replay || r.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE" {
+		if mandated {
+			return w.mandateFailure(ctx, job, r.Observation, callErr)
+		}
 		return w.delay(job, r, callErr, time.Time{})
 	}
 	var result BatchWorkResult
@@ -301,6 +368,13 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 		result = batchCandidateResult(col, r.Body, r.Observation.At)
 	} else {
 		result = batchDiscoveryResult(col, job.Route(), r)
+		result.CheckMandate = mandated && result.CheckMandate
+		if mandated && job.Stage == BatchRequest {
+			if binding == "" {
+				return batchBlock(job, InvalidOwner), time.Time{}, nil
+			}
+			result.DiscoveryBinding = binding
+		}
 	}
 	if !col.RetryStarted.IsZero() && !w.now().Before(col.RetryStarted.Add(batchBudget)) {
 		return batchBlock(job, "RETRY_BUDGET_EXHAUSTED"), time.Time{}, nil
@@ -311,7 +385,16 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 			result.TrafficMetric = "GET_REPEATED"
 		}
 	}
+	if mandated {
+		if err := w.checkpointMandateObservation(ctx, job, result, r.Observation.At); err != nil {
+			return nil, time.Time{}, err
+		}
+	}
 	return []BatchWorkResult{result}, time.Time{}, nil
+}
+
+func batchDecisionEffectStage(stage string) bool {
+	return stage == BatchAdopt || stage == BatchPropose || stage == BatchDraft
 }
 
 func (w BatchWorker) begin(ctx context.Context, job BatchWork, ordinals []int) error {
@@ -319,6 +402,11 @@ func (w BatchWorker) begin(ctx context.Context, job BatchWork, ordinals []int) e
 	if err := w.Store.BeginBatchDispatch(ctx, job, ordinals, now); err != nil {
 		return err
 	}
+	recordBatchAttempts(job, ordinals, now)
+	return nil
+}
+
+func recordBatchAttempts(job BatchWork, ordinals []int, now time.Time) {
 	for n := range job.Columns {
 		col := &job.Columns[n]
 		if slices.Contains(ordinals, col.Ordinal) {
@@ -328,7 +416,6 @@ func (w BatchWorker) begin(ctx context.Context, job BatchWork, ordinals []int) e
 			}
 		}
 	}
-	return nil
 }
 
 func (w BatchWorker) semanticCapability(tool, actor string) (manifest.Capability, bool) {
@@ -408,24 +495,49 @@ func (w BatchWorker) published(ctx context.Context, i orchestration.Identity, ch
 		}
 		return active
 	}
+	mandated := job.Mandate.StartRef != ""
+	var decision string
 	cap, _ := Find(w.Manifest, BatchTool)
-	visibility, decision, err := (Coordinator{Service: w.Service, Manifest: w.Manifest}).publishedScope(ctx, i, cap)
-	if err != nil || visibility == "" {
-		return append(results, batchBlock(eligible(), batchOwnerFailure(orchestration.OwnerObservation{}, err))...), time.Time{}, nil
+	if !mandated {
+		visibility, current, err := (Coordinator{Service: w.Service, Manifest: w.Manifest}).publishedScope(ctx, i, cap)
+		if err != nil || visibility == "" {
+			return append(results, batchBlock(eligible(), batchOwnerFailure(orchestration.OwnerObservation{}, err))...), time.Time{}, nil
+		}
+		decision = current
+	} else {
+		var err error
+		job.DispatchHash, err = BatchArgumentsHash(task.Arguments)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
 	}
 	if len(task.Arguments)+envelopeSize(i, cap, decision, task.MaxBytes) > limits.RequestBytes {
 		return batchPublishedSplit(job, results, w.now()), time.Time{}, nil
 	}
-	if err := w.begin(ctx, job, task.Columns); err != nil {
-		return nil, time.Time{}, err
+	var r orchestration.Result
+	var callErr error
+	if mandated {
+		var err error
+		r, _, callErr, err = w.dispatchMandate(ctx, job, task.Columns, BatchTool, task.Arguments, task.MaxBytes)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+	} else {
+		if err := w.begin(ctx, job, task.Columns); err != nil {
+			return nil, time.Time{}, err
+		}
+		r, callErr = w.call(job.dispatchContext(ctx, task.Columns), i, checksum, job, BatchTool, task.Arguments, "", limits.RequestBytes, task.MaxBytes, task.MaxObjects)
 	}
-	r, callErr := w.call(job.dispatchContext(ctx, task.Columns), i, checksum, job, BatchTool, task.Arguments, "", limits.RequestBytes, task.MaxBytes, task.MaxObjects)
 	if r.Observation.At.IsZero() && ctx.Err() != nil {
 		return nil, time.Time{}, ctx.Err()
 	}
 	if callErr != nil || r.Problem != nil || r.Replay || r.Observation.Reason == "RETRY_WINDOW_UNAVAILABLE" {
 		if r.Problem != nil && (r.Problem.Status == 413 || r.Problem.Status == 422) {
 			return batchPublishedSplit(job, results, maxTime(w.now(), r.Observation.Due)), time.Time{}, nil
+		}
+		if mandated {
+			retries, pause, err := w.mandateFailure(ctx, eligible(), r.Observation, callErr)
+			return append(results, retries...), pause, err
 		}
 		retries, pause, err := w.delay(eligible(), r, callErr, time.Time{})
 		return append(results, retries...), pause, err
@@ -549,9 +661,7 @@ func (w BatchWorker) delay(job BatchWork, r orchestration.Result, err error, for
 		if started.IsZero() {
 			started = now
 		}
-		delay := [...]time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute}[min(max(attempts-1, 0), 4)]
-		delay += time.Duration(rand.Int64N(int64(delay)/5 + 1))
-		floor := now.Add(delay)
+		floor := now.Add(batchBackoff(attempts))
 		if !forced.IsZero() {
 			floor = forced
 		}
@@ -605,12 +715,16 @@ func batchDiscoveryResult(col BatchWorkColumn, stage string, r orchestration.Res
 	switch receipt.State {
 	case "PENDING", "RUNNING", "RETRY_WAIT":
 		floor := r.Observation.At.Add(time.Duration(orchestration.PollIntervalSeconds) * time.Second)
-		return batchPending(col, BatchStatus, maxTime(due, floor))
+		next := batchPending(col, BatchStatus, maxTime(due, floor))
+		next.CheckMandate = receipt.State == "RETRY_WAIT" || receipt.RecoveryState == "RETRY_WAIT"
+		return next
 	case "FAILED", "EXHAUSTED", "CANCELLED":
 		return batchBlocked(col, "DISCOVERY_"+receipt.State)
 	default:
 		if stage == BatchRequest && strings.TrimSpace(receipt.State) == "" {
-			return batchPending(col, BatchStatus, maxTime(due, r.Observation.At))
+			next := batchPending(col, BatchStatus, maxTime(due, r.Observation.At))
+			next.CheckMandate = receipt.RecoveryState == "RETRY_WAIT"
+			return next
 		}
 		return batchBlocked(col, InvalidOwner)
 	}

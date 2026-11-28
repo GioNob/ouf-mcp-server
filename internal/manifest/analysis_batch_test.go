@@ -51,9 +51,9 @@ func TestAnalysisBatchSchemas(t *testing.T) {
 	check("preview wrong mode", preview, obj{"mode": "BATCH_V2", "assetId": key, "profileId": key}, false)
 	check("preview mixed selector", preview, obj{"mode": "BATCH_V1", "assetId": key, "profileId": key, "jobId": key}, false)
 	plan := resolve(lookup("source.analysis.plan").InputSchema)
-	start := obj{"mode": "BATCH_V1", "assetId": key, "profileId": key, "schemaHash": "sha256:" + id, "commandKey": key}
+	start := obj{"mode": "BATCH_V1", "assetId": key, "profileId": key, "schemaHash": id, "commandKey": key}
 	check("plan", plan, start, true)
-	for field, bad := range (obj{"work": []any{}, "mode": "LEGACY", "schemaHash": id, "commandKey": "00000000-0000-1000-8000-000000000001"}) {
+	for field, bad := range (obj{"work": []any{}, "mode": "LEGACY", "schemaHash": "sha256:" + id, "commandKey": "00000000-0000-1000-8000-000000000001"}) {
 		args := maps.Clone(start)
 		args[field] = bad
 		check("plan "+field, plan, args, false)

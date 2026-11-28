@@ -70,7 +70,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				asset, _ := input["assetId"].(string)
 				profile, _ := input["profileId"].(string)
 				hash, _ := input["schemaHash"].(string)
-				start, startErr := coordinator.StartBatch(ctx, i.Identity, asset, profile, hash, key)
+				start, startErr := coordinator.StartBatch(ctx, i.Identity, asset, profile, hash, key, i.BatchStartProof)
 				if startErr == nil {
 					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, ""), nil, nil
 				}

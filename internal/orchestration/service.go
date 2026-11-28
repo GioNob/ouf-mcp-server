@@ -249,7 +249,7 @@ type Result struct {
 }
 
 type Service struct {
-	ObserveBatchAuthority   func(string, Identity)
+	ObserveBatchDecision    func(string, Identity)
 	AdmissionCallsPerMinute int
 	ReprocessingGuard       func() error
 	Reprocessing            *reprocessing.VerifiedPermit

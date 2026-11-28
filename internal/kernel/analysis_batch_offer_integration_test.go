@@ -84,9 +84,9 @@ func TestBatchPostgresResumeFromAnalysisID(t *testing.T) {
 		SchemaHash: "sha256:" + strings.Repeat("a", 64), ColumnCount: 1000}
 	gateway := &batchProfileGateway{pin: profile}
 	auth := &batchProfileAuth{}
-	service := &orchestration.Service{RequireDelegation: true, Auth: auth, Admission: db, Gateway: gateway, FingerprintKey: make([]byte, 32)}
+	service := &orchestration.Service{RequireDelegation: true, Auth: mandateTestAuth{auth}, Admission: db, Gateway: gateway, FingerprintKey: make([]byte, 32)}
 	const scopes = "ouf.managed-source.preview ouf.semantic.discovery.status ouf.semantic.discovery.candidates"
-	session := revisionSessionForScope(t, service, scope, scopes)
+	session := revisionSessionForScope(t, service, scope, scopes, mandateTestIngress(t, &mandateTestIssuer{}, scope, scopes))
 	contract := nextContract(t)
 	call := func(session *mcp.ClientSession, tool string, args nextstep.Object, failure bool) nextstep.Object {
 		t.Helper()
@@ -100,9 +100,9 @@ func TestBatchPostgresResumeFromAnalysisID(t *testing.T) {
 		}
 		return body
 	}
-	id := analysis.BatchAnalysisID(scope, profile, "")
+	id := analysis.BatchAnalysisID(scope, profile, mandateTestEpoch)
 	start := nextstep.Object{"mode": analysis.BatchMode, "assetId": profile.AssetID, "profileId": profile.ProfileID,
-		"schemaHash": profile.SchemaHash, "commandKey": uuid.NewString()}
+		"schemaHash": strings.TrimPrefix(profile.SchemaHash, "sha256:"), "commandKey": uuid.NewString()}
 	call(session, "source.analysis.plan", start, true)
 	var retained int
 	if err := db.Pool().QueryRow(ctx, `select cardinality(headers) from ouf_mcp.analysis_preview_progress where analysis_id=$1`, id).Scan(&retained); err != nil || retained != 128 {
@@ -207,7 +207,7 @@ func TestBatchPostgresResumeFromAnalysisID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(reopened.Close)
-	fresh := &orchestration.Service{RequireDelegation: true, Auth: auth, Admission: reopened, Gateway: gateway, FingerprintKey: service.FingerprintKey}
+	fresh := &orchestration.Service{RequireDelegation: true, Auth: mandateTestAuth{auth}, Admission: reopened, Gateway: gateway, FingerprintKey: service.FingerprintKey}
 	emptyChat := revisionSessionForScope(t, fresh, scope, scopes)
 	resumed := call(emptyChat, "source.analysis.read", resume, false)
 	if resumed["batchId"] != batch["batchId"] || resumed["expectedRevision"] != batch["expectedRevision"] {

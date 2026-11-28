@@ -52,8 +52,8 @@ func (s *workflowServer) readAnalysisBatch(ctx context.Context, c analysis.Coord
 	if err != nil {
 		return batchReadFailure(id, err)
 	}
-	if read.BatchStart.Initialized && c.Service.ObserveBatchAuthority != nil {
-		c.Service.ObserveBatchAuthority(id, identity)
+	if read.BatchStart.Initialized && c.Service.ObserveBatchDecision != nil {
+		c.Service.ObserveBatchDecision(id, identity)
 	}
 	var next nextstep.Object
 	if read.Offer.ID != "" {

@@ -1,6 +1,7 @@
 package nextstep
 
 import (
+	"strings"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -134,6 +135,9 @@ func (e Engine) BatchNext(tool string, input, obs Object, failed bool) Object {
 		"mode": "=" + analysis.BatchMode, "commandKey": "#uuid",
 	}}
 	args := e.project(rule, obs, input)
+	if hash, ok := args["schemaHash"].(string); ok {
+		args["schemaHash"] = strings.TrimPrefix(hash, "sha256:")
+	}
 	if e.Valid == nil || !e.Valid(plan, args) {
 		return BatchBlock("ANALYSIS_PROFILE_CHANGED")
 	}
