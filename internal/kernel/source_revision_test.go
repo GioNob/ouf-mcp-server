@@ -156,24 +156,50 @@ func revisionSession(t *testing.T, service *orchestration.Service, scope string)
 
 func revisionSessionForScope(t *testing.T, service *orchestration.Service, identity analysis.Scope, grantedScopes string) *mcp.ClientSession {
 	t.Helper()
+	server := httptest.NewTestServer(t, revisionHandlerForScope(t, service, identity, grantedScopes))
+	return connectRevisionSession(t, server.URL, server.Client())
+}
+
+func revisionHandlerForScope(t *testing.T, service *orchestration.Service, identity analysis.Scope, grantedScopes string) http.Handler {
+	t.Helper()
 	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, v := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Delegation": "human-proof", "X-OUF-Service-Principal": identity.Service, "X-OUF-Principal-ID": identity.Principal, "X-OUF-Tenant-ID": identity.Tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": grantedScopes} {
 			r.Header.Set(k, v)
 		}
 		handler.ServeHTTP(w, r)
-	}))
-	httpClient := server.Client()
+	})
+}
+
+func connectRevisionSession(t *testing.T, endpoint string, httpClient *http.Client) *mcp.ClientSession {
+	t.Helper()
 	client := mcp.NewClient(&mcp.Implementation{Name: "source-revision", Version: "1"}, nil)
-	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
 	return session
+}
+
+type inProcessMCPTransport struct{ http.Handler }
+
+func (tr inProcessMCPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	defer req.Body.Close()
+	recorder := httptest.NewRecorder()
+	tr.ServeHTTP(recorder, req)
+	return recorder.Result(), nil
+}
+
+// Keep MCP request handling inside the synctest bubble. A loopback socket
+// would leave the client blocked on network I/O and stop the fake clock.
+func revisionSessionInProcess(t *testing.T, service *orchestration.Service, identity analysis.Scope, scopes string) *mcp.ClientSession {
+	t.Helper()
+	handler := revisionHandlerForScope(t, service, identity, scopes)
+	return connectRevisionSession(t, "http://fixture.invalid", &http.Client{Transport: inProcessMCPTransport{handler}})
 }
 
 func TestSourceRevisionReceiptSchemas(t *testing.T) {

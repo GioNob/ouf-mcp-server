@@ -664,7 +664,7 @@ func TestBatchWorkerPostgresWaitReturnsExecutableRead(t *testing.T) {
 func assertBatchWorkerWaitReturnsExecutableRead(t *testing.T, store *postgres.Store, worker analysis.BatchWorker, owner *batchWorkerOwner, i orchestration.Identity, id string) {
 	t.Helper()
 	scope := analysis.IdentityScope(i)
-	client := revisionSessionForScope(t, worker.Service, scope, batchWorkerScopes)
+	client := revisionSessionInProcess(t, worker.Service, scope, batchWorkerScopes)
 	contract := nextContract(t)
 	call := func(tool string, args nextstep.Object) nextstep.Object {
 		t.Helper()

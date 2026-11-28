@@ -7,12 +7,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type batchFixtureReview struct {
@@ -124,13 +127,40 @@ func (o *batchFixtureReview) observation() nextstep.Object {
 
 func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 	db, _, worker, search, identity, id := batchWorkerFixtureWithScopes(t, 32, decisionScopes, 4)
+	synctest.Test(t, func(t *testing.T) {
+		assertBatchReviewNextOnly(t, db, worker, search, identity, id)
+	})
+}
+
+func assertBatchReviewNextOnly(t *testing.T, db *postgres.Store, worker analysis.BatchWorker, search *batchWorkerOwner, identity orchestration.Identity, id string) {
+	t.Helper()
 	owner := &batchDecisionOwner{GatewayPort: search, receipts: map[string]nextstep.Object{},
 		revisionStates: map[string]string{}, calls: map[string]int{}}
 	worker.Service.Gateway = owner
-	now := time.Now().Add(time.Second)
-	worker.Now = func() time.Time { return now }
-	client := revisionSessionForScope(t, worker.Service, analysis.IdentityScope(identity), decisionScopes)
+	// Seed the virtual clock from PostgreSQL and catch up to newly committed
+	// work before draining. Worker observations can be rounded up by a microsecond.
+	syncClock := func() {
+		t.Helper()
+		var now time.Time
+		if err := db.Pool().QueryRow(t.Context(), "select statement_timestamp()").Scan(&now); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Until(now))
+	}
+	syncClock()
+	worker.Now = func() time.Time { return time.Now().Add(time.Second) }
+	drain := func() {
+		t.Helper()
+		syncClock()
+		batchWorkerDrain(t, worker, identity, id)
+	}
+	newSession := func() *mcp.ClientSession {
+		t.Helper()
+		return revisionSessionInProcess(t, worker.Service, analysis.IdentityScope(identity), decisionScopes)
+	}
+	client := newSession()
 	call := func(tool string, args nextstep.Object) nextstep.Object {
+		t.Helper()
 		return callBatchDecisionFixture(t, client, tool, args, false)
 	}
 	follow := func(next nextstep.Object) nextstep.Object {
@@ -144,11 +174,15 @@ func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 	}
 	nextOf := func(body nextstep.Object) nextstep.Object { return body["next"].(nextstep.Object) }
 	start := call("source.analysis.read", nextstep.Object{"analysisId": id, "view": "STATUS"})
-	if nextOf(start)["action"] != "POLL" {
+	if nextOf(start)["action"] != "POLL" || nextOf(start)["tool"] != "ouf.wait" {
 		t.Fatal("first round has no wait", start)
 	}
-	batchWorkerDrain(t, worker, identity, id)
-	offer := follow(nextOf(follow(nextOf(start))))
+	drain()
+	ready := follow(nextOf(start))
+	if ready["changed"] != true || nextOf(ready)["action"] != "CALL_TOOL" || nextOf(ready)["tool"] != "source.analysis.read" {
+		t.Fatal("wait did not observe the completed round", ready)
+	}
+	offer := follow(nextOf(ready))
 	items := offer["items"].([]any)
 	if len(items) != 4 || search.candidateCalls != 4 {
 		t.Fatal("first round did not cover the residual columns", offer)
@@ -165,10 +199,9 @@ func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 	if len(statuses) != 4 || slices.ContainsFunc(statuses, func(r analysis.BatchDecisionResult) bool { return r.Status != "RECORDED" }) {
 		t.Fatal("decisions were not durably recorded", receipt)
 	}
-	now = time.Now().Add(time.Second)
-	batchWorkerDrain(t, worker, identity, id)
+	drain()
 	// Resume with just the ID after discarding the response to decide.
-	client = revisionSessionForScope(t, worker.Service, analysis.IdentityScope(identity), decisionScopes)
+	client = newSession()
 	offer = call("source.analysis.read", nextstep.Object{"analysisId": id})
 	items = offer["items"].([]any)
 	if len(items) != 1 || fmt.Sprint(items[0].(nextstep.Object)["ordinal"]) != "3" ||
@@ -178,8 +211,7 @@ func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 	decision = nextOf(offer)["alternatives"].([]any)[0].(nextstep.Object)
 	decision["arguments"].(nextstep.Object)["decisions"] = []nextstep.Object{batchDecisionAdopt(offer, 0)}
 	receipt = follow(decision)
-	now = time.Now().Add(time.Second)
-	batchWorkerDrain(t, worker, identity, id)
+	drain()
 	if len(owner.review.adds) != 3 || owner.review.submits != 0 {
 		t.Fatal("collection did not checkpoint each PASS revision", owner.review.adds)
 	}
@@ -216,18 +248,19 @@ func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 		t.Fatal("expected one offered SUBMIT", submits)
 	}
 	wait := nextOf(follow(submits[0]))
-	if wait["action"] != "WAIT_FOR_HUMAN" || owner.review.submits != 1 {
+	if wait["action"] != "WAIT_FOR_HUMAN" || wait["tool"] != "ouf.wait" || owner.review.submits != 1 {
 		t.Fatal("no single THS wait", wait)
 	}
-	client = revisionSessionForScope(t, worker.Service, analysis.IdentityScope(identity), decisionScopes)
+	client = newSession()
 	resume := follow(nextOf(call("source.analysis.read", nextstep.Object{"analysisId": id})))
 	if nextOf(resume)["action"] != "WAIT_FOR_HUMAN" {
 		t.Fatal("resumed analysis did not regain the review wait", resume)
 	}
 	owner.review.decided = true
-	executable := nextOf(follow(wait))
-	if executable["reasonCode"] != nextstep.SourceMappingRequired || executable["tool"] != "source.analysis.read" {
-		t.Fatal("wait did not hand off to mapping", executable)
+	publishedReview := follow(wait)
+	executable := nextOf(publishedReview)
+	if publishedReview["changed"] != true || executable["reasonCode"] != nextstep.SourceMappingRequired || executable["tool"] != "source.analysis.read" {
+		t.Fatal("wait did not observe publication and hand off to mapping", publishedReview)
 	}
 	var published int
 	if err := db.Pool().QueryRow(t.Context(), `select count(*) from ouf_mcp.analysis_batch_review_item where analysis_id=$1 and state='PUBLISHED'`, id).Scan(&published); err != nil || published != 3 {
