@@ -44,7 +44,6 @@ func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapsh
 			panic(err)
 		}
 	}
-	checksum, _ := snapshot.Checksum()
 	server.register(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
 		raw := req.Params.Arguments
@@ -92,7 +91,7 @@ func registerValueTypeTool(server *workflowServer, c manifest.Capability, snapsh
 		if receipt != nil && (args["newColumns"] != nil || args["compositions"] != nil) && len(body)+len(`{"Arguments":}`) > 65536 {
 			return errorResult("OWNER_COMMAND_ARGUMENTS_TOO_LARGE", false), nil
 		}
-		result, structured, err := invoke(ctx, c, checksum, body, service, maxObjects, maxBytes)
+		result, structured, err := invoke(ctx, c, server.manifestChecksum, body, service, maxObjects, maxBytes)
 		if err != nil || structured == nil {
 			return result, err
 		}

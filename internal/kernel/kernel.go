@@ -127,10 +127,6 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	if service != nil {
 		server.analysisService = service
 		service.AdmissionCallsPerMinute = server.waits.callsPerMinute
-		checksum, err := snapshot.Checksum()
-		if err != nil {
-			return nil, err
-		}
 		admission, hasWaitAdmission := service.Admission.(waitAdmission)
 		if hasWaitAdmission {
 			server.waits.claimRead = admission.ClaimWaitRead
@@ -139,7 +135,7 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 			if !hasWaitAdmission {
 				return fmt.Errorf("WAIT_ADMISSION_UNAVAILABLE")
 			}
-			return admission.ChargeWait(ctx, identity, checksum, server.waits.callsPerMinute)
+			return admission.ChargeWait(ctx, identity, server.manifestChecksum, server.waits.callsPerMinute)
 		}
 		if err := server.bindTHSLinks(service); err != nil {
 			return nil, err
@@ -159,12 +155,12 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 				if index < 0 {
 					return nil, fmt.Errorf("missing governed handoff emission")
 				}
-				registerPickerUploadTool(server, snapshot.Capabilities[index], snapshot, service)
-				registerPickerHandoffStatusTool(server, capability, snapshot, service)
+				registerPickerUploadTool(server, snapshot.Capabilities[index], service)
+				registerPickerHandoffStatusTool(server, capability, service)
 			} else if service != nil && originProbe {
 				registerHostOriginProbe(server, capability.InputSchema)
 			} else if service != nil && fetcher != nil {
-				registerUploadTool(server, capability, snapshot, service, fetcher)
+				registerUploadTool(server, capability, service, fetcher)
 			}
 			continue
 		}
@@ -182,8 +178,7 @@ func newHTTPHandlerMode(logger *slog.Logger, service *orchestration.Service, fet
 	return modernOnly(streamable), nil
 }
 
-func registerPickerUploadTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	checksum, _ := snapshot.Checksum()
+func registerPickerUploadTool(server *workflowServer, capability manifest.Capability, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"properties":{}}`), &schema); err != nil {
 		panic(err)
@@ -205,7 +200,7 @@ func registerPickerUploadTool(server *workflowServer, capability manifest.Capabi
 		identity.IdempotencyKey = key
 		ctx = context.WithValue(ctx, identityKey{}, identity)
 		args, _ := json.Marshal(map[string]string{"commandKey": key})
-		result, _, err := invoke(ctx, capability, checksum, args, service, 1, 4096)
+		result, _, err := invoke(ctx, capability, server.manifestChecksum, args, service, 1, 4096)
 		if err == nil && result != nil && !result.IsError {
 			owner := ownerObject(result)
 			if waitUntil, _ := owner["waitUntil"].(string); waitUntil == "" && owner["replay"] != true {
@@ -218,8 +213,7 @@ func registerPickerUploadTool(server *workflowServer, capability manifest.Capabi
 
 // This result read uses the upload capability's existing governed execution.
 // It has no widget template, so calling it cannot launch a second picker.
-func registerPickerHandoffStatusTool(server *workflowServer, capability manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
-	checksum, _ := snapshot.Checksum()
+func registerPickerHandoffStatusTool(server *workflowServer, capability manifest.Capability, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(capability.HandoffInputSchema, &schema); err != nil {
 		panic(err)
@@ -240,7 +234,7 @@ func registerPickerHandoffStatusTool(server *workflowServer, capability manifest
 			return errorResult("HANDOFF_ID_INVALID", false), nil, nil
 		}
 		args, _ := json.Marshal(map[string]string{"handoffId": value})
-		return invoke(ctx, capability, checksum, args, service, 1, 4096)
+		return invoke(ctx, capability, server.manifestChecksum, args, service, 1, 4096)
 	})
 }
 
@@ -278,12 +272,11 @@ func registerHostOriginProbe(server *workflowServer, inputSchema json.RawMessage
 	})
 }
 
-func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
+func registerUploadTool(server *workflowServer, c manifest.Capability, service *orchestration.Service, fetcher *hostfiles.Fetcher) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema,
 		Meta: mcp.Meta{"openai/fileParams": []string{"file"}}},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (out *mcp.CallToolResult, structured any, outErr error) {
@@ -308,7 +301,7 @@ func registerUploadTool(server *workflowServer, c manifest.Capability, snapshot 
 			identity.IdempotencyKey = "upload:" + descriptor.FileID
 			result, err := service.Call(ctx, orchestration.Invocation{Identity: identity.Identity, CapabilityID: c.CapabilityID,
 				Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef,
-				ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey,
+				ManifestChecksum: server.manifestChecksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey,
 				CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: 30 * time.Second,
 				RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 1, ResultBytes: 4096},
 				Upload: &orchestration.UploadStream{Reader: staged.File, Size: staged.Size, SHA256: staged.SHA256, FileID: descriptor.FileID}})
@@ -364,7 +357,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		return
 	}
 	if isAcquisitionRead(c.CapabilityID) {
-		registerAcquisitionReadTool(server, c, snapshot, service)
+		registerAcquisitionReadTool(server, c, service)
 		return
 	}
 	if strings.HasPrefix(c.ToolName, "semantic.") || strings.HasPrefix(c.ToolName, "authorization.") || strings.HasPrefix(c.ToolName, "source.file.") || c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
@@ -372,12 +365,11 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 			panic(err)
 		}
-		checksum, _ := snapshot.Checksum()
 		addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: c.OperationClass == "READ"}}, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 			analysisID, _ := input["analysisId"].(string)
 			if batchInput(c.ToolName, input) {
 				if c.ToolName == "source.file.preview" {
-					return server.batchPreview(ctx, c, checksum, input, service)
+					return server.batchPreview(ctx, c, server.manifestChecksum, input, service)
 				}
 				i, ok := ctx.Value(identityKey{}).(requestIdentity)
 				if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
@@ -435,7 +427,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 			if c.ToolName == "source.onboarding.review.prepare" || c.ToolName == "source.onboarding.read" {
 				maxObjects, maxBytes = 1, 65536
 			}
-			result, structured, err := invoke(ctx, c, checksum, args, service, maxObjects, maxBytes)
+			result, structured, err := invoke(ctx, c, server.manifestChecksum, args, service, maxObjects, maxBytes)
 			if err == nil && analysisID != "" && (c.ToolName == "semantic.discovery.status" || c.ToolName == "semantic.discovery.candidates") {
 				request, _ := input["requestId"].(string)
 				if e := recordAnalysisRead(ctx, service, snapshot, analysisID, c.ToolName, request, result); e != nil {
@@ -447,48 +439,45 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 		return
 	}
 	if strings.HasPrefix(c.ToolName, "ouf.") {
-		registerOperationalTool(server, c, snapshot, service)
+		registerOperationalTool(server, c, service)
 		return
 	}
 	if c.CapabilityID == "urban.object.search" {
-		registerObjectSearchTool(server, c, snapshot, service)
+		registerObjectSearchTool(server, c, service)
 		return
 	}
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input relatedSearchInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
-		return invoke(ctx, c, checksum, args, service, 200, 1<<20)
+		return invoke(ctx, c, server.manifestChecksum, args, service, 200, 1<<20)
 	})
 }
 
-func registerObjectSearchTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerObjectSearchTool(server *workflowServer, c manifest.Capability, service *orchestration.Service) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, input objectSearchInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
-		return invoke(ctx, c, checksum, args, service, 100, 262144)
+		return invoke(ctx, c, server.manifestChecksum, args, service, 100, 262144)
 	})
 }
 
-func registerOperationalTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerOperationalTool(server *workflowServer, c manifest.Capability, service *orchestration.Service) {
 	var inputSchema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &inputSchema}, func(ctx context.Context, _ *mcp.CallToolRequest, input operationalInput) (*mcp.CallToolResult, any, error) {
 		args, _ := json.Marshal(input)
 		if c.CapabilityID == "ouf.operations.explain" {
-			return invoke(ctx, c, checksum, args, service, 1, 128<<10)
+			return invoke(ctx, c, server.manifestChecksum, args, service, 1, 128<<10)
 		}
-		return invoke(ctx, c, checksum, args, service, 200, 512<<10)
+		return invoke(ctx, c, server.manifestChecksum, args, service, 200, 512<<10)
 	})
 }
 

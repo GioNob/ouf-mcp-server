@@ -34,7 +34,6 @@ func registerSourceRevisionRead(server *workflowServer, c manifest.Capability, s
 	if err := json.Unmarshal(c.InputSchema, &inputSchema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	tool := &mcp.Tool{
 		Name:         c.ToolName,
 		Description:  c.Description(),
@@ -50,6 +49,6 @@ func registerSourceRevisionRead(server *workflowServer, c manifest.Capability, s
 		if err != nil {
 			return nil, nil, err
 		}
-		return invoke(ctx, c, checksum, args, service, 1, 65536)
+		return invoke(ctx, c, server.manifestChecksum, args, service, 1, 65536)
 	})
 }

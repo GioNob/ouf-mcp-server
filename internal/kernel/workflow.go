@@ -35,13 +35,14 @@ type workflowServer struct {
 	analysisService    *orchestration.Service
 	publishedLanguages []string
 	*mcp.Server
-	manifest      *manifest.Snapshot
-	nextSchema    *jsonschema.Resolved
-	tools         map[string]registeredTool
-	waits         *waitService
-	summaryLimits analysis.Limits
-	thsLinks      map[string]linkLookup
-	key           []byte
+	manifest         *manifest.Snapshot
+	manifestChecksum string
+	nextSchema       *jsonschema.Resolved
+	tools            map[string]registeredTool
+	waits            *waitService
+	summaryLimits    analysis.Limits
+	thsLinks         map[string]linkLookup
+	key              []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -61,6 +62,10 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if err != nil {
 		return nil, err
 	}
+	checksum, err := snapshot.Checksum()
+	if err != nil {
+		return nil, err
+	}
 	var langs []string
 	if cap, ok := analysis.Find(snapshot, analysis.BatchTool); ok && cap.PublicationState == "ACTIVE" {
 		policy, err := analysis.PublishedLimits(cap)
@@ -72,7 +77,7 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if sdk != nil {
 		sdk.AddReceivingMiddleware(workflowResultWire)
 	}
-	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, manifestChecksum: checksum, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation

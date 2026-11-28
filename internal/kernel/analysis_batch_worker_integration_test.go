@@ -262,8 +262,26 @@ func TestBatchWorkerPostgresLongUnicodeHeaderGoesToDiscovery(t *testing.T) {
 	}
 }
 
+type batchCheckpointNotifications struct {
+	analysis.BatchWorkerStore
+	committed chan struct{}
+}
+
+func (s batchCheckpointNotifications) FinishBatchWork(ctx context.Context, scope analysis.Scope, job analysis.BatchWork, results []analysis.BatchWorkResult, pause, now time.Time) error {
+	if err := s.BatchWorkerStore.FinishBatchWork(ctx, scope, job, results, pause, now); err != nil {
+		return err
+	}
+	select {
+	case s.committed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
 func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
 	store, _, worker, _, i, id := batchWorkerFixture(t, 32)
+	committed := make(chan struct{}, 1)
+	worker.Store = batchCheckpointNotifications{BatchWorkerStore: store, committed: committed}
 	worker.Authorities = new(analysis.BatchAuthorities)
 	proof, err := json.Marshal(map[string]any{"v": 1, "purpose": "mcp-execute", "exp": time.Now().Add(30 * time.Second).Unix()})
 	if err != nil {
@@ -281,10 +299,13 @@ func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
 		cancel()
 		<-done
 	}()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
 	sum, _ := worker.Manifest.Checksum()
-	for ctx.Err() == nil {
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the queue did not complete without a client: %v", ctx.Err())
+		case <-committed:
+		}
 		read, err := store.ReadBatch(ctx, analysis.IdentityScope(i), id, sum, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -295,32 +316,32 @@ func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
 			}
 			return
 		}
-		select {
-		case <-ctx.Done():
-		case <-ticker.C:
-		}
 	}
-	t.Fatal("the queue did not advance until completion without a client")
 }
 
 func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {
 	store, dsn, worker, owner, i, id := batchWorkerFixture(t, 32)
 	owner.throttle = true
 	owner.loseResponse = true
-	if !batchWorkerStep(t, worker, i, id) || !batchWorkerStep(t, worker, i, id) {
-		t.Fatal("missing published lookup or first request attempt")
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
+	worker.Now = func() time.Time { return now }
+	if !batchWorkerStep(t, worker, i, id) || owner.publishedCalls != 1 {
+		t.Fatal("missing published lookup", owner.publishedCalls)
+	}
+	if !batchWorkerStep(t, worker, i, id) || owner.commandCalls != 1 {
+		t.Fatal("missing first request attempt", owner.commandCalls)
 	}
 	var due time.Time
 	var attempts int
 	err := store.Pool().QueryRow(t.Context(), `select due_at,retry_attempts from ouf_mcp.analysis_batch_column where analysis_id=$1 and ordinal=0`, id).Scan(&due, &attempts)
-	if err != nil || attempts != 1 || time.Until(due) < 85*time.Second {
+	if err != nil || attempts != 1 || due.Sub(now) < 85*time.Second {
 		t.Fatal("Retry-After was not retained", due, attempts, err)
 	}
-	worker.Now = func() time.Time { return due.Add(-time.Second) }
+	now = due.Add(-time.Second)
 	if batchWorkerStep(t, worker, i, id) || owner.commandCalls != 1 {
 		t.Fatal("a request bypassed the shared route pause")
 	}
-	worker.Now = func() time.Time { return due.Add(time.Second) }
+	now = due.Add(time.Second)
 	if !batchWorkerStep(t, worker, i, id) || len(owner.requests) != 1 {
 		t.Fatal("owner did not commit the request before losing the response")
 	}
@@ -338,7 +359,7 @@ func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {
 	restartedService := *worker.Service
 	restartedService.Admission = reopened
 	worker.Service, worker.Store = &restartedService, reopened
-	worker.Now = func() time.Time { return resumedDue.Add(time.Second) }
+	now = resumedDue.Add(time.Second)
 	batchWorkerDrain(t, worker, i, id)
 	if owner.commandCalls != 4 || len(owner.requests) != 2 || owner.candidateCalls != 2 {
 		t.Fatal("a retry lost or duplicated a logical effect", owner.commandCalls, len(owner.requests), owner.candidateCalls)

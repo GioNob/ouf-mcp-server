@@ -164,9 +164,11 @@ func (f batchDecisionFixture) session(t *testing.T) *mcp.ClientSession {
 
 func callBatchDecisionFixture(t *testing.T, s *mcp.ClientSession, tool string, args nextstep.Object, failure bool) nextstep.Object {
 	t.Helper()
-	r, err := s.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	r, err := s.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%s: %v", tool, err)
 	}
 	body := assertBatchWire(t, nextContract(t), r)
 	if r.IsError != failure {
@@ -452,10 +454,12 @@ func TestBatchDecidePostgresConcurrentCAS(t *testing.T) {
 		err    error
 	}
 	ready, replies := make(chan struct{}), make(chan response, 2)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
 	for ordinal, session := range []*mcp.ClientSession{a, b} {
 		go func() {
 			<-ready
-			result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{
 				Name: "source.analysis.decide", Arguments: batchDecisionCommand(offer, exclude(ordinal)),
 			})
 			replies <- response{result, err}
@@ -464,7 +468,12 @@ func TestBatchDecidePostgresConcurrentCAS(t *testing.T) {
 	close(ready)
 	commits := 0
 	for range 2 {
-		reply := <-replies
+		var reply response
+		select {
+		case reply = <-replies:
+		case <-ctx.Done():
+			t.Fatalf("concurrent decisions stalled: %v", ctx.Err())
+		}
 		if reply.err != nil {
 			t.Fatal(reply.err)
 		}
@@ -593,7 +602,7 @@ func TestBatchDecidePostgresRefusalAndAmbiguousDispatch(t *testing.T) {
 func TestBatchDecidePostgresNinthAttemptAfterRestart(t *testing.T) {
 	f := newBatchDecisionFixture(t, 1)
 	session := f.session(t)
-	now := time.Now().UTC().Add(time.Second)
+	var now time.Time
 	f.worker.Now = func() time.Time { return now }
 	for attempt := 1; attempt <= 8; attempt++ {
 		if attempt == 8 {
@@ -621,10 +630,28 @@ func TestBatchDecidePostgresNinthAttemptAfterRestart(t *testing.T) {
 			if results[0].Status != "RECORDED" {
 				t.Fatal("valid reformulation lost its reserve", body)
 			}
-			batchWorkerDrain(t, f.worker, f.identity, f.id)
-			now = now.Add(time.Minute)
-			// The test clock moves a minute per round, but admission windows
-			// follow the database clock: age them so each round gets its own (distinct shifts avoid key collisions).
+			for _, phase := range []struct {
+				stage string
+				calls *int
+			}{
+				{analysis.BatchReformulate, &f.search.commandCalls},
+				{analysis.BatchCandidates, &f.search.candidateCalls},
+			} {
+				var due time.Time
+				if err := f.db.Pool().QueryRow(t.Context(), `select due_at from ouf_mcp.analysis_batch_column
+					where analysis_id=$1 and ordinal=0 and work_stage=$2 and state='PENDING'`, f.id, phase.stage).Scan(&due); err != nil {
+					t.Fatalf("reformulation %d did not queue %s: %v", attempt, phase.stage, err)
+				}
+				// Follow the committed deadline without moving the worker clock backwards.
+				if afterDue := due.Add(time.Microsecond); now.Before(afterDue) {
+					now = afterDue
+				}
+				if !batchWorkerStep(t, f.worker, f.identity, f.id) || *phase.calls != attempt {
+					t.Fatalf("reformulation %d stalled at %s: %d owner calls", attempt, phase.stage, *phase.calls)
+				}
+			}
+			// Admission uses the database clock. Expire the fixture windows with
+			// distinct shifts to make capacity available without a wall-clock wait.
 			if _, err := f.db.Pool().Exec(t.Context(), `update ouf_mcp.budget_window
 				set window_start=window_start-make_interval(mins=>$1::int), window_end=window_end-make_interval(mins=>$1::int)`, 1<<attempt); err != nil {
 				t.Fatal(err)

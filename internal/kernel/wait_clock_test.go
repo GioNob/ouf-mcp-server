@@ -155,8 +155,8 @@ func TestPickerWaitOwnerTransitions(t *testing.T) {
 		for _, c := range snapshot.ToolEligible() {
 			switch c.ToolName {
 			case "source.file.upload":
-				registerPickerUploadTool(s, c, snapshot, nil)
-				registerPickerHandoffStatusTool(s, c, snapshot, nil)
+				registerPickerUploadTool(s, c, nil)
+				registerPickerHandoffStatusTool(s, c, nil)
 			case "ouf.wait":
 				s.registerWait(c)
 			case "source.file.profile":
