@@ -159,11 +159,15 @@ func batchWorkerFixture(t *testing.T, width int) (*postgres.Store, string, analy
 	return batchWorkerFixtureWithScopes(t, width, batchWorkerScopes)
 }
 
-func batchWorkerFixtureWithScopes(t *testing.T, width int, scopes string) (*postgres.Store, string, analysis.BatchWorker, *batchWorkerOwner, orchestration.Identity, string) {
+func batchWorkerFixtureWithScopes(t *testing.T, width int, scopes string, options ...int) (*postgres.Store, string, analysis.BatchWorker, *batchWorkerOwner, orchestration.Identity, string) {
 	t.Helper()
 	dsn := isolatedSummaryTestDSN(t)
 	store, snapshot := summaryTestStore(t, dsn)
-	owner := &batchWorkerOwner{residuals: 2, requests: map[string]string{}, intents: map[string]string{}}
+	residuals := 2
+	if len(options) > 0 {
+		residuals = options[0]
+	}
+	owner := &batchWorkerOwner{residuals: residuals, requests: map[string]string{}, intents: map[string]string{}}
 	service := &orchestration.Service{RequireDelegation: true, Auth: &batchProfileAuth{}, Admission: store, Gateway: owner, FingerprintKey: make([]byte, 32)}
 	worker := analysis.BatchWorker{Store: store, Service: service, Manifest: snapshot}
 	i := orchestration.Identity{ServicePrincipalID: "ouf-chatgpt", PrincipalID: "worker-fixture", TenantID: "tenant", ActorType: "HUMAN", Delegation: "human-proof",
@@ -660,7 +664,7 @@ func TestBatchWorkerPostgresWaitReturnsExecutableRead(t *testing.T) {
 func assertBatchWorkerWaitReturnsExecutableRead(t *testing.T, store *postgres.Store, worker analysis.BatchWorker, owner *batchWorkerOwner, i orchestration.Identity, id string) {
 	t.Helper()
 	scope := analysis.IdentityScope(i)
-	client := revisionSessionForScope(t, worker.Service, scope, batchWorkerScopes)
+	client := revisionSessionInProcess(t, worker.Service, scope, batchWorkerScopes)
 	contract := nextContract(t)
 	call := func(tool string, args nextstep.Object) nextstep.Object {
 		t.Helper()

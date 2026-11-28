@@ -1,0 +1,329 @@
+package kernel
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
+	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
+	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+type batchFixtureReview struct {
+	id, context, submitKey string
+	adds                   map[string]nextstep.Object
+	submits                int
+	expiry                 time.Time
+	decided                bool
+}
+
+func (o *batchFixtureReview) execute(r orchestration.GatewayRequest) (bool, orchestration.GatewayResponse, error) {
+	var args struct {
+		AnalysisID, Projection, CommandKey, BatchAction, ReviewContextRef, ReviewBatchID, ChallengeID, RevisionID string
+		ExpectedRowVersion                                                                                        int64
+		Item                                                                                                      analysis.BatchReviewInput
+	}
+	err := json.Unmarshal(r.Arguments, &args)
+	if err != nil {
+		return true, orchestration.GatewayResponse{}, err
+	}
+	reply := func(body nextstep.Object) (bool, orchestration.GatewayResponse, error) {
+		response, err := batchDecisionOwnerReply(body)
+		return true, response, err
+	}
+	fail := func(format string, values ...any) (bool, orchestration.GatewayResponse, error) {
+		return true, orchestration.GatewayResponse{}, fmt.Errorf(format, values...)
+	}
+	switch r.CapabilityID {
+	case "ouf.semantic.review.prepare":
+		if args.RevisionID == "" || args.CommandKey != r.IdempotencyKey {
+			return fail("invalid validation binding")
+		}
+		return reply(nextstep.Object{"status": "PASS", "revision_id": args.RevisionID, "validation_run_id": uuid.NewString(), "validated_row_version": args.ExpectedRowVersion})
+	case "ouf.semantic.approval.request":
+		if args.Projection != "" || args.AnalysisID != "" || args.CommandKey != r.IdempotencyKey || analysis.ValidateID(args.ReviewContextRef) != nil {
+			return fail("invalid owner review envelope")
+		}
+		switch args.BatchAction {
+		case "ADD":
+			if !analysis.CanonicalUUID(args.Item.RevisionID) || !analysis.CanonicalUUID(args.Item.ValidationRunID) || args.Item.ExpectedRowVersion != 0 {
+				return fail("invalid ADD item")
+			}
+			if o.id == "" {
+				o.id, o.context, o.adds = uuid.NewString(), args.ReviewContextRef, make(map[string]nextstep.Object)
+			}
+			if _, exists := o.adds[args.Item.RevisionID]; exists {
+				return fail("duplicate ADD for revision")
+			}
+			o.adds[args.Item.RevisionID] = nextstep.Object{"revisionId": args.Item.RevisionID, "currentValidationRunId": args.Item.ValidationRunID,
+				"rowVersion": args.Item.ExpectedRowVersion, "semanticId": "urn:fixture:review:" + args.Item.RevisionID}
+			return reply(o.observation())
+		case "REMOVE":
+			if args.ReviewContextRef != o.context || o.adds[args.Item.RevisionID] == nil || o.submits != 0 {
+				return fail("invalid REMOVE item")
+			}
+			delete(o.adds, args.Item.RevisionID)
+			return reply(o.observation())
+		case "SUBMIT":
+			if args.ReviewBatchID != o.id || args.ReviewContextRef != o.context || len(o.adds) == 0 || o.submits != 0 {
+				return fail("duplicate or unbound SUBMIT")
+			}
+			o.submits++
+			o.submitKey, o.expiry = args.CommandKey, time.Now().Add(time.Hour).UTC()
+			return reply(o.observation())
+		}
+	case "ouf.semantic.proposal.read":
+		if (o.context != "" && args.ReviewContextRef == o.context) || (o.id != "" && args.ReviewBatchID == o.id) ||
+			(o.submitKey != "" && args.CommandKey == o.submitKey) {
+			if args.Projection != "" || args.AnalysisID != "" {
+				return fail("local projection reached the owner")
+			}
+			return reply(o.observation())
+		}
+	case semanticLinkID:
+		if args.ChallengeID != o.id {
+			return fail("THS challenge was not bound to the lot")
+		}
+		link := "https://review.example/"
+		return reply(nextstep.Object{"reviewUrl": link + strings.Repeat("a", 2000-len(link)), "expiresAt": o.expiry})
+	}
+	return false, orchestration.GatewayResponse{}, nil
+}
+
+func (o *batchFixtureReview) observation() nextstep.Object {
+	state, itemState := "COLLECTING", "COLLECTED"
+	count, action := "collected", "SUBMIT_REVIEW"
+	if o.submits != 0 {
+		state, itemState, count, action = "UNDER_REVIEW", "UNDER_REVIEW", "underReview", "WAIT_HUMAN_DECISION"
+	}
+	if o.decided {
+		state, itemState, count, action = "DECIDED", "PUBLISHED", "published", "NONE"
+	}
+	items := make([]nextstep.Object, 0, len(o.adds))
+	for _, revision := range slices.Sorted(maps.Keys(o.adds)) {
+		row := maps.Clone(o.adds[revision])
+		row["itemState"] = itemState
+		if o.decided {
+			row["publication"] = nextstep.Object{"publicationSetId": "11111111-1111-4111-8111-111111111111", "semanticVersion": "1"}
+		}
+		items = append(items, row)
+	}
+	obs := nextstep.Object{"kind": "REVIEW_BATCH", "reviewContextRef": o.context, "reviewBatchId": o.id, "version": analysis.Digest([]any{state, items}),
+		"state": state, "itemCount": len(items), "counts": nextstep.Object{count: len(items)}, "items": items, "itemsOffset": 0, "allowedActions": []string{action}}
+	if state == "UNDER_REVIEW" {
+		obs["currentChallenge"] = nextstep.Object{"challengeId": o.id, "challengeStatus": "OPEN", "expiresAt": o.expiry}
+	}
+	return obs
+}
+
+func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
+	db, _, worker, search, identity, id := batchWorkerFixtureWithScopes(t, 32, decisionScopes, 4)
+	synctest.Test(t, func(t *testing.T) {
+		assertBatchReviewNextOnly(t, db, worker, search, identity, id)
+	})
+}
+
+func assertBatchReviewNextOnly(t *testing.T, db *postgres.Store, worker analysis.BatchWorker, search *batchWorkerOwner, identity orchestration.Identity, id string) {
+	t.Helper()
+	owner := &batchDecisionOwner{GatewayPort: search, receipts: map[string]nextstep.Object{},
+		revisionStates: map[string]string{}, calls: map[string]int{}}
+	worker.Service.Gateway = owner
+	// Seed the virtual clock from PostgreSQL and catch up to newly committed
+	// work before draining. Worker observations can be rounded up by a microsecond.
+	syncClock := func() {
+		t.Helper()
+		var now time.Time
+		if err := db.Pool().QueryRow(t.Context(), "select statement_timestamp()").Scan(&now); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Until(now))
+	}
+	syncClock()
+	worker.Now = func() time.Time { return time.Now().Add(time.Second) }
+	drain := func() {
+		t.Helper()
+		syncClock()
+		batchWorkerDrain(t, worker, identity, id)
+	}
+	newSession := func() *mcp.ClientSession {
+		t.Helper()
+		return revisionSessionInProcess(t, worker.Service, analysis.IdentityScope(identity), decisionScopes)
+	}
+	client := newSession()
+	call := func(tool string, args nextstep.Object) nextstep.Object {
+		t.Helper()
+		return callBatchDecisionFixture(t, client, tool, args, false)
+	}
+	follow := func(next nextstep.Object) nextstep.Object {
+		t.Helper()
+		tool, _ := next["tool"].(string)
+		args, _ := next["arguments"].(nextstep.Object)
+		if tool == "" || args == nil {
+			t.Fatal("missing continuation", next)
+		}
+		return call(tool, args)
+	}
+	nextOf := func(body nextstep.Object) nextstep.Object { return body["next"].(nextstep.Object) }
+	start := call("source.analysis.read", nextstep.Object{"analysisId": id, "view": "STATUS"})
+	if nextOf(start)["action"] != "POLL" || nextOf(start)["tool"] != "ouf.wait" {
+		t.Fatal("first round has no wait", start)
+	}
+	drain()
+	ready := follow(nextOf(start))
+	if ready["changed"] != true || nextOf(ready)["action"] != "CALL_TOOL" || nextOf(ready)["tool"] != "source.analysis.read" {
+		t.Fatal("wait did not observe the completed round", ready)
+	}
+	offer := follow(nextOf(ready))
+	items := offer["items"].([]any)
+	if len(items) != 4 || search.candidateCalls != 4 {
+		t.Fatal("first round did not cover the residual columns", offer)
+	}
+	next := nextOf(offer)
+	decision := next["alternatives"].([]any)[0].(nextstep.Object)
+	args := decision["arguments"].(nextstep.Object)
+	args["decisions"] = []nextstep.Object{batchDecisionProposal(0), batchDecisionAdopt(offer, 1),
+		{"ordinal": 2, "action": "EXCLUDE", "reason": "Colonna tecnica"},
+		{"ordinal": 3, "action": "REFORMULATE", "intent": "residual corrected"},
+	}
+	receipt := follow(decision)
+	statuses := decisionStatuses(receipt)
+	if len(statuses) != 4 || slices.ContainsFunc(statuses, func(r analysis.BatchDecisionResult) bool { return r.Status != "RECORDED" }) {
+		t.Fatal("decisions were not durably recorded", receipt)
+	}
+	drain()
+	// Resume with just the ID after discarding the response to decide.
+	client = newSession()
+	offer = call("source.analysis.read", nextstep.Object{"analysisId": id})
+	items = offer["items"].([]any)
+	if len(items) != 1 || fmt.Sprint(items[0].(nextstep.Object)["ordinal"]) != "3" ||
+		fmt.Sprint(items[0].(nextstep.Object)["attempt"]) != "2" {
+		t.Fatal("the next round did not isolate the reformulated ordinal", offer)
+	}
+	decision = nextOf(offer)["alternatives"].([]any)[0].(nextstep.Object)
+	decision["arguments"].(nextstep.Object)["decisions"] = []nextstep.Object{batchDecisionAdopt(offer, 0)}
+	receipt = follow(decision)
+	drain()
+	if len(owner.review.adds) != 3 || owner.review.submits != 0 {
+		t.Fatal("collection did not checkpoint each PASS revision", owner.review.adds)
+	}
+	head := follow(nextOf(receipt))
+	page := follow(nextOf(head))
+	var ordinal int
+	for page["view"] == "SUMMARY" {
+		rows := page["items"].([]any)
+		if len(rows) == 0 || len(rows) > 8 {
+			t.Fatal("invalid summary page", page)
+		}
+		for _, value := range rows {
+			item := value.(nextstep.Object)
+			if fmt.Sprint(item["ordinal"]) != fmt.Sprint(ordinal) ||
+				ordinal == 2 && (item["state"] != "EXCLUDED" || item["reason"] != "Colonna tecnica") ||
+				ordinal != 2 && (item["revisionId"] == nil || item["semanticId"] == nil) {
+				t.Fatal("summary lost an ordinal or a mapping receipt", item)
+			}
+			ordinal++
+		}
+		page = follow(nextOf(page))
+	}
+	if ordinal != 32 || nextOf(page)["reasonCode"] != nextstep.ReviewBatchCollecting {
+		t.Fatal("summary did not reach the complete owner lot", ordinal, page)
+	}
+	var submits []nextstep.Object
+	for _, value := range nextOf(page)["alternatives"].([]any) {
+		option := value.(nextstep.Object)
+		if option["tool"] == "semantic.approval.request" && option["arguments"].(nextstep.Object)["batchAction"] == "SUBMIT" {
+			submits = append(submits, option)
+		}
+	}
+	if len(submits) != 1 {
+		t.Fatal("expected one offered SUBMIT", submits)
+	}
+	wait := nextOf(follow(submits[0]))
+	if wait["action"] != "WAIT_FOR_HUMAN" || wait["tool"] != "ouf.wait" || owner.review.submits != 1 {
+		t.Fatal("no single THS wait", wait)
+	}
+	client = newSession()
+	resume := follow(nextOf(call("source.analysis.read", nextstep.Object{"analysisId": id})))
+	if nextOf(resume)["action"] != "WAIT_FOR_HUMAN" {
+		t.Fatal("resumed analysis did not regain the review wait", resume)
+	}
+	owner.review.decided = true
+	publishedReview := follow(wait)
+	executable := nextOf(publishedReview)
+	if publishedReview["changed"] != true || executable["reasonCode"] != nextstep.SourceMappingRequired || executable["tool"] != "source.analysis.read" {
+		t.Fatal("wait did not observe publication and hand off to mapping", publishedReview)
+	}
+	var published int
+	if err := db.Pool().QueryRow(t.Context(), `select count(*) from ouf_mcp.analysis_batch_review_item where analysis_id=$1 and state='PUBLISHED'`, id).Scan(&published); err != nil || published != 3 {
+		t.Fatal("publication receipts were not retained", published, err)
+	}
+}
+
+func TestBatchReviewPostgresRemoveThenAddSameRevision(t *testing.T) {
+	f := newBatchDecisionFixture(t, 2)
+	client := f.session(t)
+	offer := f.offer(t, client)
+	f.decide(t, client, batchDecisionCommand(offer, batchDecisionAdopt(offer, 0), batchDecisionAdopt(offer, 1)), false)
+	f.worker.Now = func() time.Time { return time.Now().Add(time.Second) }
+	batchWorkerDrain(t, f.worker, f.identity, f.id)
+	var revision string
+	if err := f.db.Pool().QueryRow(t.Context(), `select owner_ref::text from ouf_mcp.analysis_batch_choice
+		where analysis_id=$1 and ordinal=0`, f.id).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	lot := &f.owner.review
+	item := lot.adds[revision]
+	if len(lot.adds) != 2 || item == nil {
+		t.Fatal("both revisions must be in the same collecting lot", lot.adds)
+	}
+	command := func(action string, item nextstep.Object) nextstep.Object {
+		t.Helper()
+		args := nextstep.Object{"analysisId": f.id, "projection": analysis.BatchMode, "reviewContextRef": f.id,
+			"batchAction": action, "commandKey": uuid.NewString()}
+		if item != nil {
+			args["item"] = item
+		} else {
+			args["reviewBatchId"] = lot.id
+		}
+		return callBatchDecisionFixture(t, client, "semantic.approval.request", args, false)
+	}
+	batch := lot.id
+	command("REMOVE", nextstep.Object{"revisionId": revision})
+	reopened := f.offer(t, client)
+	if reopened["batchId"] == nil {
+		t.Fatal("REMOVE did not reopen the decision", reopened)
+	}
+	added := command("ADD", nextstep.Object{"revisionId": revision, "expectedRowVersion": item["rowVersion"], "validationRunId": item["currentValidationRunId"]})
+	if added["reviewBatchId"] != batch || f.offer(t, client)["batchId"] != nil {
+		t.Fatal("the same lot did not regain the revision and close the reopened decision", added)
+	}
+	submitted := command("SUBMIT", nil)
+	if submitted["state"] != "UNDER_REVIEW" {
+		t.Fatal("the collected lot did not enter review", submitted)
+	}
+	lot.decided = true
+	callBatchDecisionFixture(t, client, "semantic.proposal.read", nextstep.Object{
+		"analysisId": f.id, "projection": analysis.BatchMode, "reviewBatchId": batch,
+	}, false)
+
+	summary := callBatchDecisionFixture(t, client, "source.analysis.read", nextstep.Object{"analysisId": f.id, "view": "SUMMARY"}, false)
+	rows := summary["items"].([]any)
+	if len(rows) != 2 {
+		t.Fatal("missing summary rows", summary)
+	}
+	const publicationSet = "11111111-1111-4111-8111-111111111111"
+	row := rows[0].(nextstep.Object)
+	if row["revisionId"] != revision || row["reviewBatchId"] != batch || row["publicationState"] != "PUBLISHED" ||
+		row["publicationSetId"] != publicationSet || row["semanticId"] != item["semanticId"] || row["receiptRef"] == nil {
+		t.Fatal("the mapping lost the publication receipt for the re-added revision", row)
+	}
+}

@@ -25,7 +25,20 @@ func (w BatchWorker) decisionEffect(ctx context.Context, i orchestration.Identit
 	if job.Stage == BatchAdopt {
 		tool = "semantic.discovery.adopt"
 	}
-	read := job.Stage == BatchDraft
+	switch job.Stage {
+	case BatchValidate:
+		tool = "semantic.review.prepare"
+	case BatchReviewAdd:
+		tool = "semantic.approval.request"
+	}
+	sourceStage := job.Stage
+	if job.Stage == BatchReviewInspect {
+		sourceStage = col.OriginalAction
+		if col.EffectRevision != "" && sourceStage == BatchPropose {
+			sourceStage = BatchDraft
+		}
+	}
+	read := job.Stage == BatchDraft || job.Stage == BatchReviewInspect
 	if job.PreviousFence != "" && !read {
 		prior, dispatched, err := w.Store.BatchDecisionAttempt(ctx, IdentityScope(i), job.PreviousFence, job.Stage, col.EffectArguments)
 		if errors.Is(err, ErrConflict) {
@@ -55,7 +68,7 @@ func (w BatchWorker) decisionEffect(ctx context.Context, i orchestration.Identit
 	args := col.EffectArguments
 	if read {
 		tool = "semantic.proposal.read"
-		if job.Stage != BatchDraft {
+		if sourceStage != BatchDraft {
 			args, _ = json.Marshal(map[string]string{"commandKey": col.EffectKey})
 		}
 		saved, err := w.Service.SavedObservation(ctx, i, "ouf.semantic.proposal.read", "READ", args)
@@ -95,16 +108,24 @@ func (w BatchWorker) decisionEffect(ctx context.Context, i orchestration.Identit
 		return []BatchWorkResult{batchEffectResult(col, "REFUSED", r.Problem.Code, "")}, time.Time{}, nil
 	}
 	if err == nil && r.Problem == nil && !r.Replay && r.Observation.Status >= 200 && r.Observation.Status < 300 {
-		ref := batchEffectReference(job.Stage, read, col, r.Body)
+		if ReviewEffectStage(job.Stage) {
+			if effect, ok := batchReviewEffect(job, col, read, r.Body); ok {
+				return []BatchWorkResult{effect}, time.Time{}, nil
+			}
+		}
+		ref := batchEffectReference(sourceStage, read, col, r.Body)
 		if ref != "" {
 			code := "CREATED"
-			switch job.Stage {
+			switch sourceStage {
 			case BatchAdopt:
 				code = "ADOPTED"
 			case BatchDraft:
 				code = "DRAFT_RECEIPT_VERIFIED"
 			}
-			return []BatchWorkResult{batchEffectResult(col, "APPLIED", code, ref)}, time.Time{}, nil
+			effect := batchEffectResult(col, "APPLIED", code, ref)
+			if batchPrepareReview(&effect, col, read, r.Body) {
+				return []BatchWorkResult{effect}, time.Time{}, nil
+			}
 		}
 	}
 	if read {
@@ -114,6 +135,22 @@ func (w BatchWorker) decisionEffect(ctx context.Context, i orchestration.Identit
 		return hold("OUTCOME_REQUIRES_RECONCILIATION")
 	}
 	if r.Problem != nil && r.Problem.Status >= 400 && r.Problem.Status < 500 {
+		if job.Stage == BatchReviewAdd && r.Problem.Code == "SEM_REVIEW_BATCH_COLLECTING_LIMIT" {
+			var problem struct{ ReviewBatchID, ReviewContextRef string }
+			if json.Unmarshal(r.Body, &problem) != nil || problem.ReviewContextRef != job.AnalysisID || !CanonicalUUID(problem.ReviewBatchID) {
+				return hold(InvalidOwner)
+			}
+			effect := batchEffectResult(col, "PENDING", r.Problem.Code, col.EffectRevision)
+			effect.State, effect.ReviewBlockedBy = "DECIDED", problem.ReviewBatchID
+			return []BatchWorkResult{effect}, time.Time{}, nil
+		}
+		if job.Stage == BatchReviewAdd && r.Problem.Code == "SEM_REVIEW_BATCH_ITEM_TYPE_UNSUPPORTED" {
+			effect := batchEffectResult(col, "APPLIED", r.Problem.Code, col.EffectRevision)
+			return []BatchWorkResult{effect}, time.Time{}, nil
+		}
+		if job.Stage == BatchReviewAdd && r.Problem.Code == "SEM_REVIEW_BATCH_ITEM_UNDER_REVIEW" {
+			return hold(r.Problem.Code)
+		}
 		if r.Problem.Code == ErrKeyReuse.Error() {
 			return hold(InvalidOwner)
 		}
@@ -142,13 +179,17 @@ func (w BatchWorker) callBatchDecision(ctx context.Context, i orchestration.Iden
 		return orchestration.Result{}, ErrUnavailable
 	}
 	fence := job.Fence
+	resourceID := ""
+	if ReviewEffectStage(job.Stage) && !read {
+		resourceID = job.Columns[0].EffectRevision
+	}
 	if read {
 		fence, key = "", uuid.NewString()
 	}
 	return w.Service.Call(ctx, orchestration.Invocation{
 		Identity: i, ManifestChecksum: checksum, CapabilityID: cap.CapabilityID, AuthorizationCapabilityID: cap.RequiredAuthorization,
 		Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef,
-		Resource: orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", TenantID: i.TenantID,
+		Resource: orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", ResourceID: resourceID, TenantID: i.TenantID,
 			Attributes: map[string]string{"module": "SEMANTIC"}},
 		Arguments: args, BatchEffectFence: fence, BatchRoute: job.Route(), IdempotencyKey: key, CorrelationID: uuid.NewString(),
 		Window: orchestration.AdmissionWindow, Timeout: min(batchCallTime, time.Duration(cost.HardMaxElapsedMs)*time.Millisecond),

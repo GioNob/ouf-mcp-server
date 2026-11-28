@@ -453,6 +453,9 @@ func (s *workflowServer) engine(ctx context.Context) nextstep.Engine {
 				link = fetch(ctx, nextstep.Object{"challengeId": challenge["challengeId"]})
 			}
 		}
+		if args["projection"] == analysis.BatchMode {
+			link = compactReviewLink(link)
+		}
 		return s.waits.signer.Issue(waitBinding(ctx), r, args, obs, link, time.Now())
 	}, CommandKey: func(tool string, args, obs, input nextstep.Object) string {
 		return s.commandKey(ctx, tool, args, obs, input)
@@ -546,6 +549,11 @@ func (s *workflowServer) decorateResult(ctx context.Context, t registeredTool, a
 		}
 	}
 	structured["next"] = next
+	if batch && structured["analysisId"] == nil {
+		if id, _ := args["analysisId"].(string); analysis.ValidateID(id) == nil {
+			structured["analysisId"] = id
+		}
+	}
 	if result.IsError && structured["code"] == nil {
 		structured["code"] = structured["next"].(nextstep.Object)["reasonCode"]
 	}

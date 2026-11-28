@@ -36,19 +36,25 @@ func AdmissionWindowBudget(in AdmissionRequest) (string, Cost, error) {
 	if in.BudgetProfile == DiscoveryBudgetProfile {
 		return discoveryWindowBudget(in)
 	}
+	if in.BudgetProfile == ReviewBatchReadBudgetProfile {
+		return reviewBatchReadWindowBudget(in)
+	}
 	if in.BudgetProfile == ManagedSchemaBudgetProfile {
 		return managedSchemaWindowBudget(in)
 	}
 	if in.BudgetProfile == SemanticReadBudgetProfile {
 		return semanticReadWindowBudget(in)
 	}
-	if in.BudgetProfile == "" {
+	if in.BudgetProfile == "" || in.BudgetProfile == BatchSummaryBudgetProfile {
 		calls := in.CallsPerMinute
 		if calls == 0 {
 			calls = DefaultAdmissionCallsPerMinute
 		}
 		if calls < 1 {
 			return "", Cost{}, errors.New("invalid ordinary call budget")
+		}
+		if in.BudgetProfile == BatchSummaryBudgetProfile {
+			return batchSummaryWindowBudget(in, int64(calls))
 		}
 		return in.ManifestChecksum, Cost{ToolCalls: int64(calls), ResultBytes: in.Maximum.ResultBytes * int64(in.RetryThreshold), DistinctObjects: in.Maximum.DistinctObjects * int64(in.RetryThreshold)}, nil
 	}

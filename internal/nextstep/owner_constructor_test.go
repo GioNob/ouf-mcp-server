@@ -88,6 +88,9 @@ func init() {
 		ownerProducerCase{target: "source.analysis.read", poll: true, run: func(e Engine) Object {
 			return e.BatchStatusNext("analysis", AnalysisRunning, time.Time{})
 		}})
+	registerOwnerProducer(Engine.batchCall, ownerProducerCase{target: "semantic.proposal.read", run: func(e Engine) Object {
+		return e.BatchReviewContext(strings.Repeat("a", 64))
+	}})
 	registerOwnerProducer(Engine.BatchPageNext, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 		return e.BatchPageNext(Object{"analysisId": "analysis", "view": "BATCH"}, false)
 	}})

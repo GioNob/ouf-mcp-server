@@ -73,6 +73,10 @@ func observationReference(key []byte, capability, class string, args []byte) (se
 		return "", "", ""
 	}
 	delete(fields, "analysisId")
+	if capability == "ouf.semantic.proposal.read" && fields["projection"] == "BATCH_V1" {
+		delete(fields, "projection")
+		delete(fields, "expectedVersion")
+	}
 	switch capability {
 	case "ouf.semantic.discovery.status", "ouf.semantic.discovery.candidates":
 		if raw, ok := fields["requestId"].(string); ok {

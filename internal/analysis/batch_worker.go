@@ -18,17 +18,20 @@ import (
 )
 
 const (
-	BatchPublished   = "PUBLISHED"
-	BatchRequest     = "REQUEST"
-	BatchStatus      = "STATUS"
-	BatchCandidates  = "CANDIDATES"
-	BatchReformulate = "REFORMULATE"
-	BatchAdopt       = "ADOPT"
-	BatchPropose     = "PROPOSE"
-	BatchDraft       = "DRAFT"
-	BatchLease       = 20 * time.Second
-	batchBudget      = 24 * time.Hour
-	batchCallTime    = 4 * time.Second
+	BatchPublished     = "PUBLISHED"
+	BatchRequest       = "REQUEST"
+	BatchStatus        = "STATUS"
+	BatchCandidates    = "CANDIDATES"
+	BatchReformulate   = "REFORMULATE"
+	BatchAdopt         = "ADOPT"
+	BatchPropose       = "PROPOSE"
+	BatchDraft         = "DRAFT"
+	BatchValidate      = "VALIDATE"
+	BatchReviewAdd     = "REVIEW_ADD"
+	BatchReviewInspect = "REVIEW_INSPECT"
+	BatchLease         = 20 * time.Second
+	batchBudget        = 24 * time.Hour
+	batchCallTime      = 4 * time.Second
 )
 
 type BatchWork struct {
@@ -59,8 +62,11 @@ func BatchDispatchFromContext(ctx context.Context) (BatchDispatch, bool) {
 }
 
 func (j BatchWork) Route() string {
-	if j.Stage == BatchReformulate {
+	switch j.Stage {
+	case BatchReformulate:
 		return BatchRequest
+	case BatchReviewInspect:
+		return BatchDraft
 	}
 	return j.Stage
 }
@@ -72,6 +78,7 @@ type BatchWorkColumn struct {
 	CompletedCount            *int
 	EffectKey, EffectRevision string
 	EffectArguments           []byte
+	OriginalAction            string
 }
 
 type BatchWorkResult struct {
@@ -84,8 +91,12 @@ type BatchWorkResult struct {
 	EvidenceVersion                    string
 	CompletedCount                     *int
 	TrafficMetric                      string
+	WaitReason                         string
 	PublishedSolo                      bool
 	EffectState, EffectCode, EffectRef string
+	EffectNextArgs                     []byte
+	ReviewBatchID, PublicationSetID    string
+	ReviewBlockedBy, SemanticID        string
 }
 
 type BatchWorkerStore interface {
@@ -190,7 +201,13 @@ func (w BatchWorker) RunOnce(ctx context.Context, id string, i orchestration.Ide
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	return true, w.Store.FinishBatchWork(finishCtx, scope, job, results, pause, w.now())
+	finished := w.now()
+	for n := range results {
+		if len(results[n].EffectNextArgs) > 0 {
+			results[n].Due = finished
+		}
+	}
+	return true, w.Store.FinishBatchWork(finishCtx, scope, job, results, pause, finished)
 }
 
 func minTime(a, b time.Time) time.Time {
@@ -213,12 +230,20 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 		} else if err == nil {
 			code = ErrEpochChanged.Error()
 		}
-		return batchBlock(job, code), time.Time{}, nil
+		results := batchBlock(job, code)
+		if code == "ANALYSIS_AUTHORITY_UNAVAILABLE" {
+			for n, col := range job.Columns {
+				if !col.RetryStarted.IsZero() && !w.now().Before(col.RetryStarted.Add(batchBudget)) {
+					results[n] = batchBlocked(col, "RETRY_BUDGET_EXHAUSTED")
+				}
+			}
+		}
+		return results, time.Time{}, nil
 	}
 	if job.Stage == BatchPublished {
 		return w.published(ctx, i, checksum, job, limits)
 	}
-	if job.Stage == BatchAdopt || job.Stage == BatchPropose || job.Stage == BatchDraft {
+	if BatchChoiceStage(job.Stage) {
 		return w.decisionEffect(ctx, i, checksum, job)
 	}
 	col := job.Columns[0]
@@ -560,6 +585,12 @@ func (w BatchWorker) delay(job BatchWork, r orchestration.Result, err error, for
 			pause = maxTime(pause, due)
 		}
 		next := batchPending(col, job.Stage, due)
+		if r.Observation.Status == http.StatusTooManyRequests {
+			switch r.Observation.Code {
+			case "SEM_DISCOVERY_RATE_LIMITED", "SEM_CANDIDATES_RATE_LIMITED", "SEM_BATCH_RATE_LIMITED":
+				next.WaitReason = r.Observation.Code
+			}
+		}
 		if attempts >= MaxRetryAttempts || !due.Before(started.Add(batchBudget)) {
 			next = batchBlocked(col, "RETRY_BUDGET_EXHAUSTED")
 		}

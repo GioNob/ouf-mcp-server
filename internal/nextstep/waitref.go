@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
@@ -105,6 +106,12 @@ func (r WaitRef) MatchesResource(obs Object) bool {
 				}
 			}
 		}
+	}
+	if r.Reason == ReviewBatch {
+		if obs["changed"] == false && Version(obs) == r.Version && obs["reviewBatchId"] == nil {
+			return true
+		}
+		return r.Resource != "" && obs["reviewBatchId"] == r.Resource
 	}
 	return r.Resource == "" || Resource(obs) == r.Resource
 }
@@ -252,6 +259,9 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboar
 		Decision: r.Decision, Reason: r.Reason, LinkEnd: linkEnd,
 	}
 	ref.State = ObservedState(obs)
+	if r.Reason == ReviewBatch {
+		ref.Resource, _ = obs["reviewBatchId"].(string)
+	}
 	if semantic {
 		ref.LinkOwner = "onboarding"
 	}
@@ -265,7 +275,11 @@ func (s *Signer) Issue(binding []byte, r manifest.Rule, args, obs Object, onboar
 	} else if at.After(now) {
 		ref.NotBefore = at.UTC().Format(time.RFC3339Nano)
 	}
-	token, err := s.seal(ref, binding)
+	tokenRef := ref
+	if args["projection"] == analysis.BatchMode {
+		tokenRef.URL = ""
+	}
+	token, err := s.seal(tokenRef, binding)
 	if err != nil {
 		return manual("WAIT_REFERENCE_LIMIT", "Consulta lo stato della decisione.")
 	}
@@ -338,7 +352,7 @@ func (s *Signer) issuePoll(binding []byte, next, obs Object, now, due time.Time)
 	}
 	args := next["arguments"].(Object)
 	reason := next["reasonCode"].(string)
-	stable := reason == AnalysisRunning && read == "source.analysis.read" && args["view"] == "STATUS"
+	stable := read == "source.analysis.read" && args["view"] == "STATUS" && IsBatchStatusPoll(reason)
 	deadline, _ := next["deadline"].(string)
 	ref := WaitRef{Read: read, Args: args, Reason: reason, Terminal: next["terminalStates"].([]string),
 		NotBefore: due.UTC().Format(time.RFC3339Nano), Deadline: deadline, State: ObservedState(obs), Version: PollVersion(obs)}
@@ -363,7 +377,7 @@ func (s *Signer) Postpone(binding []byte, ref WaitRef, due, expiry time.Time) Ob
 	if previous, err := time.Parse(time.RFC3339Nano, ref.NotBefore); err == nil && previous.After(due) {
 		due = previous
 	}
-	if ref.Reason == AnalysisRunning && !due.Before(expiry) {
+	if (IsBatchStatusPoll(ref.Reason) || ref.Args["projection"] == analysis.BatchMode) && !due.Before(expiry) {
 		return ref.Block("WAIT_DEADLINE_EXPIRED", "Rileggi lo stato dell’analisi alla scadenza della finestra.")
 	}
 	ref.NotBefore = due.UTC().Format(time.RFC3339Nano)
@@ -419,6 +433,10 @@ func (r WaitRef) ReadArgs() Object {
 
 func (r WaitRef) Next(token string) Object {
 	if len(r.Terminal) != 0 {
+		return r.pollNext(token, time.Now())
+	}
+	if r.Args["projection"] == analysis.BatchMode && r.URL == "" {
+		r.Terminal = []string{"DECIDED", "EXPIRED", "ACTIVE", "BLOCKED"}
 		return r.pollNext(token, time.Now())
 	}
 	s := call("WAIT_FOR_HUMAN", r.Reason, "ouf.wait", Object{"waitRef": token})

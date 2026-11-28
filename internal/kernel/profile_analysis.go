@@ -123,6 +123,8 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, "BATCH"), nil, nil
 				case "STATUS":
 					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, "STATUS"), nil, nil
+				case "SUMMARY":
+					return server.analysisSummary(ctx, coordinator, i.Identity, input, true), nil, nil
 				case "CANDIDATES":
 					return server.readBatchCandidates(ctx, coordinator, i.Identity, start, input), nil, nil
 				}

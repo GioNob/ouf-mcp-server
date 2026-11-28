@@ -20,6 +20,10 @@ func (s *Store) BatchDecisionAttempt(ctx context.Context, scope analysis.Scope, 
 		capability = "ouf.semantic.discovery.adopt"
 	case analysis.BatchPropose:
 		capability = "ouf.semantic.propose"
+	case analysis.BatchValidate:
+		capability = "ouf.semantic.review.prepare"
+	case analysis.BatchReviewAdd:
+		capability = "ouf.semantic.approval.request"
 	default:
 		return result, false, analysis.ErrInvalid
 	}
@@ -57,11 +61,24 @@ func finishBatchDecisionEffect(ctx context.Context, tx pgx.Tx, job analysis.Batc
 	if r.EffectState == "" && r.Outcome.State == "BLOCKED" {
 		r.EffectState, r.EffectCode = "HELD", r.Outcome.Reason
 	}
+	if r.Stage == analysis.BatchValidate && r.Stage != job.Stage {
+		var batch string
+		err := tx.QueryRow(ctx, `select review_batch_id::text from ouf_mcp.analysis_batch_review_item
+			where analysis_id=$1 and revision_id=$2 and state='COLLECTING' order by review_batch_id limit 1`,
+			job.AnalysisID, r.EffectRef).Scan(&batch)
+		if err == nil {
+			r.State, r.Stage, r.EffectState, r.ReviewBatchID = "CLOSED", "", "APPLIED", batch
+			r.EffectNextArgs, r.Due = nil, time.Time{}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return 0, err
+		}
+	}
 	var changed int
 	err := tx.QueryRow(ctx, `with finished as (
 		update ouf_mcp.analysis_batch_column b set state=$5,due_at=$6,fence=null,
-			retry_attempts=$7,retry_started_at=$8,
-			dispatch_fence=case when $5='PENDING' then b.dispatch_fence end,
+			retry_attempts=$7,retry_started_at=$8,wait_reason=nullif($15,''),
+			work_stage=coalesce(nullif($13,''),b.work_stage),
+			dispatch_fence=case when $5='PENDING' and ($13='' or $13=b.work_stage) then b.dispatch_fence end,
 			decision_reason=case when $9='REFUSED' then $10 else b.decision_reason end,
 			refused_candidates=case when $9='REFUSED' and d.candidate_id is not null
 				then array_append(b.refused_candidates,d.candidate_id::text) else b.refused_candidates end
@@ -71,15 +88,30 @@ func finishBatchDecisionEffect(ctx context.Context, tx pgx.Tx, job analysis.Batc
 		and not (select stopped or integrity_hold from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1)
 		returning b.choice_key
 	), updated as (
-		update ouf_mcp.analysis_batch_choice d set effect_state=$9,effect_code=nullif($10,''),
-			owner_ref=coalesce(nullif($11,'')::uuid,d.owner_ref)
+		update ouf_mcp.analysis_batch_choice d set effect_state=$9,effect_code=case when $10='REVIEW_BATCH_ADDED' then coalesce(d.creation_code,$10) else nullif($10,'') end,
+			owner_ref=coalesce(nullif($11,'')::uuid,d.owner_ref),
+			creation_code=case when $13='VALIDATE' and $13<>$12 then $10 else d.creation_code end,
+			review_arguments=coalesce($14,d.review_arguments),
+			semantic_id=coalesce(nullif($17,''),d.semantic_id),
+			review_blocked_by=nullif($16,'')::uuid
 		from finished f where d.analysis_id=$1 and d.ordinal=$2 and d.command_key=f.choice_key
 	), held as (
 		insert into ouf_mcp.analysis_batch_hold(analysis_id,ordinal,work_stage,fence,reason_code,retry_started_at,retry_attempts,opened_at)
 		select $1,$2,$12,$3,$10,$8,$7,$4 from finished where $9='HELD' on conflict do nothing
 	) select count(*) from finished`, job.AnalysisID, r.Ordinal, job.Fence, now, r.State, batchTimestamp(r.Due),
-		r.RetryAttempts, batchTimestamp(r.RetryStarted), r.EffectState, r.EffectCode, r.EffectRef, job.Stage).Scan(&changed)
-	return changed, err
+		r.RetryAttempts, batchTimestamp(r.RetryStarted), r.EffectState, r.EffectCode, r.EffectRef, job.Stage, r.Stage, r.EffectNextArgs, r.WaitReason, r.ReviewBlockedBy, r.SemanticID).Scan(&changed)
+	if err != nil || changed != 1 {
+		return changed, err
+	}
+	if r.ReviewBatchID != "" {
+		_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_batch_review_item
+			(analysis_id,revision_id,review_batch_id,version,state) values($1,$2,$3,repeat('0',64),'COLLECTING')
+			on conflict do nothing`, job.AnalysisID, r.EffectRef, r.ReviewBatchID)
+		if err != nil {
+			return changed, err
+		}
+	}
+	return changed, writeBatchChoiceVersion(ctx, tx, job, r)
 }
 
 func finishBatchReformulation(ctx context.Context, tx pgx.Tx, job analysis.BatchWork, r analysis.BatchWorkResult) error {

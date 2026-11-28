@@ -33,7 +33,30 @@ func BatchBlock(code string) Object {
 	return ManualBlock(code, message, "OPERATOR")
 }
 
-func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
+func (e Engine) batchFailure(obs Object) Object {
+	code, _ := get(obs, nil, "reasonCode|code|Code").(string)
+	if !reasonPattern.MatchString(code) {
+		code = "OWNER_REQUEST_FAILED"
+	}
+	if code == "NO_APPLICABLE_GRANT" {
+		capability, _ := obs["requiredCapability"].(string)
+		return PermissionDenied(capability, code)
+	}
+	if code == "AUTHORIZATION_DENIED" || analysis.PermissionHold(code) || code == analysis.ErrEpochChanged.Error() {
+		return ManualBlock(code, "Verifica l’autorità corrente nella THS.", "HUMAN_THS")
+	}
+	return BatchBlock(code)
+}
+
+func IsBatchStatusPoll(reason string) bool {
+	switch reason {
+	case AnalysisRunning, "SEM_DISCOVERY_RATE_LIMITED", "SEM_CANDIDATES_RATE_LIMITED", "SEM_BATCH_RATE_LIMITED":
+		return true
+	}
+	return false
+}
+
+func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time, observationDue ...time.Time) Object {
 	const read = "source.analysis.read"
 	args := Object{"analysisId": id}
 	switch reason {
@@ -41,7 +64,7 @@ func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
 		args["view"] = "BATCH"
 	case "ANALYSIS_SUMMARY":
 		args["view"] = "SUMMARY"
-	case AnalysisRunning:
+	case AnalysisRunning, "SEM_DISCOVERY_RATE_LIMITED", "SEM_CANDIDATES_RATE_LIMITED", "SEM_BATCH_RATE_LIMITED":
 		args["view"] = "STATUS"
 		if e.Valid == nil || !e.Valid(read, args) {
 			return BatchBlock(BatchUnavailable)
@@ -60,10 +83,21 @@ func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
 		}
 		e.batchPollStart = start
 		deadline := start.Add(window)
-		return e.ownerPoll(reason, read, args, Object{"deadline": deadline.UTC().Format(time.RFC3339Nano)},
+		obs := Object{"deadline": deadline.UTC().Format(time.RFC3339Nano)}
+		if len(observationDue) > 0 && observationDue[0].After(now) && observationDue[0].Before(deadline) {
+			obs["notBefore"] = observationDue[0].UTC().Format(time.RFC3339Nano)
+		}
+		return e.ownerPoll(reason, read, args, obs,
 			[]string{"READY_FOR_DECISION", "COMPLETE", "PARTIAL", "BLOCKED"})
 	default:
-		return BatchBlock(reason)
+		next := e.batchFailure(Object{"code": reason})
+		if e.Valid != nil && e.Valid(read, args) {
+			msg := "Rileggi lo stato corrente."
+			reread := Block(reason, read, msg)["alternatives"].([]Object)
+			reread[0]["arguments"] = args
+			next["alternatives"] = append(next["alternatives"].([]Object), reread...)
+		}
+		return next
 	}
 	if e.Valid != nil && e.Valid(read, args) {
 		return e.ownerCall(reason, read, args, nil)
@@ -71,9 +105,12 @@ func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
 	return BatchBlock(BatchUnavailable)
 }
 
-func (e Engine) BatchDecisionNext(id, batchID string, revision int64, ordinal int, cursor string) Object {
+func (e Engine) BatchDecisionNext(id, batchID string, revision int64, ordinal int, cursor string, codes ...string) Object {
 	const read = "source.analysis.read"
-	const reason = analysis.DiscoveryDecisionRequired
+	reason := analysis.DiscoveryDecisionRequired
+	if len(codes) > 0 && reasonPattern.MatchString(codes[0]) {
+		reason = codes[0]
+	}
 	next := Block(reason, "", "Valuta le colonne offerte e scegli tra le azioni ammesse per ciascuna voce.")
 	options := make([]Object, 0, 3)
 	if e.CommandKey != nil {
@@ -103,6 +140,12 @@ func (e Engine) BatchPageNext(args Object, expired bool) Object {
 	return BatchBlock(BatchUnavailable)
 }
 
+func BatchAnalysisDone() Object {
+	next := step("DONE", "ANALYSIS_COMPLETE", "Ogni colonna ha un esito verificato.")
+	next["outcome"] = "SUCCEEDED"
+	return next
+}
+
 func (e Engine) BatchDecisionReadNext(id, reason string) Object {
 	const read = "source.analysis.read"
 	args := Object{"analysisId": id}
@@ -114,16 +157,11 @@ func (e Engine) BatchDecisionReadNext(id, reason string) Object {
 
 // BatchNext projects the continuation for a batch analysis result.
 func (e Engine) BatchNext(tool string, input, obs Object, failed bool) Object {
+	if tool == reviewRead || tool == reviewCommand {
+		return e.BatchReviewNext(tool, input, obs, failed)
+	}
 	if failed {
-		code, _ := get(obs, nil, "reasonCode|code|Code").(string)
-		if !reasonPattern.MatchString(code) {
-			code = "OWNER_REQUEST_FAILED"
-		}
-		if code == "NO_APPLICABLE_GRANT" {
-			capability, _ := obs["requiredCapability"].(string)
-			return PermissionDenied(capability, code)
-		}
-		return BatchBlock(code)
+		return e.batchFailure(obs)
 	}
 	if tool != "source.file.preview" {
 		return BatchBlock(BatchUnavailable)

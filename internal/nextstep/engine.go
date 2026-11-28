@@ -50,11 +50,21 @@ func step(action, reason, message string) Object {
 	return Object{"contract": Contract, "action": action, "reasonCode": reason, "userMessage": message}
 }
 
-func Block(reason, tool, message string) Object {
+type manualOption struct {
+	tool, reason, message string
+	args                  Object
+}
+
+func Block(reason, tool, message string, options ...manualOption) Object {
 	s := step("BLOCKED", reason, message)
 	alts := []Object{}
 	if tool != "" {
 		alts = append(alts, Object{"action": "CALL_TOOL", "reasonCode": reason, "tool": tool, "userMessage": message})
+	}
+	for _, option := range options {
+		if option.tool != "" {
+			alts = append(alts, Object{"action": "CALL_TOOL", "reasonCode": option.reason, "tool": option.tool, "userMessage": option.message, "arguments": option.args})
+		}
 	}
 	s["actor"], s["alternatives"] = "AGENT", alts
 	return s

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -182,7 +183,16 @@ type batchRecordedDecision struct {
 func prepareBatchChoice(ctx context.Context, tx pgx.Tx, plan analysis.Plan, cmd analysis.BatchDecide, d analysis.BatchDecision, member analysis.BatchOfferItem, used int) (batchRecordedDecision, string, error) {
 	var choice batchRecordedDecision
 	if d.Rejection != "" {
+		if d.Rejection == "REFORMULATION_TERM_TOO_LONG" {
+			_, err := tx.Exec(ctx, `update ouf_mcp.analysis_batch_column set decision_reason=$3
+				where analysis_id=$1 and ordinal=$2 and offered_batch_id=$4
+				and decision_reason is distinct from 'SEMANTIC_REVIEW_REJECTED'`, cmd.AnalysisID, d.Ordinal, d.Rejection, cmd.BatchID)
+			return choice, d.Rejection, err
+		}
 		return choice, d.Rejection, nil
+	}
+	if member.Item.ReasonCode == "SEMANTIC_REVIEW_REJECTED" && !slices.Contains(member.Item.Allowed, d.Action) {
+		return choice, "ANALYSIS_ACTION_NOT_ALLOWED", nil
 	}
 	var intent string
 	var candidateFound bool
@@ -266,10 +276,17 @@ func saveBatchChoice(ctx context.Context, tx pgx.Tx, cmd analysis.BatchDecide, d
 		evidence_version=case when $4='REFORMULATE' then '' else evidence_version end
 		where analysis_id=$1 and ordinal=$3 and state='READY_FOR_DECISION' and offered_batch_id=$8`,
 		cmd.AnalysisID, cmd.CommandKey, d.Ordinal, d.stage, d.attempt, d.round, d.Intent, cmd.BatchID)
-	if err == nil && tag.RowsAffected() != 1 {
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
 		return analysis.ErrConflict
 	}
-	return err
+	fields := map[string]any{"state": "PENDING", "action": d.Action, "requestId": d.RequestID}
+	if d.Action == "EXCLUDE" {
+		fields = map[string]any{"state": "EXCLUDED", "action": d.Action, "reason": d.Reason}
+	}
+	return appendBatchSummary(ctx, tx, cmd.AnalysisID, []analysis.BatchSummaryChange{{Ordinal: d.Ordinal, Fields: fields}})
 }
 
 func ownedBatchDraftKey(ctx context.Context, tx pgx.Tx, scope analysis.Scope, revision string) (string, error) {
@@ -278,7 +295,7 @@ func ownedBatchDraftKey(ctx context.Context, tx pgx.Tx, scope analysis.Scope, re
 		join ouf_mcp.profile_analysis p using(analysis_id)
 		where p.service_principal_id=$1 and p.principal_id=$2 and p.tenant_id=$3 and b.owner_ref=$4
 		and b.action='PROPOSE' and b.effect_state='APPLIED' and b.effect_arguments is not null
-		and b.effect_code='CREATED' order by effect_key limit 1`, scope.Service, scope.Principal, scope.Tenant, revision).Scan(&key)
+		and coalesce(b.creation_code,b.effect_code)='CREATED' order by effect_key limit 1`, scope.Service, scope.Principal, scope.Tenant, revision).Scan(&key)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return key, err
 	}

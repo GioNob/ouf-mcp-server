@@ -7,17 +7,23 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
 )
 
-// Charge the interactive read to the caller's ordinary bucket. The dispatch
-// marker covers local SQL execution, which makes no Gateway call.
-func admitSummary(ctx context.Context, service *orchestration.Service, i orchestration.Identity, checksum, decision string, input map[string]any, maximum int) (func(context.Context, int, int, bool) error, error) {
-	return admitAnalysisCall(ctx, service, i, checksum, decision, input, maximum, "ouf.source.analysis.read", "READ")
+func admitSummary(ctx context.Context, service *orchestration.Service, i orchestration.Identity, checksum, decision string, input map[string]any, maximum int, batch bool) (func(context.Context, int, int, bool) error, error) {
+	profile := ""
+	cost := orchestration.Cost{ToolCalls: 1, DistinctObjects: 128, ResultBytes: int64(maximum)}
+	if batch {
+		profile = orchestration.BatchSummaryBudgetProfile
+		cost.DistinctObjects = analysis.BatchMaxItems
+	}
+	return admitAnalysisCall(ctx, service, i, checksum, decision, input, "ouf.source.analysis.read", "READ", profile, cost)
 }
 
-func admitAnalysisCall(ctx context.Context, service *orchestration.Service, i orchestration.Identity, checksum, decision string, input map[string]any, maximum int, capability, operation string) (func(context.Context, int, int, bool) error, error) {
+// The dispatch marker covers local SQL execution, which makes no Gateway call.
+func admitAnalysisCall(ctx context.Context, service *orchestration.Service, i orchestration.Identity, checksum, decision string, input map[string]any, capability, operation, profile string, maximum orchestration.Cost) (func(context.Context, int, int, bool) error, error) {
 	const timeout = 3 * time.Second
 	raw, err := json.Marshal(input)
 	if err != nil {
@@ -30,11 +36,12 @@ func admitAnalysisCall(ctx context.Context, service *orchestration.Service, i or
 	digest := sha256.Sum256(raw)
 	a, err := service.Admission.Reserve(ctx, orchestration.AdmissionRequest{
 		CallsPerMinute: service.AdmissionCallsPerMinute, StatusRead: input["view"] == "STATUS",
-		AttemptID: uuid.New(), AttemptTimeout: timeout, Identity: i, CapabilityID: capability, Owner: "mcp", OperationClass: operation,
+		BudgetProfile: profile,
+		AttemptID:     uuid.New(), AttemptTimeout: timeout, Identity: i, CapabilityID: capability, Owner: "mcp", OperationClass: operation,
 		ManifestChecksum: checksum, AuthorizationDecisionRef: decision, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(),
 		RequestHash: hex.EncodeToString(digest[:]), SemanticFingerprint: fingerprint, FingerprintVersion: "v1",
 		Window: orchestration.AdmissionWindow, RetryThreshold: orchestration.AdmissionRetryThreshold,
-		Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: 128, ResultBytes: int64(maximum)},
+		Maximum: maximum,
 	})
 	if err != nil {
 		return nil, err

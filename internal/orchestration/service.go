@@ -345,7 +345,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.BatchEffectFence != "" {
 		var command struct{ CommandKey string }
 		if in.Owner != "semantic" || in.OperationClass != "COMMAND" || in.Identity.ActorType != "HUMAN" ||
-			(in.CapabilityID != "ouf.semantic.discovery.adopt" && in.CapabilityID != "ouf.semantic.propose") ||
+			(in.CapabilityID != "ouf.semantic.discovery.adopt" && in.CapabilityID != "ouf.semantic.propose" &&
+				in.CapabilityID != "ouf.semantic.review.prepare" && in.CapabilityID != "ouf.semantic.approval.request") ||
 			uuid.Validate(in.BatchEffectFence) != nil || uuid.Validate(in.IdempotencyKey) != nil ||
 			json.Unmarshal(in.Arguments, &command) != nil || command.CommandKey != in.IdempotencyKey {
 			return Result{}, errors.New("INVALID_BATCH_EFFECT_BINDING")
