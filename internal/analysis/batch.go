@@ -20,14 +20,14 @@ const BatchMaxResultBytes = 8192
 const BatchMaxItems = 8
 
 type BatchStart struct {
-	ID          string
-	Profile     Profile
-	CreatedAt   time.Time `json:"-"`
-	Epoch       string
-	Authority   string
-	Mandate     BatchMandate `json:"-"`
-	Revision    int64
-	Seeded bool
+	ID        string
+	Profile   Profile
+	CreatedAt time.Time `json:"-"`
+	Epoch     string
+	Authority string
+	Mandate   BatchMandate `json:"-"`
+	Revision  int64
+	Seeded    bool
 }
 
 type BatchPreviewColumn struct {
