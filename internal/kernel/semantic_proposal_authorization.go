@@ -13,8 +13,12 @@ func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant st
 		return "", orchestration.ResourceContext{}, fmt.Errorf("invalid semantic proposal manifest binding")
 	}
 	var input struct {
-		RevisionID string `json:"revisionId"`
-		RDFTurtle  string `json:"rdfTurtle"`
+		RevisionID    string `json:"revisionId"`
+		ReviewBatchID string `json:"reviewBatchId"`
+		Item          struct {
+			RevisionID string `json:"revisionId"`
+		} `json:"item"`
+		RDFTurtle string `json:"rdfTurtle"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", orchestration.ResourceContext{}, err
@@ -22,7 +26,14 @@ func semanticProposalAuthorization(c manifest.Capability, args []byte, tenant st
 	if len(input.RDFTurtle) > 49152 {
 		return "", orchestration.ResourceContext{}, fmt.Errorf("semantic Turtle input exceeds byte bound")
 	}
-	return required, orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", ResourceID: input.RevisionID, TenantID: tenant, Attributes: map[string]string{"module": "SEMANTIC"}}, nil
+	resourceID := input.RevisionID
+	if resourceID == "" {
+		resourceID = input.Item.RevisionID
+	}
+	if resourceID == "" {
+		resourceID = input.ReviewBatchID
+	}
+	return required, orchestration.ResourceContext{ResourceType: "semantic.proposalcommand", ResourceID: resourceID, TenantID: tenant, Attributes: map[string]string{"module": "SEMANTIC"}}, nil
 }
 
 // Consultation is a distinct deployed READ contract, not a proposal command.

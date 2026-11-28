@@ -310,6 +310,52 @@ func TestPackBatchOfferKeepsFirstExampleWhenSecondDoesNotFit(t *testing.T) {
 	}
 }
 
+func TestPackBatchOfferUsesSpaceReleasedByExampleCursor(t *testing.T) {
+	server := &workflowServer{key: make([]byte, 32)}
+	scope := analysis.Scope{Service: "s", Principal: "p", Tenant: "t"}
+	expires := time.Now().Add(time.Hour).Unix()
+	engine := nextstep.Engine{CommandKey: func(string, nextstep.Object, nextstep.Object, nextstep.Object) string {
+		return "11111111-1111-4111-8111-111111111111"
+	}}
+	long, _ := json.Marshal(strings.Repeat("&", 40))
+	offer := analysis.BatchOffer{AnalysisID: strings.Repeat("a", 64), ID: "22222222-2222-4222-8222-222222222222",
+		Items: []analysis.BatchOfferItem{{Item: analysis.BatchItem{
+			Name: "Address", Intent: "address", Attempt: 1, RemainingAttempts: 7,
+			RequestID: "33333333-3333-4333-8333-333333333333", CandidateCount: 1,
+			Allowed:             []string{"ADOPT", "REFORMULATE", "EXCLUDE", "PROPOSE"},
+			BatchColumnMetadata: analysis.BatchColumnMetadata{DataType: "string", Examples: []json.RawMessage{long, json.RawMessage(`"ok"`)}},
+			Candidates:          []analysis.BatchCandidate{{ID: "44444444-4444-4444-8444-444444444444", Label: "label", Term: "urn:item", Score: 0.8}},
+		}}}}
+	item := &offer.Items[0].Item
+	all := item.Examples
+	fits := func() bool {
+		body, next := server.batchOfferBody(engine, scope, offer, expires)
+		return batchFits(body, next)
+	}
+	for labelSize := 900; labelSize <= 1300; labelSize++ {
+		item.Candidates[0].Label = strings.Repeat("&", labelSize)
+		item.Examples, item.TruncatedFields = all, nil
+		if !fits() {
+			continue
+		}
+		item.Examples, item.TruncatedFields = all[:1], []string{"examples"}
+		if fits() {
+			continue
+		}
+		item.Examples = all[:0]
+		if !fits() {
+			continue
+		}
+		item.Examples, item.TruncatedFields = all, nil
+		packed, err := server.packBatchOffer(engine, scope, offer, expires)
+		if err != nil || len(packed) != 1 || len(packed[0].Item.Examples) != 2 {
+			t.Fatalf("the released cursor budget did not fit both examples: %v %v", len(packed), err)
+		}
+		return
+	}
+	t.Fatal("failed to find the cursor boundary")
+}
+
 func TestBatchResultBudgetCountsEscapingAndWaitEnvelope(t *testing.T) {
 	snapshot, err := manifest.Load()
 	if err != nil {

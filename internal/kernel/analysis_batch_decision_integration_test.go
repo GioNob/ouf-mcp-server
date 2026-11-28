@@ -19,7 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const decisionScopes = batchWorkerScopes + " ouf.semantic.propose"
+const decisionScopes = batchWorkerScopes + " ouf.semantic.propose ouf.semantic.discovery.adopt ouf.semantic.review.prepare ouf.semantic.approval.request ouf.semantic.proposal.read " + semanticLinkID
 
 type batchDecisionOwner struct {
 	orchestration.GatewayPort
@@ -29,9 +29,13 @@ type batchDecisionOwner struct {
 	lose, refuse, absent string
 	omitAdoptionField    string
 	readRetryAfter       string
+	review               batchFixtureReview
 }
 
 func (o *batchDecisionOwner) Execute(ctx context.Context, r orchestration.GatewayRequest, timeout time.Duration) (orchestration.GatewayResponse, error) {
+	if handled, reply, err := o.review.execute(r); handled {
+		return reply, err
+	}
 	if r.CapabilityID != "ouf.semantic.discovery.adopt" && r.CapabilityID != "ouf.semantic.propose" &&
 		r.CapabilityID != "ouf.semantic.proposal.read" {
 		return o.GatewayPort.Execute(ctx, r, timeout)
@@ -73,7 +77,7 @@ func (o *batchDecisionOwner) Execute(ctx context.Context, r orchestration.Gatewa
 	}
 	receipt := o.receipts[args.CommandKey]
 	if receipt == nil {
-		body := nextstep.Object{"status": "DRAFT"}
+		var body nextstep.Object
 		operation := "CREATE"
 		if r.CapabilityID == "ouf.semantic.discovery.adopt" {
 			operation = "ADOPT"
@@ -83,7 +87,7 @@ func (o *batchDecisionOwner) Execute(ctx context.Context, r orchestration.Gatewa
 			body["requestId"], body["candidateId"] = args.RequestID, args.CandidateID
 			delete(body, o.omitAdoptionField)
 		} else {
-			body["semanticId"] = args.SemanticID
+			body = nextstep.Object{"status": "DRAFT", "rowVersion": 0, "semanticId": args.SemanticID}
 		}
 		body["revisionId"] = uuid.NewString()
 		receipt = nextstep.Object{"operation": operation, "result": body, "historicalSnapshot": true, "ownerStateMustBeRechecked": true}

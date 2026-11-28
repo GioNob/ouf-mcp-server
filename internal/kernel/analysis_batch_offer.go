@@ -66,10 +66,31 @@ func (s *workflowServer) readAnalysisBatch(ctx context.Context, c analysis.Coord
 		}
 		next = offerNext
 	} else {
-		next = engine.BatchStatusNext(id, read.Reason, read.CreatedAt)
+		next = batchHeadNext(engine, id, read, false)
 	}
 	body := nextstep.Object{"analysisId": id, "mode": analysis.BatchMode, "revision": read.Revision, "phase": read.Phase, "counts": read.Counts}
 	return localBatchResult(body, next)
+}
+
+func batchHeadNext(engine nextstep.Engine, id string, head analysis.BatchRead, summary bool) nextstep.Object {
+	if head.FullReviewID != "" {
+		return engine.BatchReviewNext("semantic.approval.request", nextstep.Object{"analysisId": id},
+			nextstep.Object{"code": "SEM_REVIEW_BATCH_COLLECTING_LIMIT", "reviewBatchId": head.FullReviewID}, true)
+	}
+	if head.Reason == "ANALYSIS_SUMMARY" {
+		if head.OpenReviewID != "" {
+			return engine.BatchReviewRead(id, head.OpenReviewID, "SEMANTIC_REVIEW_BATCH")
+		}
+		if summary {
+			var args nextstep.Object
+			if len(head.SingleReview) > 0 && json.Unmarshal(head.SingleReview, &args) == nil {
+				args["analysisId"] = id
+				return engine.BatchReviewNext("semantic.approval.request", args, nextstep.Object{"code": "SEM_REVIEW_BATCH_ITEM_TYPE_UNSUPPORTED"}, true)
+			}
+			return engine.BatchReviewContext(id)
+		}
+	}
+	return engine.BatchStatusNext(id, head.Reason, head.CreatedAt, head.NotBefore)
 }
 
 func checkBatchEvidence(ctx context.Context, c analysis.Coordinator, identity orchestration.Identity, epoch string, items []analysis.BatchOfferItem) error {
@@ -99,7 +120,17 @@ func (s *workflowServer) batchOfferBody(engine nextstep.Engine, scope analysis.S
 	}
 	body := nextstep.Object{"mode": analysis.BatchMode, "view": "BATCH", "analysisId": offer.AnalysisID,
 		"batchId": offer.ID, "expectedRevision": offer.Revision, "items": items}
-	return body, engine.BatchDecisionNext(offer.AnalysisID, offer.ID, offer.Revision, ordinal, cursor)
+	reason := ""
+	if len(items) > 0 {
+		reason = items[0].ReasonCode
+	}
+	for _, item := range items {
+		if item.ReasonCode != reason {
+			reason = ""
+			break
+		}
+	}
+	return body, engine.BatchDecisionNext(offer.AnalysisID, offer.ID, offer.Revision, ordinal, cursor, reason)
 }
 
 func batchFits(body, next nextstep.Object) bool {
@@ -161,16 +192,17 @@ func (s *workflowServer) packBatchOffer(engine nextstep.Engine, scope analysis.S
 				item.Candidates[0] = short
 			}
 		}
-		for index, example := range source.Examples {
-			fields := item.TruncatedFields
-			item.Examples = append(item.Examples, example)
-			if index+1 == len(source.Examples) {
-				item.TruncatedFields = withoutBatchField(fields, "examples")
-			}
-			if !fits() {
-				item.Examples = item.Examples[:index]
-				item.TruncatedFields = fields
-				break
+		// The complete set can fit when it removes the detail cursor.
+		fields := item.TruncatedFields
+		item.Examples, item.TruncatedFields = source.Examples, withoutBatchField(fields, "examples")
+		if !fits() {
+			item.Examples, item.TruncatedFields = []json.RawMessage{}, fields
+			for index, example := range source.Examples {
+				item.Examples = append(item.Examples, example)
+				if !fits() {
+					item.Examples = item.Examples[:index]
+					break
+				}
 			}
 		}
 		for _, candidate := range source.Candidates[len(item.Candidates):] {
@@ -304,7 +336,8 @@ func (s *workflowServer) readBatchCandidates(ctx context.Context, c analysis.Coo
 	if err != nil {
 		result := batchReadFailure(start.ID, err)
 		if errors.Is(err, analysis.ErrExpired) {
-			result.Meta[batchNextMeta] = engine.BatchPageNext(nextstep.Object{"analysisId": start.ID, "view": "BATCH"}, true)
+			args := s.restartBatchCandidates(ctx, c, identity, start, batchID, int(ordinal))
+			result.Meta[batchNextMeta] = engine.BatchPageNext(args, true)
 		}
 		return result
 	}
@@ -361,6 +394,34 @@ func (s *workflowServer) readBatchCandidates(ctx context.Context, c analysis.Coo
 		return localBatchResult(body, next)
 	}
 	return batchReadFailure(start.ID, analysis.ErrScope)
+}
+
+func (s *workflowServer) restartBatchCandidates(ctx context.Context, c analysis.Coordinator, identity orchestration.Identity, start analysis.BatchStart, batchID string, ordinal int) nextstep.Object {
+	args := nextstep.Object{"analysisId": start.ID, "view": "BATCH"}
+	store, ok := c.Store.(analysis.BatchOfferStore)
+	if !ok {
+		return args
+	}
+	checksum, err := c.Manifest.Checksum()
+	if err != nil {
+		return args
+	}
+	scope := analysis.IdentityScope(identity)
+	offer, item, err := store.ReadBatchColumn(ctx, scope, start.ID, checksum, batchID, ordinal, 0)
+	if err != nil || checkBatchEvidence(ctx, c, identity, start.Epoch, []analysis.BatchOfferItem{item}) != nil {
+		return args
+	}
+	for _, frozen := range offer.Items {
+		if frozen.Item.Ordinal == ordinal {
+			if pos, more := batchColumnStart(frozen.Item); more {
+				expires := time.Now().Add(time.Duration(s.summaryLimits.SummaryCursorSeconds) * time.Second).Unix()
+				args["view"], args["batchId"], args["ordinal"] = "CANDIDATES", batchID, ordinal
+				args["cursor"] = s.batchColumnToken(scope, offer, item, pos, expires)
+			}
+			break
+		}
+	}
+	return args
 }
 
 func batchCandidatePage(body nextstep.Object, item, frozen analysis.BatchItem, pos batchColumnPosition, nextFor func(batchColumnPosition, bool) nextstep.Object) (nextstep.Object, error) {

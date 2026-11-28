@@ -23,11 +23,11 @@ const extendBatchRoutePause = `insert into ouf_mcp.analysis_batch_route_pause(wo
 
 const batchClaimHead = `with available as materialized (
 	select route.work_stage from (values ('PUBLISHED','PUBLISHED'),('REQUEST','REQUEST'),('STATUS','STATUS'),
-		('CANDIDATES','CANDIDATES'),('REFORMULATE','REQUEST'),('ADOPT','ADOPT'),('PROPOSE','PROPOSE'),('DRAFT','DRAFT')) route(work_stage,owner_route)
+		('CANDIDATES','CANDIDATES'),('REFORMULATE','REQUEST'),('ADOPT','ADOPT'),('PROPOSE','PROPOSE'),('DRAFT','DRAFT'),('VALIDATE','VALIDATE'),('REVIEW_ADD','REVIEW_ADD'),('REVIEW_INSPECT','DRAFT')) route(work_stage,owner_route)
 	where not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=route.owner_route and p.due_at>$2)
 	and not exists(select from ouf_mcp.analysis_batch_column live
 		where live.state='RUNNING' and live.fence is not null and live.due_at>$2
-		and case when live.work_stage='REFORMULATE' then 'REQUEST' else live.work_stage end=route.owner_route)
+		and case live.work_stage when 'REFORMULATE' then 'REQUEST' when 'REVIEW_INSPECT' then 'DRAFT' else live.work_stage end=route.owner_route)
 )
 select b.ordinal,b.state,b.work_stage,b.published_solo,coalesce(b.dispatch_fence::text,''),b.retry_attempts,b.retry_started_at
 from available r cross join lateral (
@@ -101,10 +101,12 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 		where analysis_id=$1 and ordinal=any($2::int[])
 		returning ordinal,intent,retry_attempts,retry_started_at,owner_deadline,completed_count,choice_key
 	) select b.ordinal,b.intent,b.retry_attempts,b.retry_started_at,b.owner_deadline,b.completed_count,
-		coalesce(c.request_id::text,''),coalesce(d.effect_key::text,''),d.effect_arguments,coalesce(d.requested_revision_id::text,'')
+		coalesce(c.request_id::text,''),coalesce(d.effect_key::text,''),case when $5 in ('VALIDATE','REVIEW_ADD') then d.review_arguments else d.effect_arguments end,
+		coalesce(case when $5 in ('VALIDATE','REVIEW_ADD') then d.owner_ref else d.requested_revision_id end::text,''),
+		coalesce(d.action,'')
 		from claimed b join ouf_mcp.analysis_column c on c.analysis_id=$1 and c.ordinal=b.ordinal
 		left join ouf_mcp.analysis_batch_choice d on d.analysis_id=$1 and d.ordinal=b.ordinal and d.command_key=b.choice_key
-		order by b.ordinal`, id, ordinals, work.LeaseUntil, work.Fence)
+		order by b.ordinal`, id, ordinals, work.LeaseUntil, work.Fence, work.Stage)
 	if err != nil {
 		return analysis.BatchWork{}, err
 	}
@@ -112,12 +114,19 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 		var col analysis.BatchWorkColumn
 		var retryStarted, ownerEnd *time.Time
 		err := row.Scan(&col.Ordinal, &col.Intent, &col.RetryAttempts, &retryStarted, &ownerEnd, &col.CompletedCount,
-			&col.RequestID, &col.EffectKey, &col.EffectArguments, &col.EffectRevision)
+			&col.RequestID, &col.EffectKey, &col.EffectArguments, &col.EffectRevision, &col.OriginalAction)
 		if retryStarted != nil {
 			col.RetryStarted = *retryStarted
 		}
 		if ownerEnd != nil {
 			col.OwnerEnd = *ownerEnd
+		}
+		if err == nil && analysis.ReviewEffectStage(work.Stage) {
+			var args struct{ CommandKey string }
+			if json.Unmarshal(col.EffectArguments, &args) != nil {
+				return col, analysis.ErrProfile
+			}
+			col.EffectKey = args.CommandKey
 		}
 		return col, err
 	})
@@ -228,6 +237,7 @@ type batchWorkRow struct {
 	EvidenceVersion string                    `json:"evidence_version"`
 	CompletedCount  *int                      `json:"completed_count"`
 	PublishedSolo   bool                      `json:"published_solo"`
+	WaitReason      string                    `json:"wait_reason"`
 }
 
 func batchTimestamp(t time.Time) *time.Time {
@@ -248,7 +258,7 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 	for _, result := range results {
 		data = append(data, batchWorkRow{result.Ordinal, result.Stage, result.State, batchTimestamp(result.Due),
 			batchTimestamp(result.OwnerEnd), batchTimestamp(result.RetryStarted), result.RetryAttempts, result.Outcome,
-			result.Candidates, result.EvidenceVersion, result.CompletedCount, result.PublishedSolo})
+			result.Candidates, result.EvidenceVersion, result.CompletedCount, result.PublishedSolo, result.WaitReason})
 	}
 	raw, err := json.Marshal(data)
 	if err != nil {
@@ -263,8 +273,8 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 		return err
 	}
 	var changed int
-	switch job.Stage {
-	case analysis.BatchAdopt, analysis.BatchPropose, analysis.BatchDraft:
+	switch {
+	case analysis.BatchChoiceStage(job.Stage):
 		changed, err = finishBatchDecisionEffect(ctx, tx, job, results[0], now)
 	default:
 		err = tx.QueryRow(ctx, finishBatchWorkSQL, job.AnalysisID, job.Fence, now, raw).Scan(&changed)
@@ -300,10 +310,10 @@ const finishBatchWorkSQL = `with head as materialized (
 	select * from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1
 ), input as materialized (
 	select * from jsonb_to_recordset($4::jsonb) as v(ordinal int,stage text,state text,due timestamptz,owner_end timestamptz,
-		retry_started timestamptz,retry_attempts int,outcome jsonb,candidates jsonb,evidence_version text,completed_count int,published_solo boolean)
+		retry_started timestamptz,retry_attempts int,outcome jsonb,candidates jsonb,evidence_version text,completed_count int,published_solo boolean,wait_reason text)
 ), finished as (
 	update ouf_mcp.analysis_batch_column b set state=v.state,work_stage=coalesce(nullif(v.stage,''),b.work_stage),
-		due_at=v.due,fence=null,retry_started_at=v.retry_started,retry_attempts=v.retry_attempts,owner_deadline=v.owner_end,
+		due_at=v.due,wait_reason=nullif(v.wait_reason,''),fence=null,retry_started_at=v.retry_started,retry_attempts=v.retry_attempts,owner_deadline=v.owner_end,
 		dispatch_fence=case when v.state='PENDING' and v.stage=b.work_stage then b.dispatch_fence end,
 		candidates=coalesce(v.candidates,'[]'),evidence_version=v.evidence_version,completed_count=v.completed_count,
 		published_solo=b.published_solo or v.published_solo

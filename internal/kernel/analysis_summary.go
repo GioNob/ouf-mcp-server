@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
@@ -56,15 +57,36 @@ func (s *workflowServer) summaryFailure(ctx context.Context, err error, id strin
 	return result
 }
 
-func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordinator, i orchestration.Identity, input nextstep.Object) (response *mcp.CallToolResult) {
+func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordinator, i orchestration.Identity, input nextstep.Object, batchMode ...bool) (response *mcp.CallToolResult) {
+	batch := len(batchMode) > 0 && batchMode[0]
 	id, _ := input["analysisId"].(string)
 	view, _ := input["view"].(string)
+	if batch {
+		defer func() {
+			if response == nil {
+				return
+			}
+			markBatchResult(response)
+			// Keep the in-process owner clock proof on next until validation.
+			body := response.StructuredContent.(nextstep.Object)
+			body["analysisId"] = id
+			if next, ok := body["next"].(nextstep.Object); ok {
+				response.Meta[batchNextMeta] = next
+			}
+			if body["code"] == analysis.ErrEpochChanged.Error() {
+				response.Meta[batchNextMeta] = s.engine(ctx).BatchStatusNext(id, analysis.ErrEpochChanged.Error(), time.Time{})
+			}
+		}()
+	}
 	checksum, decision, err := c.SummaryAccess(ctx, i)
 	if err != nil {
 		return s.summaryFailure(ctx, err, id)
 	}
 	store, ok := c.Store.(analysis.SummaryStore)
 	if !ok {
+		if batch {
+			return batchUnavailable(id)
+		}
 		return s.summaryFailure(ctx, errors.New("missing summary store"), id)
 	}
 	limits := s.summaryLimits
@@ -74,13 +96,19 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 	if n, ok := input["limit"].(float64); ok {
 		pos.Limit = int(n)
 	}
+	cursorBinding := id
+	if batch {
+		pos.Limit = analysis.BatchMaxItems
+		cursorBinding = batchSummaryBinding(id)
+		limits.SummaryPageBytes = analysis.BatchMaxResultBytes
+	}
 	if token, ok := input["cursor"].(string); ok {
-		pos, err = analysis.OpenPosition(token, s.key, scope, id, now)
+		pos, err = analysis.OpenPosition(token, s.key, scope, cursorBinding, now)
 		if err != nil {
 			return s.summaryFailure(ctx, err, id)
 		}
 	}
-	finish, err := admitSummary(ctx, c.Service, i, checksum, decision, input, limits.SummaryPageBytes)
+	finish, err := admitSummary(ctx, c.Service, i, checksum, decision, input, limits.SummaryPageBytes, batch)
 	if err != nil {
 		if wait := windowAdmissionErrorResult(err); wait != nil {
 			cap := s.tools["source.analysis.read"].capability
@@ -107,26 +135,55 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 		}
 	}()
 	page := view == "SUMMARY"
-	result, err := store.ReadSummary(analysis.WithOwnerObservationKey(ctx, c.Service.FingerprintKey), scope, id, checksum, pos, page)
+	var result analysis.Summary
+	var batchHead *analysis.BatchRead
+	if batch {
+		bs, ok := store.(interface {
+			analysis.BatchOfferStore
+			ReadBatchSummary(context.Context, analysis.Scope, string, string, analysis.Position) (analysis.Summary, error)
+		})
+		if !ok {
+			return batchUnavailable(id)
+		}
+		query := pos
+		if query.Limit >= batchSummaryDetailLimit {
+			query.Last--
+			query.Limit = 1
+		}
+		result, err = bs.ReadBatchSummary(ctx, scope, id, checksum, query)
+		if err == nil {
+			head, e := bs.ReadBatch(ctx, scope, id, checksum, nil)
+			err, batchHead = e, &head
+		}
+		if err == nil {
+			err = compactBatchSummary(result.Items)
+		}
+	} else {
+		result, err = store.ReadSummary(analysis.WithOwnerObservationKey(ctx, c.Service.FingerprintKey), scope, id, checksum, pos, page)
+	}
 	if err != nil {
 		return s.summaryFailure(ctx, err, id)
 	}
 	if err = c.EvidenceAccess(ctx, i, result); err != nil {
 		return s.summaryFailure(ctx, c.ScopeError(ctx, i, id, checksum, err), id)
 	}
-	if page && pos.Last < 0 {
+	newSnapshot := page && pos.Snapshot == uuid.Nil
+	if newSnapshot {
 		pos.Snapshot = uuid.New()
 	}
-	out, last, err := s.summaryPage(ctx, id, view, scope, pos, result, limits.SummaryPageBytes)
+	out, last, err := s.summaryPage(ctx, id, view, scope, pos, result, limits.SummaryPageBytes, batchHead)
 	if err != nil {
 		return s.summaryFailure(ctx, err, id)
 	}
 	first := -1
 	if page {
 		first = pos.Last + 1
+		if batch && pos.Limit >= batchSummaryDetailLimit {
+			first--
+		}
 	}
 	var frozen *analysis.Hint
-	if page && pos.Last < 0 && last+1 < result.Counts.Total {
+	if newSnapshot && (batch || last+1 < result.Counts.Total) {
 		frozen = &result.Hint
 	}
 	if err = store.AuditSummary(ctx, scope, id, decision, result.Seq, first, last, pos.Snapshot, frozen); err != nil {
@@ -141,10 +198,20 @@ func (s *workflowServer) analysisSummary(ctx context.Context, c analysis.Coordin
 // returns (_meta.serverInfo, resultType). The configured limit applies to the bytes on the wire.
 const summaryEnvelopeReserve = 512
 
-func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope analysis.Scope, pos analysis.Position, result analysis.Summary, maximum int) (*mcp.CallToolResult, int, error) {
+func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope analysis.Scope, pos analysis.Position, result analysis.Summary, maximum int, options ...*analysis.BatchRead) (*mcp.CallToolResult, int, error) {
+	var batch *analysis.BatchRead
+	if len(options) != 0 {
+		batch = options[0]
+	}
 	maximum -= summaryEnvelopeReserve
 	engine := s.engine(ctx)
 	pos.Seq = result.Seq
+	if batch != nil {
+		if pos.Limit >= batchSummaryDetailLimit {
+			return s.batchSummaryDetail(ctx, id, scope, pos, result, *batch)
+		}
+		result.Items = s.batchSummaryItems(id, scope, pos, result.Items)
+	}
 	build := func(n int) (*mcp.CallToolResult, int, error) {
 		cursor := ""
 		body := nextstep.Object{"analysisId": id, "contract": analysis.SummaryContract, "counts": result.Counts,
@@ -154,12 +221,33 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 			p := pos
 			p.Last += n
 			if p.Last+1 < result.Counts.Total {
-				cursor = p.Token(s.key, scope, id)
+				binding := id
+				if batch != nil {
+					binding = batchSummaryBinding(id)
+				}
+				cursor = p.Token(s.key, scope, binding)
 				body["nextCursor"] = cursor
 			}
 		}
-		body["next"] = engine.SummaryNext(id, view, cursor, result)
-		wire, err := json.Marshal(body)
+		var wire []byte
+		var err error
+		if batch != nil {
+			delete(body, "contract")
+			delete(body, "state")
+			body["mode"], body["view"], body["phase"], body["revision"] = analysis.BatchMode, "SUMMARY", batch.Phase, batch.Revision
+			switch {
+			case cursor != "":
+				body["next"] = engine.BatchPageNext(nextstep.Object{"analysisId": id, "view": "SUMMARY", "cursor": cursor}, false)
+			case !result.Onboarding && batch.Phase == "COMPLETE":
+				body["next"] = nextstep.BatchAnalysisDone()
+			default:
+				body["next"] = batchHeadNext(engine, id, *batch, true)
+			}
+			wire = []byte(batchResultText)
+		} else {
+			body["next"] = engine.SummaryNext(id, view, cursor, result)
+			wire, err = json.Marshal(body)
+		}
 		if err != nil {
 			return nil, 0, err
 		}
@@ -204,6 +292,96 @@ func (s *workflowServer) summaryPage(ctx context.Context, id, view string, scope
 		}
 	}
 	return nil, -1, analysis.ErrCapacity
+}
+
+// Limit values above the normal page size encode an identity detail offset.
+const batchSummaryDetailLimit = analysis.BatchMaxItems + 1
+
+func batchSummaryBinding(id string) string {
+	return analysis.Digest([]any{analysis.BatchMode, "SUMMARY", id})
+}
+
+func (s *workflowServer) batchSummaryItems(id string, scope analysis.Scope, pos analysis.Position, items []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, len(items))
+	copy(out, items)
+	for n, raw := range items {
+		var row nextstep.Object
+		if json.Unmarshal(raw, &row) != nil {
+			continue
+		}
+		value, _ := row["semanticId"].(string)
+		wire, _ := json.Marshal(value)
+		if len(wire) <= 3000 {
+			continue
+		}
+		detail := pos
+		detail.Last += n + 1
+		detail.Limit = batchSummaryDetailLimit
+		row["semanticIdRef"] = detail.Token(s.key, scope, batchSummaryBinding(id))
+		delete(row, "semanticId")
+		out[n], _ = json.Marshal(row)
+	}
+	return out
+}
+
+func (s *workflowServer) batchSummaryDetail(ctx context.Context, id string, scope analysis.Scope, pos analysis.Position, summary analysis.Summary, head analysis.BatchRead) (*mcp.CallToolResult, int, error) {
+	if len(summary.Items) != 1 {
+		return nil, -1, analysis.ErrCursor
+	}
+	var row nextstep.Object
+	if json.Unmarshal(summary.Items[0], &row) != nil {
+		return nil, -1, analysis.ErrProfile
+	}
+	value, _ := row["semanticId"].(string)
+	runes := []rune(value)
+	offset := pos.Limit - batchSummaryDetailLimit
+	if offset >= len(runes) || len(runes) > 2048 {
+		return nil, -1, analysis.ErrCursor
+	}
+	part := batchTextPrefix(string(runes[offset:]), 3000)
+	delete(row, "semanticId")
+	row["semanticIdPart"], row["semanticIdOffset"] = part, offset
+	body := nextstep.Object{"analysisId": id, "mode": analysis.BatchMode, "view": "SUMMARY", "phase": head.Phase, "revision": head.Revision,
+		"changeSeq": strconv.FormatInt(summary.Seq, 10), "counts": summary.Counts, "items": []any{row}}
+	last := pos.Last
+	pos.Limit += utf8.RuneCountInString(part)
+	more := pos.Limit-batchSummaryDetailLimit < len(runes)
+	if !more {
+		pos.Last, pos.Limit = last, analysis.BatchMaxItems
+	}
+	engine := s.engine(ctx)
+	next := batchHeadNext(engine, id, head, true)
+	if !summary.Onboarding && head.Phase == "COMPLETE" {
+		next = nextstep.BatchAnalysisDone()
+	}
+	if more || last+1 < summary.Counts.Total {
+		cursor := pos.Token(s.key, scope, batchSummaryBinding(id))
+		body["nextCursor"] = cursor
+		next = engine.BatchPageNext(nextstep.Object{"analysisId": id, "view": "SUMMARY", "cursor": cursor}, false)
+	}
+	if !batchFits(body, next) {
+		return nil, -1, analysis.ErrCapacity
+	}
+	body["next"] = next
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: batchResultText}}, StructuredContent: body}, last, nil
+}
+
+func compactBatchSummary(items []json.RawMessage) error {
+	for index, raw := range items {
+		var row nextstep.Object
+		if json.Unmarshal(raw, &row) != nil || row == nil {
+			return analysis.ErrProfile
+		}
+		if match, ok := row["match"].(nextstep.Object); ok {
+			row["revisionId"], row["publicationSetId"], row["publicationState"] = match["revisionId"], match["publicationSetId"], "PUBLISHED"
+			row["semanticId"] = match["semanticId"]
+		}
+		for _, field := range []string{"match", "policyVersion", "observedAt", "candidateCount"} {
+			delete(row, field)
+		}
+		items[index], _ = json.Marshal(row)
+	}
+	return nil
 }
 
 func analysisReadError(err error) *mcp.CallToolResult {

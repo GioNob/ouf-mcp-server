@@ -7,6 +7,7 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
+	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
 // Read a small, current continuation inside the already authorized public
@@ -91,5 +92,6 @@ func (s *workflowServer) admitPublishedStep(ctx context.Context, cap manifest.Ca
 	if err != nil {
 		return nil, err
 	}
-	return admitAnalysisCall(ctx, s.analysisService, identity.Identity, checksum, decision, args, maximum, cap.CapabilityID, cap.OperationClass)
+	cost := orchestration.Cost{ToolCalls: 1, DistinctObjects: 128, ResultBytes: int64(maximum)}
+	return admitAnalysisCall(ctx, s.analysisService, identity.Identity, checksum, decision, args, cap.CapabilityID, cap.OperationClass, "", cost)
 }

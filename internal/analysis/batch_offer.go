@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // BatchOfferStore exposes the head and bounded decision projection. Pack runs
@@ -17,6 +18,10 @@ type BatchRead struct {
 	Counts        Counts
 	Phase, Reason string
 	Offer         BatchOffer
+	SingleReview  json.RawMessage
+	OpenReviewID  string
+	FullReviewID  string
+	NotBefore     time.Time
 }
 
 type BatchOffer struct {

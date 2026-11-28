@@ -411,6 +411,8 @@ func mergeSummaryTiming(ctx context.Context, q ownerObservationQueryer, scope an
 
 const summaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome` + summaryVersionsSQL
 
+const batchSummaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||coalesce(v.batch_outcome,v.outcome)` + summaryVersionsSQL
+
 const deniedSummaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq',v.seq::text)||v.outcome
 	|| case when v.outcome->>'state'='BLOCKED' then jsonb_strip_nulls(jsonb_build_object('policyVersion',
 	coalesce((select t.task->'policyVersion' from ouf_mcp.analysis_column c join ouf_mcp.profile_analysis_task t using(analysis_id,task_id)
@@ -420,7 +422,7 @@ const deniedSummaryPageSQL = `select jsonb_build_object('ordinal',n,'changedSeq'
 
 const summaryVersionsSQL = `
 	from generate_series($2::int+1,least($3::int-1,$2::int+$4::int)) n
-	cross join lateral (select seq,outcome from ouf_mcp.analysis_column_version
+	cross join lateral (select seq,outcome,batch_outcome from ouf_mcp.analysis_column_version
 	where analysis_id=$1 and ordinal=n and seq<=$5 order by seq desc limit 1) v order by n`
 
 func measureSummaryRow(s *analysis.Summary, rows pgx.Rows) {
@@ -447,6 +449,17 @@ func scanSummaryRow(ctx context.Context, tx pgx.Tx, result *analysis.Summary, qu
 }
 
 func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manifest string, pos analysis.Position, page bool) (analysis.Summary, error) {
+	return s.readSummary(ctx, scope, id, manifest, pos, page, false)
+}
+
+func (s *Store) ReadBatchSummary(ctx context.Context, scope analysis.Scope, id, manifest string, pos analysis.Position) (analysis.Summary, error) {
+	if pos.Limit > analysis.BatchMaxItems {
+		return analysis.Summary{}, analysis.ErrInvalid
+	}
+	return s.readSummary(ctx, scope, id, manifest, pos, true, true)
+}
+
+func (s *Store) readSummary(ctx context.Context, scope analysis.Scope, id, manifest string, pos analysis.Position, page, batch bool) (analysis.Summary, error) {
 	var out analysis.Summary
 	if pos.Limit < 1 || pos.Limit > 128 || pos.Last < -1 || pos.Last >= 1024 {
 		return out, analysis.ErrInvalid
@@ -462,8 +475,8 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 		p.profile->>'assetId',p.profile->>'profileId',p.revision,coalesce(pub.visibility_digest::text,''),coalesce(p.profile->>'policyEpoch','')
 		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_published_plan pub using(analysis_id) cross join lateral
 		(select * from ouf_mcp.analysis_counts where analysis_id=p.analysis_id and seq <= $6 order by seq desc limit 1) h
-		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[]) and p.profile->>'mode' is null`,
-		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), pos.Seq}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility, &out.Epoch)
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.manifest_checksum=any($5::char(64)[]) and case when $7 then p.profile->>'mode'='BATCH_V1' else p.profile->>'mode' is null end`,
+		[]any{id, scope.Service, scope.Principal, scope.Tenant, manifestpkg.AnalysisManifests(manifest), pos.Seq, batch}, &out.Seq, &c.Total, &c.Matched, &c.Ready, &c.Zero, &c.Blocked, &c.Pending, &out.Onboarding, &out.Stopped, &out.Hint.Reason, &out.Hint.AssetID, &out.Hint.ProfileID, &out.Hint.Revision, &out.Visibility, &out.Epoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, analysis.ErrScope
 	}
@@ -477,7 +490,19 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	var stepRequest *string
 	liveHint := out.Hint
 	readLiveHint := false
-	if pos.Snapshot != uuid.Nil {
+	if batch {
+		if pos.Snapshot != uuid.Nil {
+			var found bool
+			err = tx.QueryRow(ctx, `select exists(select 1 from ouf_mcp.analysis_summary_read
+				where analysis_id=$1 and snapshot_id=$2 and seq=$3 and frozen_hint is not null)`, id, pos.Snapshot, out.Seq).Scan(&found)
+			if err != nil {
+				return out, err
+			}
+			if !found {
+				return out, analysis.ErrExpired
+			}
+		}
+	} else if pos.Snapshot != uuid.Nil {
 		var raw []byte
 		var header string
 		var taskID *string
@@ -521,7 +546,7 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	}
 	if errors.Is(err, pgx.ErrNoRows) && c.Blocked == c.Total {
 		err = scanSummaryRow(ctx, tx, &out, `select outcome->>'reasonCode' from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='BLOCKED' order by ordinal limit 1`, []any{id}, &out.Hint.Reason)
-	} else if pos.Snapshot == uuid.Nil && !out.Stopped && out.Hint.Reason == "" && c.Pending == 0 && c.Ready > 0 && out.Onboarding && out.Hint.Tool == "" {
+	} else if !batch && pos.Snapshot == uuid.Nil && !out.Stopped && out.Hint.Reason == "" && c.Pending == 0 && c.Ready > 0 && out.Onboarding && out.Hint.Tool == "" {
 		err = scanSummaryRow(ctx, tx, &out, `select request_id::text from ouf_mcp.analysis_column where analysis_id=$1 and outcome->>'state'='CANDIDATES_READY' order by ordinal limit 1`, []any{id}, &out.Hint.RequestID)
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -538,7 +563,9 @@ func (s *Store) ReadSummary(ctx context.Context, scope analysis.Scope, id, manif
 	}
 	if page {
 		query := summaryPageSQL
-		if c.Blocked > 0 {
+		if batch {
+			query = batchSummaryPageSQL
+		} else if c.Blocked > 0 {
 			query = deniedSummaryPageSQL
 		}
 		rows, err := tx.Query(ctx, query, id, pos.Last, c.Total, pos.Limit, out.Seq)

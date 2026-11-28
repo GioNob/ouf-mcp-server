@@ -385,11 +385,28 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 				}
 				store, _ := service.Admission.(analysis.Store)
 				coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot}
-				start, _, err := batchStartForRead(ctx, coordinator, i.Identity, analysisID)
+				start, batch, err := batchStartForRead(ctx, coordinator, i.Identity, analysisID)
 				if err != nil {
-					return analysisReadError(err), nil, nil
+					return batchReadFailure(analysisID, err), nil, nil
 				}
-				return batchUnavailable(start.ID), nil, nil
+				if !batch || !start.Initialized {
+					return batchReadFailure(analysisID, analysis.ErrScope), nil, nil
+				}
+				return server.callBatchReview(ctx, c, checksum, input, service, i, start), nil, nil
+			}
+			if analysisID != "" && c.ToolName == "semantic.review.prepare" {
+				i, ok := ctx.Value(identityKey{}).(requestIdentity)
+				store, _ := service.Admission.(analysis.Store)
+				coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot}
+				if ok && store != nil {
+					start, batch, err := batchStartForRead(ctx, coordinator, i.Identity, analysisID)
+					if batch && err != nil {
+						return batchReadFailure(analysisID, err), nil, nil
+					}
+					if batch && start.Initialized && i.ActorType == "HUMAN" && i.Delegation != "" {
+						return server.prepareBatchReview(ctx, c, checksum, input, service), nil, nil
+					}
+				}
 			}
 			if analysisID != "" && (c.ToolName == "semantic.discovery.status" || c.ToolName == "semantic.discovery.candidates") {
 				request, _ := input["requestId"].(string)
@@ -575,7 +592,11 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 	}
 	internalRead, _ := ctx.Value(internalWaitReadKey{}).(bool)
 	machineRead, _ := ctx.Value(machineWaitReadKey{}).(bool)
+	batchReview, _ := ctx.Value(batchReviewCallKey{}).(bool)
 	in := orchestration.Invocation{MachineWaitRead: machineRead, InternalWaitRead: internalRead, AuthorizationCapabilityID: authorizationCapability, Resource: resource, Identity: identity.Identity, CapabilityID: c.CapabilityID, Owner: c.Owner, OperationClass: c.OperationClass, GatewayBindingRef: c.GatewayBindingRef, ManifestChecksum: checksum, Arguments: args, IdempotencyKey: identity.IdempotencyKey, CorrelationID: identity.CorrelationID, Window: orchestration.AdmissionWindow, Timeout: timeout, RetryThreshold: orchestration.AdmissionRetryThreshold, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: int64(maxObjects), ResultBytes: int64(maxBytes)}}
+	if batchReview && c.OperationClass == "READ" {
+		in.BudgetProfile = orchestration.ReviewBatchReadBudgetProfile
+	}
 	if c.ToolName == "semantic.discovery.adopt" {
 		return callDiscoveryAdoption(ctx, service, in), nil, nil
 	}
@@ -598,6 +619,9 @@ func invoke(ctx context.Context, c manifest.Capability, checksum string, args []
 			return revisionCSVError(result.Body), nil, nil
 		}
 		problem := result.Problem
+		if batchReview {
+			return batchReviewProblem(problem, result.Body, result.Observation.At), nil, nil
+		}
 		if projected := onboardingProblem(c.ToolName, problem, result.Body); projected != nil {
 			return projected, nil, nil
 		}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/google/uuid"
@@ -113,7 +115,7 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 	var decisionHold string
 	if !ready && !working {
 		err = tx.QueryRow(ctx, `select reason_code from ouf_mcp.analysis_batch_hold
-			where analysis_id=$1 and work_stage in ('ADOPT','PROPOSE','DRAFT','REFORMULATE')
+			where analysis_id=$1 and work_stage in ('ADOPT','PROPOSE','DRAFT','REFORMULATE','VALIDATE','REVIEW_ADD','REVIEW_INSPECT')
 			order by reason_code,ordinal limit 1`, id).Scan(&decisionHold)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return out, err
@@ -125,6 +127,28 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		out.Phase, out.Reason = "RUNNING", "ANALYSIS_CONTINUE"
 	case working:
 		out.Phase, out.Reason = "RUNNING", "ANALYSIS_RUNNING"
+		err = tx.QueryRow(ctx, `select review_blocked_by::text from ouf_mcp.analysis_batch_choice
+			where analysis_id=$1 and review_blocked_by is not null order by review_blocked_by limit 1`, id).Scan(&out.FullReviewID)
+		if err == nil {
+			out.Reason = "SEM_REVIEW_BATCH_COLLECTING_LIMIT"
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			break
+		}
+		var due *time.Time
+		var reason string
+		err = tx.QueryRow(ctx, `select due_at,coalesce(wait_reason,'') from ouf_mcp.analysis_batch_column
+			where analysis_id=$1 and state='PENDING' order by due_at,ordinal limit 1`, id).Scan(&due, &reason)
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
+		}
+		if due != nil && due.After(time.Now()) {
+			out.NotBefore = *due
+			if reason != "" {
+				out.Reason = reason
+			}
+		}
 	case decisionHold != "":
 		out.Phase, out.Reason = "BLOCKED", decisionHold
 	case counts.Blocked == counts.Total:
@@ -147,6 +171,19 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		}
 	default:
 		out.Phase, out.Reason = "COMPLETE", "ANALYSIS_SUMMARY"
+	}
+	if err == nil && out.Reason == "ANALYSIS_SUMMARY" {
+		err = tx.QueryRow(ctx, `select
+			coalesce((select r.review_batch_id::text from ouf_mcp.analysis_batch_review_item r
+			where r.analysis_id=$1 and r.state='UNDER_REVIEW'
+			and not exists(select 1 from ouf_mcp.analysis_batch_review_item terminal
+				where terminal.analysis_id=r.analysis_id and terminal.review_batch_id=r.review_batch_id
+				and terminal.state in ('PUBLISHED','CHANGES_REQUESTED','REJECTED','EXPIRED'))
+			order by r.review_batch_id limit 1),''),
+			(select d.review_arguments from ouf_mcp.analysis_batch_column b join ouf_mcp.analysis_batch_choice d
+			on d.analysis_id=b.analysis_id and d.command_key=b.choice_key and d.ordinal=b.ordinal
+			where b.analysis_id=$1 and d.effect_code='SEM_REVIEW_BATCH_ITEM_TYPE_UNSUPPORTED' order by b.ordinal limit 1)`, id).
+			Scan(&out.OpenReviewID, &out.SingleReview)
 	}
 	return out, err
 }
@@ -246,10 +283,15 @@ func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Ba
 		} else {
 			col.ReasonCode = "REFORMULATION_BUDGET_EXHAUSTED"
 		}
-		if decisionReason != "" {
+		if decisionReason != "" && (col.RemainingAttempts > 0 || decisionReason != "REFORMULATION_TERM_TOO_LONG") {
 			col.ReasonCode = decisionReason
 		}
-		col.Allowed = append(col.Allowed, "EXCLUDE", "PROPOSE")
+		col.Allowed = append(col.Allowed, "EXCLUDE")
+		if decisionReason != "SEMANTIC_REVIEW_REJECTED" {
+			col.Allowed = append(col.Allowed, "PROPOSE")
+		} else {
+			col.Allowed = slices.DeleteFunc(col.Allowed, func(s string) bool { return s == "ADOPT" })
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

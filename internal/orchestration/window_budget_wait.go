@@ -3,6 +3,8 @@ package orchestration
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Reserve room for a command burst alongside the default polling cadence.
@@ -37,7 +39,7 @@ func isPollRead(in Invocation) bool {
 	if in.OperationClass == "COMMAND" && in.CapabilityID != "ouf.managed-source.file.upload" {
 		return false
 	}
-	var selector struct{ HandoffID, JobID, SourceID, OnboardingVersionID, ProposalID, RequestID, CommandKey string }
+	var selector struct{ HandoffID, JobID, SourceID, OnboardingVersionID, ProposalID, RequestID, CommandKey, ReviewBatchID string }
 	if json.Unmarshal(in.Arguments, &selector) != nil {
 		return false
 	}
@@ -49,7 +51,8 @@ func isPollRead(in Invocation) bool {
 	case "ouf.managed-source.onboarding.read":
 		return in.OperationClass == "READ" && selector.SourceID != "" && selector.OnboardingVersionID != ""
 	case "ouf.semantic.proposal.read":
-		return in.OperationClass == "READ" && (selector.CommandKey != "" || selector.ProposalID != "")
+		return in.OperationClass == "READ" && (selector.CommandKey != "" || selector.ProposalID != "" ||
+			in.InternalWaitRead && in.BudgetProfile == ReviewBatchReadBudgetProfile && uuid.Validate(selector.ReviewBatchID) == nil)
 	case "ouf.onboarding.ths-links.ingestion-run-recovery", "ouf.onboarding.ths-links.semantic-review":
 		return in.InternalWaitRead && in.OperationClass == "READ"
 	case "authorization.proposal.read":

@@ -215,7 +215,8 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	if !ok || (!machine && t.capability.OperationClass != "READ") || ref.Read == "ouf.wait" || !s.valid(ref.Read, ref.Args) {
 		return errorResult("WAIT_REFERENCE_INVALID", false)
 	}
-	batchStatus := machine && ref.Reason == nextstep.AnalysisRunning && ref.Read == "source.analysis.read" && ref.Args["view"] == "STATUS"
+	batchStatus := machine && nextstep.IsBatchStatusPoll(ref.Reason) && ref.Read == "source.analysis.read" && ref.Args["view"] == "STATUS"
+	batchReview := ref.Read == "semantic.proposal.read" && ref.Args["projection"] == analysis.BatchMode
 	batch := batchStatus || s.batchReadSelector(ctx, ref.Read, ref.Args)
 	defer func() {
 		if batch {
@@ -242,6 +243,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		exp, err = due.Add(time.Duration(w.maxSeconds)*time.Second), nil
 	}
 	if err != nil || !time.Now().Before(exp) {
+		if batchReview && ref.Resource != "" {
+			return waitResult(true, nil, s.engine(ctx).BatchReviewExpiredRead(ref.Args, ref.Resource))
+		}
 		return stop("WAIT_DEADLINE_EXPIRED")
 	}
 	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
@@ -342,6 +346,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	var last nextstep.Object
 	finish := func() *mcp.CallToolResult {
 		if !time.Now().Before(exp) {
+			if batchReview && ref.Resource != "" {
+				return waitResult(true, last, s.engine(ctx).BatchReviewExpiredRead(ref.Args, ref.Resource))
+			}
 			return stop("WAIT_DEADLINE_EXPIRED")
 		}
 		if ctx.Err() == context.Canceled || time.Now().Before(until) {
@@ -428,7 +435,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 					return stop("WAIT_RESOURCE_CHANGED")
 				}
 				last = nextstep.Object{"analysisId": body["analysisId"], "phase": body["phase"], "revision": body["revision"], "counts": body["counts"]}
-				if projected["action"] == "POLL" && projected["reasonCode"] == nextstep.AnalysisRunning {
+				if projected["action"] == "POLL" {
 					continue
 				}
 				return waitResult(true, last, projected)
@@ -443,6 +450,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 					if projected, ok := structured["next"].(nextstep.Object); ok {
 						return waitError(result, projected)
 					}
+				}
+				if projected, ok := result.Meta[batchNextMeta].(nextstep.Object); batchReview && ok {
+					return waitError(result, projected)
 				}
 				next := s.evaluateNext(s.observedEngine(ctx, result), t.capability, args, body, true, batch)
 				return waitError(result, next)
@@ -488,6 +498,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 					// The read contract omits pickerUrl. Reuse only the URL authenticated for this handoff.
 					body = maps.Clone(body)
 					body["pickerUrl"] = ref.URL
+				}
+				if projected, ok := result.Meta[batchNextMeta].(nextstep.Object); batchReview && ok {
+					return waitResult(changed, obs, projected)
 				}
 				next := s.evaluateNext(s.observedEngine(ctx, result), t.capability, args, body, false, batch)
 				if !batch {
