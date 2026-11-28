@@ -24,12 +24,12 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 	var stored string
 	var revision int64
 	var createdAt time.Time
-	var initialized bool
+	var seeded bool
 	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision,created_at,
 		exists(select from ouf_mcp.analysis_counts where analysis_id=$1)
 		from ouf_mcp.profile_analysis
 		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode'=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &initialized)
+		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &seeded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchStart{}, analysis.ErrScope
 	}
@@ -41,7 +41,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		!pin.Profile.Valid() || id != analysis.BatchAnalysisID(scope, pin.Profile, pin.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrProfile
 	}
-	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Initialized: initialized}, nil
+	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Initialized: seeded}, nil
 }
 
 func (s *Store) ReadBatchStart(ctx context.Context, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
@@ -61,7 +61,7 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 	if !scope.Valid() || !start.Profile.Valid() || start.ID != analysis.BatchAnalysisID(scope, start.Profile, start.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrInvalid
 	}
-	initialize := func(tx pgx.Tx) (analysis.View, error) {
+	seedBatch := func(tx pgx.Tx) (analysis.View, error) {
 		raw, err := json.Marshal(batchProfile{Profile: start.Profile, Mode: analysis.BatchMode, Epoch: start.Epoch, Authority: start.Authority})
 		if err != nil {
 			return analysis.View{}, err
@@ -88,13 +88,13 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 			return analysis.View{}, analysis.ErrScope
 		}
 		if !retained.Initialized {
-			if err = initializeBatchColumns(ctx, tx, scope, checksum, start); err != nil {
+			if err = seedBatchColumns(ctx, tx, scope, checksum, start); err != nil {
 				return analysis.View{}, err
 			}
 		}
 		return analysis.View{ID: retained.ID, Profile: retained.Profile, Revision: retained.Revision, Epoch: retained.Epoch}, nil
 	}
-	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, initialize, func(target string) (analysis.View, error) {
+	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, seedBatch, func(target string) (analysis.View, error) {
 		if target != start.ID {
 			return analysis.View{}, analysis.ErrProfile
 		}
@@ -104,7 +104,7 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 			return analysis.View{}, err
 		}
 		defer tx.Rollback(ctx)
-		view, err := initialize(tx)
+		view, err := seedBatch(tx)
 		if err == nil {
 			err = tx.Commit(ctx)
 		}
@@ -127,7 +127,7 @@ func lockBatchAnalysis(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id 
 	return err
 }
 
-func initializeBatchColumns(ctx context.Context, tx pgx.Tx, scope analysis.Scope, checksum string, start analysis.BatchStart) error {
+func seedBatchColumns(ctx context.Context, tx pgx.Tx, scope analysis.Scope, checksum string, start analysis.BatchStart) error {
 	pin, err := json.Marshal(start.Profile)
 	if err != nil {
 		return err
