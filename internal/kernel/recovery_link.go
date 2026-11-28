@@ -62,10 +62,6 @@ const (
 )
 
 func (s *workflowServer) bindTHSLinks(service *orchestration.Service) error {
-	checksum, err := s.manifest.Checksum()
-	if err != nil {
-		return err
-	}
 	s.thsLinks = make(map[string]linkLookup)
 	for _, c := range s.manifest.Capabilities {
 		if c.CapabilityID != recoveryLinkID && c.CapabilityID != semanticLinkID {
@@ -117,7 +113,7 @@ func (s *workflowServer) bindTHSLinks(service *orchestration.Service) error {
 				OperationClass:            c.OperationClass,
 				AuthorizationCapabilityID: c.RequiredAuthorization,
 				GatewayBindingRef:         c.GatewayBindingRef,
-				ManifestChecksum:          checksum,
+				ManifestChecksum:          s.manifestChecksum,
 				Resource:                  resource,
 				Arguments:                 raw,
 				CorrelationID:             identity.CorrelationID,
