@@ -92,7 +92,10 @@ func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time, observat
 	default:
 		next := e.batchFailure(Object{"code": reason})
 		if e.Valid != nil && e.Valid(read, args) {
-			next["alternatives"] = append(next["alternatives"].([]Object), batchManualAlternative(read, args, reason, "Rileggi lo stato corrente."))
+			msg := "Rileggi lo stato corrente."
+			reread := Block(reason, read, msg)["alternatives"].([]Object)
+			reread[0]["arguments"] = args
+			next["alternatives"] = append(next["alternatives"].([]Object), reread...)
 		}
 		return next
 	}

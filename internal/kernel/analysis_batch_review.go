@@ -180,6 +180,11 @@ func recordBatchReview(ctx context.Context, service *orchestration.Service, scop
 	}
 	rows, _ := body["items"].([]any)
 	items := make([]analysis.BatchReviewItem, 0, len(rows))
+	var added string
+	if input["batchAction"] == "ADD" && body["state"] == "COLLECTING" {
+		item, _ := input["item"].(nextstep.Object)
+		added, _ = item["revisionId"].(string)
+	}
 	for _, value := range rows {
 		row, _ := value.(nextstep.Object)
 		revision, _ := row["revisionId"].(string)
@@ -196,7 +201,15 @@ func recordBatchReview(ctx context.Context, service *orchestration.Service, scop
 			return analysis.ErrProfile
 		}
 		semanticID, _ := row["semanticId"].(string)
-		items = append(items, analysis.BatchReviewItem{RevisionID: revision, State: state, PublicationSetID: set, SemanticID: semanticID})
+		confirmedAdd := revision == added && state == "COLLECTING"
+		items = append(items, analysis.BatchReviewItem{RevisionID: revision, State: state, PublicationSetID: set, SemanticID: semanticID, ConfirmedAdd: confirmedAdd})
+		if revision == added {
+			added = ""
+		}
+	}
+	// ADD returns the first page, which may not contain the added revision.
+	if analysis.CanonicalUUID(added) {
+		items = append(items, analysis.BatchReviewItem{RevisionID: added, State: "COLLECTING", ConfirmedAdd: true})
 	}
 	if input["batchAction"] == "REMOVE" && (body["state"] == "COLLECTING" || body["state"] == "DISCARDED") {
 		if raw, ok := input["item"].(nextstep.Object); ok {

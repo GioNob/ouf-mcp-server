@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/nextstep"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -237,6 +239,85 @@ func TestPickerWaitOwnerTransitions(t *testing.T) {
 		next = project("source.file.upload", nextstep.Object{}, issued)
 		if next["reasonCode"] != "HANDOFF_DEADLINE_REQUIRED" || next["actor"] != "OPERATOR" || !strings.Contains(next["userMessage"].(string), "Onboarding") {
 			t.Fatal(next)
+		}
+	})
+}
+
+type waitOwnerClock struct {
+	orchestration.AdmissionPort
+}
+
+func (waitOwnerClock) ReadOwnerObservation(ctx context.Context, _ orchestration.Identity, _ string) (orchestration.OwnerObservation, error) {
+	return orchestration.OwnerObservation{}, ctx.Err()
+}
+
+func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		snapshot, err := manifest.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := newWorkflowServer(nil, snapshot, make([]byte, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.analysisService = &orchestration.Service{Admission: waitOwnerClock{}}
+		s.waits.interval, s.waits.duration = time.Second, 5*time.Second
+		const read = "semantic.proposal.read"
+		const batch = "11111111-1111-4111-8111-111111111111"
+		id := strings.Repeat("a", 64)
+		args := nextstep.Object{"analysisId": id, "projection": analysis.BatchMode, "reviewBatchId": batch}
+		expiry := time.Now().Add(2 * time.Second)
+		deadline := expiry.Format(time.RFC3339Nano)
+		reads := make(chan error, 1)
+		for _, c := range snapshot.ToolEligible() {
+			if c.ToolName != read {
+				continue
+			}
+			var schema jsonschema.Schema
+			if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
+				t.Fatal(err)
+			}
+			input, err := schema.Resolve(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.tools[read] = registeredTool{capability: c, input: input, run: func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if !time.Now().Before(expiry) {
+					t.Error("owner read started after the THS deadline")
+				}
+				<-ctx.Done()
+				reads <- ctx.Err()
+				return &mcp.CallToolResult{StructuredContent: nextstep.Object{"reviewBatchId": batch, "state": "DECIDED"}}, nil
+			}}
+		}
+		ctx := context.WithValue(t.Context(), identityKey{}, requestIdentity{Identity: orchestration.Identity{
+			PrincipalID: "reader", TenantID: "tenant", Delegation: "fixture-proof",
+		}})
+		issued := s.waits.signer.Issue(waitBinding(ctx), manifest.Rule{Action: "WAIT_FOR_HUMAN", Tool: read, Reason: nextstep.ReviewBatch, Decision: "APPROVE_EACH_ROW"},
+			args, nextstep.Object{"state": "UNDER_REVIEW", "reviewBatchId": batch, "version": strings.Repeat("b", 64), "expiresAt": deadline},
+			nextstep.LinkResult{Status: nextstep.LinkAvailable, URL: "https://fixture.invalid/review", ExpiresAt: deadline}, time.Now())
+		if issued["action"] != "WAIT_FOR_HUMAN" {
+			t.Fatal("failed to issue the batch wait", issued)
+		}
+		token := issued["arguments"].(nextstep.Object)["waitRef"].(string)
+		var req mcp.CallToolRequest
+		if err := json.Unmarshal([]byte(`{"params":{"name":"ouf.wait","arguments":{}}}`), &req); err != nil {
+			t.Fatal(err)
+		}
+		result := s.wait(ctx, &req, token)
+		body := ownerObject(result)
+		next := checkNext(t, nextContract(t), result)
+		if result.IsError || body["changed"] != true || body["observation"] != nil ||
+			next["action"] != "CALL_TOOL" || next["reasonCode"] != nextstep.ReviewBatchExpired || next["tool"] != read {
+			t.Fatal("expiry lost the batch reread or exposed the late response", body)
+		}
+		reread, _ := next["arguments"].(nextstep.Object)
+		if !maps.Equal(reread, args) {
+			t.Fatal("expiry changed the batch selector", reread)
+		}
+		if err := <-reads; err != context.DeadlineExceeded {
+			t.Fatal("the in-flight read did not end at the THS deadline", err)
 		}
 	})
 }

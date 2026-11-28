@@ -11,6 +11,7 @@ type BatchSummaryChange struct {
 
 type BatchReviewItem struct {
 	RevisionID, State, PublicationSetID, SemanticID string
+	ConfirmedAdd                                    bool
 }
 
 type BatchReviewStore interface {

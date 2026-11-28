@@ -2,7 +2,6 @@ package nextstep
 
 import (
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
@@ -14,11 +13,6 @@ const (
 	reviewCommand         = "semantic.approval.request"
 	SourceMappingRequired = "SOURCE_MAPPING_REQUIRED"
 )
-
-func batchManualAlternative(tool string, args Object, reason, message string) Object {
-	option := alternative(tool, args, reason, message)
-	return option
-}
 
 func batchReviewArgs(id string) Object {
 	return Object{"analysisId": id, "projection": analysis.BatchMode}
@@ -41,9 +35,8 @@ func (e Engine) BatchReviewReceipt(args Object) Object {
 
 func (e Engine) BatchValidationNext(id string, input, obs Object) Object {
 	if obs["status"] != "PASS" && obs["state"] != "VALIDATED" {
-		next := Block("SEMANTIC_VALIDATION_FAILED", "", "Verifica gli errori della validazione della revisione.")
-		next["alternatives"] = []Object{batchManualAlternative("source.analysis.read", Object{"analysisId": id}, "ANALYSIS_CONTINUE", "Riprendi l’analisi.")}
-		return next
+		return Block("SEMANTIC_VALIDATION_FAILED", "", "Verifica gli errori della validazione della revisione.",
+			manualOption{tool: "source.analysis.read", args: Object{"analysisId": id}, reason: "ANALYSIS_CONTINUE", message: "Riprendi l’analisi."})
 	}
 	revision := get(obs, input, "revision_id|revisionId|@revisionId")
 	version := get(obs, input, "validated_row_version|rowVersion|expectedRowVersion|@expectedRowVersion")
@@ -88,16 +81,14 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 		return BatchBlock("OWNER_STATE_UNKNOWN")
 	}
 	readAnalysis := Object{"analysisId": id}
-	block := func(reason, message string, options ...Object) Object {
-		out := Block(reason, "", message)
-		out["alternatives"] = slices.DeleteFunc(options, func(a Object) bool { return a == nil })
-		return out
+	block := func(reason, message string, options ...manualOption) Object {
+		return Block(reason, "", message, options...)
 	}
-	option := func(t string, args Object, reason, message string) Object {
+	option := func(t string, args Object, reason, message string) manualOption {
 		if e.Valid != nil && e.Valid(t, args) {
-			return batchManualAlternative(t, args, reason, message)
+			return manualOption{tool: t, args: args, reason: reason, message: message}
 		}
-		return nil
+		return manualOption{}
 	}
 	read := func(b string) Object {
 		args := batchReviewArgs(id)
@@ -119,7 +110,7 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 		}
 		return args
 	}
-	proceed := func(reason string) Object {
+	proceed := func(reason string) manualOption {
 		return option("source.analysis.read", readAnalysis, reason, "Riprendi dalle colonne dell’analisi.")
 	}
 	mappingArgs := Object{"analysisId": id}
@@ -131,7 +122,7 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 	if e.CommandKey != nil {
 		mappingArgs["commandKey"] = e.CommandKey("source.onboarding.create", mappingArgs, nil, nil)
 	}
-	mapping := batchManualAlternative("source.onboarding.create", mappingArgs, SourceMappingRequired, "Prepara il mapping dalle ricevute dell’analisi.")
+	mapping := manualOption{tool: "source.onboarding.create", args: mappingArgs, reason: SourceMappingRequired, message: "Prepara il mapping dalle ricevute dell’analisi."}
 	if obs["replay"] == true || code == "SEMANTIC_RECEIPT_READ_REQUIRED" || code == "OUTCOME_REQUIRES_RECONCILIATION" {
 		args := batchReviewArgs(id)
 		args["commandKey"] = input["commandKey"]
@@ -217,7 +208,7 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 	if requested := input["reviewBatchId"]; tool == reviewRead && requested != nil && requested != batch {
 		return BatchBlock("OWNER_STATE_UNKNOWN")
 	}
-	var page, rest Object
+	var page, rest manualOption
 	if offset := obs["nextItemsOffset"]; offset != nil {
 		args := read(batch)
 		args["itemsOffset"] = offset
@@ -235,7 +226,7 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 	case "COLLECTING":
 		message := fmt.Sprintf("Proposte nel lotto del file: %d. Chiedi la revisione quando la raccolta è completa.", total)
 		submit := option(reviewCommand, command("SUBMIT", batch, nil), ReviewBatchCollecting, "Chiedi una sola revisione per il lotto.")
-		var removeOption Object
+		var removeOption manualOption
 		if rows, _ := obs["items"].([]any); len(rows) > 0 {
 			row, _ := rows[0].(Object)
 			if revision, _ := row["revisionId"].(string); analysis.CanonicalUUID(revision) {
@@ -243,14 +234,14 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 				if e.CommandKey != nil && e.Valid != nil && e.Valid(reviewCommand, probe) {
 					args := command("REMOVE", "", nil)
 					args["commandKey"] = e.CommandKey(reviewCommand, args, obs, nil)
-					removeOption = batchManualAlternative(reviewCommand, args, ReviewBatchCollecting, "Indica la revisione mostrata da togliere dal lotto.")
+					removeOption = manualOption{tool: reviewCommand, args: args, reason: ReviewBatchCollecting, message: "Indica la revisione mostrata da togliere dal lotto."}
 				}
 			}
 		}
 		if obs["collectionClosed"] != true || !matches(map[string]string{"allowedActions": "SUBMIT_REVIEW"}, obs, nil) {
-			submit = nil
+			submit = manualOption{}
 		}
-		options := []Object{proceed(ReviewBatchCollecting), submit, removeOption, page}
+		options := []manualOption{proceed(ReviewBatchCollecting), submit, removeOption, page}
 		if tool == reviewRead {
 			options[0], options[1] = options[1], options[0]
 		}
@@ -273,12 +264,12 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 		}
 	case "DECIDED":
 		if changed+rejected > 0 {
-			search := batchManualAlternative("semantic.search", Object{}, ReviewBatchChangesRequested, "Cerca un termine già pubblicato con nuove evidenze.")
+			search := manualOption{tool: "semantic.search", args: Object{}, reason: ReviewBatchChangesRequested, message: "Cerca un termine già pubblicato con nuove evidenze."}
 			return block(ReviewBatchChangesRequested, fmt.Sprintf("Pubblicati: %d. Con modifiche richieste: %d. Rifiutati: %d. Usa i riscontri delle righe per correggere le proposte interessate.", published, changed, rejected), page, proceed(ReviewBatchChangesRequested), search)
 		}
 		if published == total && total > 0 {
 			if input["commandKey"] != nil || input["fromWait"] == true {
-				if page == nil && rest == nil {
+				if page.tool == "" && rest.tool == "" {
 					return e.BatchDecisionReadNext(id, SourceMappingRequired)
 				}
 				return block(ReviewBatchPublished, "La pubblicazione del lotto è conclusa.", page, rest, proceed(SourceMappingRequired))
@@ -286,7 +277,7 @@ func (e Engine) BatchReviewNext(tool string, input, obs Object, failed bool) Obj
 			return block(ReviewBatchPublished, "La pubblicazione del lotto è conclusa.", page, rest, mapping, proceed(ReviewBatchPublished))
 		}
 	case "EXPIRED":
-		var resubmit, successor Object
+		var resubmit, successor manualOption
 		if matches(map[string]string{"allowedActions": "RESUBMIT_REVIEW"}, obs, nil) {
 			resubmit = option(reviewCommand, command("RESUBMIT", batch, nil), ReviewBatchExpired, "Chiedi una nuova revisione se l’utente la richiede.")
 		}
@@ -304,12 +295,12 @@ func batchCount(value any) int {
 	return n
 }
 
-func (e Engine) batchNotReady(id string, first Object, command func(string, string, Object) Object) []Object {
+func (e Engine) batchNotReady(id string, first Object, command func(string, string, Object) Object) []manualOption {
 	revision, _ := first["revisionId"].(string)
 	if !analysis.CanonicalUUID(revision) {
 		return nil
 	}
-	var options []Object
+	var options []manualOption
 	reason := get(first, nil, "reason|notReadyReason")
 	if reason != "ROW_VERSION_CHANGED" && reason != "VALIDATION_NOT_CURRENT" && reason != "NOT_DRAFT" && reason != "UNRESOLVED_DEPENDENCY" {
 		return nil
@@ -321,12 +312,12 @@ func (e Engine) batchNotReady(id string, first Object, command func(string, stri
 			args["commandKey"] = e.CommandKey(prepare, args, nil, nil)
 		}
 		if e.Valid != nil && e.Valid(prepare, args) {
-			options = append(options, batchManualAlternative(prepare, args, ReviewBatchItemsNotReady, "Prepara nuovamente la revisione."))
+			options = append(options, manualOption{tool: prepare, args: args, reason: ReviewBatchItemsNotReady, message: "Prepara nuovamente la revisione."})
 		}
 	}
 	remove := command("REMOVE", "", Object{"revisionId": revision})
 	if e.Valid != nil && e.Valid(reviewCommand, remove) {
-		options = append(options, batchManualAlternative(reviewCommand, remove, ReviewBatchItemsNotReady, "Togli la proposta dal lotto."))
+		options = append(options, manualOption{tool: reviewCommand, args: remove, reason: ReviewBatchItemsNotReady, message: "Togli la proposta dal lotto."})
 	}
 	return options
 }

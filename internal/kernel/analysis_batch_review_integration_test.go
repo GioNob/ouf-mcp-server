@@ -64,6 +64,12 @@ func (o *batchFixtureReview) execute(r orchestration.GatewayRequest) (bool, orch
 			o.adds[args.Item.RevisionID] = nextstep.Object{"revisionId": args.Item.RevisionID, "currentValidationRunId": args.Item.ValidationRunID,
 				"rowVersion": args.Item.ExpectedRowVersion, "semanticId": "urn:fixture:review:" + args.Item.RevisionID}
 			return reply(o.observation())
+		case "REMOVE":
+			if args.ReviewContextRef != o.context || o.adds[args.Item.RevisionID] == nil || o.submits != 0 {
+				return fail("invalid REMOVE item")
+			}
+			delete(o.adds, args.Item.RevisionID)
+			return reply(o.observation())
 		case "SUBMIT":
 			if args.ReviewBatchID != o.id || args.ReviewContextRef != o.context || len(o.adds) == 0 || o.submits != 0 {
 				return fail("duplicate or unbound SUBMIT")
@@ -108,7 +114,7 @@ func (o *batchFixtureReview) observation() nextstep.Object {
 		}
 		items = append(items, row)
 	}
-	obs := nextstep.Object{"kind": "REVIEW_BATCH", "reviewContextRef": o.context, "reviewBatchId": o.id, "version": analysis.Digest(state),
+	obs := nextstep.Object{"kind": "REVIEW_BATCH", "reviewContextRef": o.context, "reviewBatchId": o.id, "version": analysis.Digest([]any{state, items}),
 		"state": state, "itemCount": len(items), "counts": nextstep.Object{count: len(items)}, "items": items, "itemsOffset": 0, "allowedActions": []string{action}}
 	if state == "UNDER_REVIEW" {
 		obs["currentChallenge"] = nextstep.Object{"challengeId": o.id, "challengeStatus": "OPEN", "expiresAt": o.expiry}
@@ -226,5 +232,65 @@ func TestBatchReviewPostgresNextOnlyPET(t *testing.T) {
 	var published int
 	if err := db.Pool().QueryRow(t.Context(), `select count(*) from ouf_mcp.analysis_batch_review_item where analysis_id=$1 and state='PUBLISHED'`, id).Scan(&published); err != nil || published != 3 {
 		t.Fatal("publication receipts were not retained", published, err)
+	}
+}
+
+func TestBatchReviewPostgresRemoveThenAddSameRevision(t *testing.T) {
+	f := newBatchDecisionFixture(t, 2)
+	client := f.session(t)
+	offer := f.offer(t, client)
+	f.decide(t, client, batchDecisionCommand(offer, batchDecisionAdopt(offer, 0), batchDecisionAdopt(offer, 1)), false)
+	f.worker.Now = func() time.Time { return time.Now().Add(time.Second) }
+	batchWorkerDrain(t, f.worker, f.identity, f.id)
+	var revision string
+	if err := f.db.Pool().QueryRow(t.Context(), `select owner_ref::text from ouf_mcp.analysis_batch_choice
+		where analysis_id=$1 and ordinal=0`, f.id).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	lot := &f.owner.review
+	item := lot.adds[revision]
+	if len(lot.adds) != 2 || item == nil {
+		t.Fatal("both revisions must be in the same collecting lot", lot.adds)
+	}
+	command := func(action string, item nextstep.Object) nextstep.Object {
+		t.Helper()
+		args := nextstep.Object{"analysisId": f.id, "projection": analysis.BatchMode, "reviewContextRef": f.id,
+			"batchAction": action, "commandKey": uuid.NewString()}
+		if item != nil {
+			args["item"] = item
+		} else {
+			args["reviewBatchId"] = lot.id
+		}
+		return callBatchDecisionFixture(t, client, "semantic.approval.request", args, false)
+	}
+	batch := lot.id
+	command("REMOVE", nextstep.Object{"revisionId": revision})
+	reopened := f.offer(t, client)
+	if reopened["batchId"] == nil {
+		t.Fatal("REMOVE did not reopen the decision", reopened)
+	}
+	added := command("ADD", nextstep.Object{"revisionId": revision, "expectedRowVersion": item["rowVersion"], "validationRunId": item["currentValidationRunId"]})
+	if added["reviewBatchId"] != batch || f.offer(t, client)["batchId"] != nil {
+		t.Fatal("the same lot did not regain the revision and close the reopened decision", added)
+	}
+	submitted := command("SUBMIT", nil)
+	if submitted["state"] != "UNDER_REVIEW" {
+		t.Fatal("the collected lot did not enter review", submitted)
+	}
+	lot.decided = true
+	callBatchDecisionFixture(t, client, "semantic.proposal.read", nextstep.Object{
+		"analysisId": f.id, "projection": analysis.BatchMode, "reviewBatchId": batch,
+	}, false)
+
+	summary := callBatchDecisionFixture(t, client, "source.analysis.read", nextstep.Object{"analysisId": f.id, "view": "SUMMARY"}, false)
+	rows := summary["items"].([]any)
+	if len(rows) != 2 {
+		t.Fatal("missing summary rows", summary)
+	}
+	const publicationSet = "11111111-1111-4111-8111-111111111111"
+	row := rows[0].(nextstep.Object)
+	if row["revisionId"] != revision || row["reviewBatchId"] != batch || row["publicationState"] != "PUBLISHED" ||
+		row["publicationSetId"] != publicationSet || row["semanticId"] != item["semanticId"] || row["receiptRef"] == nil {
+		t.Fatal("the mapping lost the publication receipt for the re-added revision", row)
 	}
 }

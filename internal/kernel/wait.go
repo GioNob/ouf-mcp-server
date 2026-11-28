@@ -236,6 +236,13 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		result.IsError = true
 		return result
 	}
+	requestCtx := ctx
+	expired := func(last nextstep.Object) *mcp.CallToolResult {
+		if batchReview && ref.Resource != "" {
+			return waitResult(true, last, s.engine(requestCtx).BatchReviewExpiredRead(ref.Args, ref.Resource))
+		}
+		return stop("WAIT_DEADLINE_EXPIRED")
+	}
 	due, _ := time.Parse(time.RFC3339Nano, ref.NotBefore)
 	exp, err := time.Parse(time.RFC3339Nano, ref.Deadline)
 	if machine && ref.Deadline == "" && !due.IsZero() {
@@ -243,10 +250,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		exp, err = due.Add(time.Duration(w.maxSeconds)*time.Second), nil
 	}
 	if err != nil || !time.Now().Before(exp) {
-		if batchReview && ref.Resource != "" {
-			return waitResult(true, nil, s.engine(ctx).BatchReviewExpiredRead(ref.Args, ref.Resource))
-		}
-		return stop("WAIT_DEADLINE_EXPIRED")
+		return expired(nil)
 	}
 	linkEnd, _ := time.Parse(time.RFC3339Nano, ref.LinkEnd)
 	// Refresh from a complete authorized observation before exposing a new
@@ -301,7 +305,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			}
 		}
 		if !time.Now().Before(exp) {
-			return stop("WAIT_DEADLINE_EXPIRED")
+			return expired(nil)
 		}
 		next := w.signer.Postpone(binding, ref, end, exp)
 		return waitError(result, next)
@@ -346,10 +350,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	var last nextstep.Object
 	finish := func() *mcp.CallToolResult {
 		if !time.Now().Before(exp) {
-			if batchReview && ref.Resource != "" {
-				return waitResult(true, last, s.engine(ctx).BatchReviewExpiredRead(ref.Args, ref.Resource))
-			}
-			return stop("WAIT_DEADLINE_EXPIRED")
+			return expired(last)
 		}
 		if ctx.Err() == context.Canceled || time.Now().Before(until) {
 			return stop("WAIT_OBSERVATION_UNAVAILABLE")
@@ -413,7 +414,7 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			return finish()
 		case response := <-ch:
 			if !time.Now().Before(exp) {
-				return stop("WAIT_DEADLINE_EXPIRED")
+				return expired(last)
 			}
 			if response.Val == nil && response.Err == nil {
 				// Another replica already owns this tick of the signed wait.

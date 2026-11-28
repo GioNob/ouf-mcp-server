@@ -129,42 +129,51 @@ func (s *Store) ObserveBatchReview(ctx context.Context, scope analysis.Scope, id
 			where exists(select 1 from ouf_mcp.analysis_batch_choice where analysis_id=$1 and owner_ref=$2)
 			on conflict (analysis_id,revision_id,review_batch_id) do update
 			set version=excluded.version,state=excluded.state,publication_set_id=excluded.publication_set_id
-			where r.state not in ('PUBLISHED','CHANGES_REQUESTED','REJECTED','EXPIRED','REMOVED')
+			where (r.state not in ('PUBLISHED','CHANGES_REQUESTED','REJECTED','EXPIRED','REMOVED')
+				or ($7 and r.state='REMOVED' and excluded.state='COLLECTING'))
 			and r.state is distinct from excluded.state
 			and not(r.state='UNDER_REVIEW' and excluded.state='COLLECTING')
 			returning revision_id
 		)
-		select b.ordinal,d.action,d.command_key::text,d.request_id::text
+		select b.ordinal,d.action,d.command_key::text,d.request_id::text,
+			coalesce(nullif($8,''),d.semantic_id,''),b.state='READY_FOR_DECISION',coalesce(b.offered_batch_id::text,'')
 		from saved join ouf_mcp.analysis_batch_choice d on d.analysis_id=$1 and d.owner_ref=saved.revision_id
 		join ouf_mcp.analysis_batch_column b on b.analysis_id=$1 and b.ordinal=d.ordinal and b.choice_key=d.command_key
-		where b.state='CLOSED' and d.effect_state='APPLIED'
+		where (b.state='CLOSED' or ($7 and b.state='READY_FOR_DECISION' and b.decision_reason='SEMANTIC_REVIEW_REMOVED'))
+		and d.effect_state='APPLIED'
 		and not exists(select 1 from ouf_mcp.analysis_batch_review_item r
 			where r.analysis_id=$1 and r.revision_id=saved.revision_id and r.state='PUBLISHED' and r.review_batch_id<>$3)`,
-			id, item.RevisionID, batch, version, item.State, item.PublicationSetID)
+			id, item.RevisionID, batch, version, item.State, item.PublicationSetID, item.ConfirmedAdd, item.SemanticID)
 		if err != nil {
 			return err
 		}
 		type target struct {
-			Ordinal              int
-			Action, Key, Request string
+			Ordinal                                   int
+			Action, Key, Request, SemanticID, OfferID string
+			Restore                                   bool
 		}
 		targets, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (target, error) {
 			var t target
-			err := r.Scan(&t.Ordinal, &t.Action, &t.Key, &t.Request)
+			err := r.Scan(&t.Ordinal, &t.Action, &t.Key, &t.Request, &t.SemanticID, &t.Restore, &t.OfferID)
 			return t, err
 		})
 		if err != nil {
 			return err
 		}
 		for _, t := range targets {
+			if t.Restore {
+				if err := restoreBatchReviewChoice(ctx, tx, id, t.Ordinal, t.OfferID); err != nil {
+					return err
+				}
+			}
 			state := "PROPOSED"
 			if t.Action == "ADOPT" {
 				state = "ADOPTED"
 			}
 			fields := map[string]any{"state": state, "action": t.Action, "requestId": t.Request, "receiptRef": t.Key,
 				"revisionId": item.RevisionID, "reviewBatchId": batch, "publicationState": item.State}
-			if item.SemanticID != "" {
-				fields["semanticId"] = item.SemanticID
+			if t.SemanticID != "" {
+				fields["semanticId"] = t.SemanticID
 			}
 			if item.PublicationSetID != "" {
 				fields["publicationSetId"] = item.PublicationSetID
@@ -205,4 +214,22 @@ func (s *Store) ObserveBatchReview(ctx context.Context, scope analysis.Scope, id
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func restoreBatchReviewChoice(ctx context.Context, tx pgx.Tx, id string, ordinal int, offer string) error {
+	_, err := tx.Exec(ctx, `update ouf_mcp.analysis_batch_column b
+		set state='CLOSED',decision_reason=null,offered_batch_id=null,
+			refused_candidates=array_remove(b.refused_candidates,d.candidate_id::text)
+		from ouf_mcp.analysis_batch_choice d
+		where b.analysis_id=$1 and b.ordinal=$2 and d.analysis_id=b.analysis_id
+		and d.ordinal=b.ordinal and d.command_key=b.choice_key`, id, ordinal)
+	if err != nil || offer == "" {
+		return err
+	}
+	_, err = tx.Exec(ctx, `with retired as (
+		update ouf_mcp.analysis_batch_offer set retired_at=transaction_timestamp()
+		where analysis_id=$1 and batch_id=$2 and retired_at is null returning batch_id
+	) update ouf_mcp.analysis_batch_column b set offered_batch_id=null from retired r
+	where b.analysis_id=$1 and b.offered_batch_id=r.batch_id and b.state='READY_FOR_DECISION'`, id, offer)
+	return err
 }
