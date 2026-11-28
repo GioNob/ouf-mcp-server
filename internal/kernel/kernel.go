@@ -384,7 +384,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 				if !batch || !start.Initialized {
 					return batchReadFailure(analysisID, analysis.ErrScope), nil, nil
 				}
-				return server.callBatchReview(ctx, c, checksum, input, service, i, start), nil, nil
+				return server.callBatchReview(ctx, c, server.manifestChecksum, input, service, i, start), nil, nil
 			}
 			if analysisID != "" && c.ToolName == "semantic.review.prepare" {
 				i, ok := ctx.Value(identityKey{}).(requestIdentity)
@@ -396,7 +396,7 @@ func registerGovernedTool(server *workflowServer, c manifest.Capability, snapsho
 						return batchReadFailure(analysisID, err), nil, nil
 					}
 					if batch && start.Initialized && i.ActorType == "HUMAN" && i.Delegation != "" {
-						return server.prepareBatchReview(ctx, c, checksum, input, service), nil, nil
+						return server.prepareBatchReview(ctx, c, server.manifestChecksum, input, service), nil, nil
 					}
 				}
 			}
