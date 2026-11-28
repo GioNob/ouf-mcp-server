@@ -251,7 +251,25 @@ func (waitOwnerClock) ReadOwnerObservation(ctx context.Context, _ orchestration.
 	return orchestration.OwnerObservation{}, ctx.Err()
 }
 
+type waitDelayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (ctx waitDelayedDeadlineContext) Deadline() (time.Time, bool) {
+	return ctx.deadline, true
+}
+
 func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
+	testBatchReviewWaitExpiry(t, false)
+}
+
+func TestBatchReviewWaitExpiresBeforeOwnerReadResponse(t *testing.T) {
+	testBatchReviewWaitExpiry(t, true)
+}
+
+func testBatchReviewWaitExpiry(t *testing.T, lateResponse bool) {
+	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
 		snapshot, err := manifest.Load()
 		if err != nil {
@@ -268,6 +286,7 @@ func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
 		id := strings.Repeat("a", 64)
 		args := nextstep.Object{"analysisId": id, "projection": analysis.BatchMode, "reviewBatchId": batch}
 		expiry := time.Now().Add(2 * time.Second)
+		responseAt := expiry.Add(time.Millisecond)
 		deadline := expiry.Format(time.RFC3339Nano)
 		reads := make(chan error, 1)
 		for _, c := range snapshot.ToolEligible() {
@@ -286,12 +305,26 @@ func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
 				if !time.Now().Before(expiry) {
 					t.Error("owner read started after the THS deadline")
 				}
-				<-ctx.Done()
+				if lateResponse {
+					time.Sleep(time.Until(responseAt))
+				} else {
+					<-ctx.Done()
+				}
 				reads <- ctx.Err()
 				return &mcp.CallToolResult{StructuredContent: nextstep.Object{"reviewBatchId": batch, "state": "DECIDED"}}, nil
 			}}
 		}
-		ctx := context.WithValue(t.Context(), identityKey{}, requestIdentity{Identity: orchestration.Identity{
+		parent := t.Context()
+		wantReadErr := context.DeadlineExceeded
+		if lateResponse {
+			// Report an earlier deadline so wait inherits cancellation from the parent.
+			// Deliver that cancellation after the late response to make the select deterministic.
+			delayed, cancel := context.WithDeadline(parent, responseAt.Add(time.Millisecond))
+			defer cancel()
+			parent = waitDelayedDeadlineContext{Context: delayed, deadline: expiry.Add(-time.Nanosecond)}
+			wantReadErr = nil
+		}
+		ctx := context.WithValue(parent, identityKey{}, requestIdentity{Identity: orchestration.Identity{
 			PrincipalID: "reader", TenantID: "tenant", Delegation: "fixture-proof",
 		}})
 		issued := s.waits.signer.Issue(waitBinding(ctx), manifest.Rule{Action: "WAIT_FOR_HUMAN", Tool: read, Reason: nextstep.ReviewBatch, Decision: "APPROVE_EACH_ROW"},
@@ -306,6 +339,9 @@ func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		result := s.wait(ctx, &req, token)
+		if lateResponse && !time.Now().Equal(responseAt) {
+			t.Fatal("wait did not return when the late response arrived", time.Now())
+		}
 		body := ownerObject(result)
 		next := checkNext(t, nextContract(t), result)
 		if result.IsError || body["changed"] != true || body["observation"] != nil ||
@@ -316,8 +352,8 @@ func TestBatchReviewWaitExpiresDuringOwnerRead(t *testing.T) {
 		if !maps.Equal(reread, args) {
 			t.Fatal("expiry changed the batch selector", reread)
 		}
-		if err := <-reads; err != context.DeadlineExceeded {
-			t.Fatal("the in-flight read did not end at the THS deadline", err)
+		if err := <-reads; err != wantReadErr {
+			t.Fatalf("owner read context error = %v, want %v", err, wantReadErr)
 		}
 	})
 }
