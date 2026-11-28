@@ -62,6 +62,7 @@ func main() {
 		panic("unexpected analysis baseline")
 	}
 	current := batchChecksums(m)
+	batch := batchChecksums(historical("2a5d137781c8c5150a17fc1e93a912ad70924d80", "1.20.0-analysis-batch-v1"))
 	service := batchChecksums(historical("753d99fddaf635234d1752fe2ec89922a1cb6f37", "1.19.1-next-discovery-v1"))
 	discovery := batchChecksums(historical("de648f1300b39f3339413f88f55ad4854b4f4d52", "1.19.0-next-discovery-v1"))
 	history := batchChecksums(historical("2a25eb48566d06ae2952e2feb9fc619592fc7570", "1.18.2-history-limit-v1"))
@@ -86,16 +87,17 @@ func AnalysisPredecessor(current string) string {
 func AnalysisManifests(current string) []string {
 	switch current {
 	case %q:
-		return []string{current, %q, %q, %q, %q, %q}
+		return []string{current, %q, %q, %q, %q, %q, %q}
 	case %q:
-		return []string{current, %q, %q, %q, %q, %q}
+		return []string{current, %q, %q, %q, %q, %q, %q}
 	case %q:
-		return []string{current, %q, %q, %q, %q, %q}
+		return []string{current, %q, %q, %q, %q, %q, %q}
 	}
 	return []string{current}
 }
-`, m.Version, current[0], service[0], discovery[0], history[0], previous[0], legacy,
-		current[1], service[1], discovery[1], history[1], previous[1], legacy, current[2], service[2], discovery[2], history[2], previous[2], legacy)
+`, m.Version, current[0], service[0], batch[0], discovery[0], history[0], previous[0], legacy,
+		current[1], service[1], batch[1], discovery[1], history[1], previous[1], legacy,
+		current[2], service[2], batch[2], discovery[2], history[2], previous[2], legacy)
 	sourceBytes, err := format.Source([]byte(source))
 	if err != nil {
 		panic(err)

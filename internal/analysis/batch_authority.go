@@ -10,10 +10,9 @@ import (
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 )
 
-// BatchAuthorities keeps the proof supplied by the trusted Gateway in memory
-// for its signed lifetime. A fresh authorized plan/read can supply proof on any
-// replica. A digest of the identity context is stored on the analysis instead.
-type BatchAuthorities struct {
+// BatchDecisionAuthorities serves explicit HUMAN decision effects.
+// Work admitted by D-104 does not consult this cache.
+type BatchDecisionAuthorities struct {
 	mu     sync.Mutex
 	proofs map[string]batchAuthority
 }
@@ -28,7 +27,7 @@ func BatchAuthorityBinding(i orchestration.Identity) string {
 	return visibilityDigest(i, orchestration.AuthorizationDecision{})
 }
 
-func (a *BatchAuthorities) Observe(id string, i orchestration.Identity) {
+func (a *BatchDecisionAuthorities) Observe(id string, i orchestration.Identity) {
 	payload, mac, ok := strings.Cut(i.Delegation, ".")
 	if !ok || mac == "" || i.ActorType != "HUMAN" || !IdentityScope(i).Valid() || ValidateID(id) != nil {
 		return
@@ -61,7 +60,7 @@ func (a *BatchAuthorities) Observe(id string, i orchestration.Identity) {
 	a.proofs[id] = batchAuthority{identity: i, expires: expires, lastUsed: prior.lastUsed}
 }
 
-func (a *BatchAuthorities) prune(now time.Time) {
+func (a *BatchDecisionAuthorities) prune(now time.Time) {
 	for id, proof := range a.proofs {
 		if !proof.expires.After(now) {
 			delete(a.proofs, id)
@@ -69,7 +68,7 @@ func (a *BatchAuthorities) prune(now time.Time) {
 	}
 }
 
-func (a *BatchAuthorities) next(now time.Time) (string, orchestration.Identity, time.Time) {
+func (a *BatchDecisionAuthorities) next(now time.Time) (string, orchestration.Identity, time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.prune(now)

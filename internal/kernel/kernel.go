@@ -349,6 +349,7 @@ type identityKey struct{}
 type requestIdentity struct {
 	orchestration.Identity
 	CorrelationID, IdempotencyKey string
+	BatchStartProof               string
 }
 
 func registerGovernedTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
@@ -977,6 +978,11 @@ func modernOnly(next http.Handler) http.Handler {
 			http.Error(w, "invalid delegation context", http.StatusBadRequest)
 			return
 		}
+		startProof := r.Header.Values(analysis.BatchStartHeader)
+		if len(startProof) > 1 || len(r.Header.Get(analysis.BatchStartHeader)) > 16384 {
+			http.Error(w, "invalid batch start context", http.StatusBadRequest)
+			return
+		}
 		identity := requestIdentity{
 			Identity: orchestration.Identity{
 				Delegation:               delegation,
@@ -989,8 +995,9 @@ func modernOnly(next http.Handler) http.Handler {
 				Audience:                 r.Header.Get("X-OUF-Token-Audience"),
 				Scopes:                   strings.Fields(r.Header.Get("X-OUF-Granted-Scopes")),
 			},
-			CorrelationID:  r.Header.Get("X-Correlation-ID"),
-			IdempotencyKey: r.Header.Get("Idempotency-Key"),
+			CorrelationID:   r.Header.Get("X-Correlation-ID"),
+			IdempotencyKey:  r.Header.Get("Idempotency-Key"),
+			BatchStartProof: r.Header.Get(analysis.BatchStartHeader),
 		}
 		claims, err := trustedclaims.Read(r)
 		if err != nil {

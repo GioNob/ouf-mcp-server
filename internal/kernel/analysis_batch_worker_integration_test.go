@@ -2,7 +2,6 @@ package kernel
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,12 +258,12 @@ func TestBatchWorkerPostgresLongUnicodeHeaderGoesToDiscovery(t *testing.T) {
 }
 
 type batchCheckpointNotifications struct {
-	analysis.BatchWorkerStore
+	*postgres.Store
 	committed chan struct{}
 }
 
 func (s batchCheckpointNotifications) FinishBatchWork(ctx context.Context, scope analysis.Scope, job analysis.BatchWork, results []analysis.BatchWorkResult, pause, now time.Time) error {
-	if err := s.BatchWorkerStore.FinishBatchWork(ctx, scope, job, results, pause, now); err != nil {
+	if err := s.Store.FinishBatchWork(ctx, scope, job, results, pause, now); err != nil {
 		return err
 	}
 	select {
@@ -275,16 +274,11 @@ func (s batchCheckpointNotifications) FinishBatchWork(ctx context.Context, scope
 }
 
 func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
-	store, _, worker, _, i, id := batchWorkerFixture(t, 32)
+	f := newMandatePostgresFixture(t, 32, false)
+	f.dbAdvance(t, 30*time.Second)
 	committed := make(chan struct{}, 1)
-	worker.Store = batchCheckpointNotifications{BatchWorkerStore: store, committed: committed}
-	worker.Authorities = new(analysis.BatchAuthorities)
-	proof, err := json.Marshal(map[string]any{"v": 1, "purpose": "mcp-execute", "exp": time.Now().Add(30 * time.Second).Unix()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	i.Delegation = base64.RawURLEncoding.EncodeToString(proof) + ".fixture"
-	worker.Authorities.Observe(id, i)
+	worker := f.worker()
+	worker.Store = batchCheckpointNotifications{Store: f.store, committed: committed}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	done := make(chan struct{})
 	go func() {
@@ -302,7 +296,7 @@ func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
 			t.Fatalf("the queue did not complete without a client: %v", ctx.Err())
 		case <-committed:
 		}
-		read, err := store.ReadBatch(ctx, analysis.IdentityScope(i), id, sum, nil)
+		read, err := f.store.ReadBatch(ctx, f.scope, f.id, sum, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

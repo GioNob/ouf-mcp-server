@@ -97,6 +97,13 @@ func (s *workflowServer) decideAnalysisBatch(ctx context.Context, c analysis.Coo
 	if err != nil {
 		return batchReadFailure(id, err)
 	}
+	if c.Service.ObserveBatchDecision != nil || start.Mandate.StartRef != "" {
+		for n := range command.Decisions {
+			if command.Decisions[n].Action == "REFORMULATE" && command.Decisions[n].Rejection == "" {
+				command.Decisions[n].Rejection = "ANALYSIS_FIRST_ROUND_MANDATE_REQUIRED"
+			}
+		}
+	}
 	checksum, err := c.Manifest.Checksum()
 	if err != nil {
 		return batchReadFailure(id, err)
@@ -112,8 +119,8 @@ func (s *workflowServer) decideAnalysisBatch(ctx context.Context, c analysis.Coo
 		}
 		return result
 	}
-	if c.Service.ObserveBatchAuthority != nil {
-		c.Service.ObserveBatchAuthority(id, i)
+	if c.Service.ObserveBatchDecision != nil {
+		c.Service.ObserveBatchDecision(id, i)
 	}
 	body := nextstep.Object{"analysisId": receipt.AnalysisID, "batchId": receipt.BatchID,
 		"revision": receipt.Revision, "decisions": receipt.Decisions}

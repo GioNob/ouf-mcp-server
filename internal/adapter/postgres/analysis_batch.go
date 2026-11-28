@@ -25,11 +25,16 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 	var revision int64
 	var createdAt time.Time
 	var seeded bool
-	err := q.QueryRow(ctx, `select profile,manifest_checksum,revision,created_at,
-		exists(select from ouf_mcp.analysis_counts where analysis_id=$1)
-		from ouf_mcp.profile_analysis
-		where analysis_id=$1 and service_principal_id=$2 and principal_id=$3 and tenant_id=$4 and profile->>'mode'=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &seeded)
+	var m analysis.BatchMandate
+	err := q.QueryRow(ctx, `select p.profile,p.manifest_checksum,p.revision,p.created_at,
+		exists(select from ouf_mcp.analysis_counts where analysis_id=$1),
+		coalesce(m.start_ref::text,''),coalesce(m.start_binding,''),coalesce(m.mandate_ref::text,''),
+		coalesce(m.mandate_binding,''),coalesce(m.command_key::text,''),coalesce(m.generation,0),
+		coalesce(m.state,''),coalesce(m.reason_code,'')
+		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_batch_mandate m using(analysis_id)
+		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.profile->>'mode'=$5`,
+		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &seeded,
+		&m.StartRef, &m.StartBinding, &m.Ref, &m.Binding, &m.CommandKey, &m.Generation, &m.State, &m.Reason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchStart{}, analysis.ErrScope
 	}
@@ -41,7 +46,14 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		!pin.Profile.Valid() || id != analysis.BatchAnalysisID(scope, pin.Profile, pin.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrProfile
 	}
-	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Initialized: seeded}, nil
+	if m.State == "ACTIVE" {
+		view := m.BoundView()
+		if view.AnalysisID != id || view.ExpiresAtMs <= 0 {
+			return analysis.BatchStart{}, analysis.ErrProfile
+		}
+		m.Version = view.Version
+	}
+	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Seeded: seeded, Mandate: m}, nil
 }
 
 func (s *Store) ReadBatchStart(ctx context.Context, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
@@ -58,6 +70,18 @@ func (s *Store) LookupBatchStartCommand(ctx context.Context, scope analysis.Scop
 }
 
 func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checksum, key, intent string, start analysis.BatchStart) (analysis.BatchStart, error) {
+	return s.saveBatchStart(ctx, scope, checksum, key, intent, start, analysis.BatchMandate{})
+}
+
+func (s *Store) SaveBatchMandateStart(ctx context.Context, scope analysis.Scope, checksum, key, intent string, start analysis.BatchStart, mandate analysis.BatchMandate) (analysis.BatchStart, error) {
+	if mandate.CommandKey != key || !analysis.ValidBatchAttempt(mandate.StartRef) || !analysis.ValidBatchHash(start.Epoch) ||
+		mandate.Generation != 1 || mandate.StartBinding == "" {
+		return analysis.BatchStart{}, analysis.ErrInvalid
+	}
+	return s.saveBatchStart(ctx, scope, checksum, key, intent, start, mandate)
+}
+
+func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checksum, key, intent string, start analysis.BatchStart, mandate analysis.BatchMandate) (analysis.BatchStart, error) {
 	if !scope.Valid() || !start.Profile.Valid() || start.ID != analysis.BatchAnalysisID(scope, start.Profile, start.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrInvalid
 	}
@@ -87,9 +111,30 @@ func (s *Store) SaveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		if retained.Authority != "" && retained.Authority != start.Authority {
 			return analysis.View{}, analysis.ErrScope
 		}
-		if !retained.Initialized {
+		if !retained.Seeded {
 			if err = seedBatchColumns(ctx, tx, scope, checksum, start); err != nil {
 				return analysis.View{}, err
+			}
+		}
+		if mandate.StartRef != "" {
+			if retained.Mandate.StartRef != "" {
+				if retained.Mandate.StartRef != mandate.StartRef || retained.Mandate.CommandKey != key ||
+					retained.Mandate.Generation != mandate.Generation || retained.Mandate.StartBinding != mandate.StartBinding {
+					return analysis.View{}, analysis.ErrConflict
+				}
+			} else {
+				tag, err := tx.Exec(ctx, `insert into ouf_mcp.analysis_batch_mandate
+					(analysis_id,start_ref,generation,command_key,start_binding,control_due)
+					select $1,$2,$3,$4,$5,clock_timestamp()+interval '65 seconds'
+					where not exists(select from ouf_mcp.analysis_batch_column where analysis_id=$1
+						and (work_stage<>'PUBLISHED' or retry_attempts<>0 or fence is not null))`,
+					start.ID, mandate.StartRef, mandate.Generation, key, mandate.StartBinding)
+				if err != nil {
+					return analysis.View{}, err
+				}
+				if tag.RowsAffected() != 1 {
+					return analysis.View{}, analysis.ErrConflict
+				}
 			}
 		}
 		return analysis.View{ID: retained.ID, Profile: retained.Profile, Revision: retained.Revision, Epoch: retained.Epoch}, nil

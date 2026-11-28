@@ -52,7 +52,7 @@ func TestBatchStartRetainsModeAndSharesNoLegacyAnalysis(t *testing.T) {
 	if _, err := store.PlanAnalysis(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
-	start := analysis.BatchStart{ID: analysis.BatchAnalysisID(scope, profile, ""), Profile: profile, Initialized: true}
+	start := analysis.BatchStart{ID: analysis.BatchAnalysisID(scope, profile, ""), Profile: profile, Seeded: true}
 	saveBatchFixturePreview(t, ctx, store, scope, checksum, start)
 	key, intent := uuid.NewString(), analysis.Digest([]string{analysis.BatchMode, profile.AssetID, profile.ProfileID, profile.SchemaHash})
 	saved, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start)

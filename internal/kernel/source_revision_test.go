@@ -154,11 +154,14 @@ func revisionSession(t *testing.T, service *orchestration.Service, scope string)
 	return revisionSessionForScope(t, service, analysis.Scope{Service: "ouf-chatgpt", Principal: "user-a", Tenant: "tenant-a"}, scope)
 }
 
-func revisionSessionForScope(t *testing.T, service *orchestration.Service, identity analysis.Scope, grantedScopes string) *mcp.ClientSession {
+func revisionSessionForScope(t *testing.T, service *orchestration.Service, identity analysis.Scope, grantedScopes string, wrap ...func(http.Handler) http.Handler) *mcp.ClientSession {
 	t.Helper()
 	handler, err := NewGovernedHTTPHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, middleware := range wrap {
+		handler = middleware(handler)
 	}
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, v := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Delegation": "human-proof", "X-OUF-Service-Principal": identity.Service, "X-OUF-Principal-ID": identity.Principal, "X-OUF-Tenant-ID": identity.Tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": grantedScopes} {

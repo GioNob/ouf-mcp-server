@@ -73,3 +73,22 @@ La colonna additiva `analysis_column.published_first` e il relativo indice danno
 L’identità del piano include il digest di `BundleID` e `BundleVersion`. Ogni `replanOf` copia gli input persistiti sotto il lock della riga sorgente e crea i task e la ricevuta del comando in una transazione. Restano applicabili i limiti per task, colonne, argomenti e capacità complessiva del piano. La vista storica espone i contatori del piano originale. Per il formato precedente il server verifica l’epoca del lotto dalla decisione di ammissione registrata. I tentativi locali di ripianificazione seguono la retention ordinaria delle ricevute.
 
 Nel nuovo piano i figli derivati restano esclusi dalla vista e dal budget delle chiamate fino alla conferma del lotto padre. La transazione che registra l’esito attiva i figli prodotti dal lotto e scarta gli altri input sospesi nelle sue colonne. Ogni split confermato genera i propri figli quando termina.
+## Mandato D-104 per BATCH_V1
+
+Il profilo è facoltativo. Configurare tutte le variabili del profilo per abilitare l'avvio e il worker del primo giro.
+
+| Variabile | Valore |
+| --- | --- |
+| `MCP_ANALYSIS_BATCH_GATEWAY_ENDPOINT` | Origine HTTPS del listener Gateway D-104 |
+| `MCP_ANALYSIS_BATCH_GATEWAY_CA_FILE` | CA che verifica il certificato del listener Gateway |
+| `MCP_ANALYSIS_BATCH_WORKLOAD_CERT_FILE` e `MCP_ANALYSIS_BATCH_WORKLOAD_KEY_FILE` | File del certificato e della chiave mTLS del workload MCP che il Gateway riconosce |
+| `MCP_ANALYSIS_BATCH_STATE_LISTEN` | Indirizzo e porta del listener mTLS privato per la prova di lavoro |
+| `MCP_ANALYSIS_BATCH_STATE_CERT_FILE` e `MCP_ANALYSIS_BATCH_STATE_KEY_FILE` | File dell'identità TLS del listener MCP |
+| `MCP_ANALYSIS_BATCH_STATE_CA_FILE` | CA del certificato client usato dal Gateway per interrogare lo stato MCP |
+| `MCP_ANALYSIS_BATCH_STATE_GATEWAY_CERT_SHA256` | SHA-256 esadecimale del certificato client Gateway in DER |
+
+Il profilo Gateway `mcpState.url` indica l'URL HTTPS del listener MCP con path `/internal/analysis-batch/v1/state`. Il listener richiede la verifica della catena e del certificato client configurato. Su Linux la prova richiede un orologio sincronizzato e la lettura dello stato del kernel tramite `adjtimex`.
+
+La migrazione 030 conserva i binding del Gateway e i checkpoint MCP. Il Gateway autentica il comando interattivo iniziale con `X-OUF-Analysis-Batch-Start`. La prova di avvio resta nella richiesta. Il campo `schemaHash` di `source.analysis.plan(BATCH_V1)` usa 64 caratteri esadecimali minuscoli. Il profilo verificato Onboarding conserva il prefisso `sha256:`.
+
+Il mandato abilita la ricerca pubblicata e la prima discovery, incluse le due letture di discovery. La riformulazione richiede una nuova autorizzazione di lavoro. Le decisioni esplicite di adozione, proposta ed esclusione restano sul percorso HUMAN.

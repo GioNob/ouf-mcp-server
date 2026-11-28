@@ -73,7 +73,7 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		return analysis.BatchRead{}, err
 	}
 	out := analysis.BatchRead{BatchStart: start, Offer: analysis.BatchOffer{AnalysisID: id}}
-	if !start.Initialized {
+	if !start.Seeded {
 		out.Counts = analysis.Counts{Total: start.Profile.ColumnCount, Pending: start.Profile.ColumnCount}
 		out.Phase, out.Reason = "BLOCKED", "ANALYSIS_BATCH_NOT_AVAILABLE"
 		return out, nil
@@ -93,7 +93,7 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		return out, nil
 	}
 	if pack != nil {
-		if err = readOrCreateBatchOffer(ctx, tx, &out.Offer, start.Revision, pack); err != nil {
+		if err = readOrCreateBatchOffer(ctx, tx, &out.Offer, start.Revision, start.Mandate.StartRef != "", pack); err != nil {
 			return out, err
 		}
 	}
@@ -151,7 +151,7 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 	return out, err
 }
 
-func readOrCreateBatchOffer(ctx context.Context, tx pgx.Tx, offer *analysis.BatchOffer, revision int64, pack func(analysis.BatchOffer) ([]analysis.BatchOfferItem, error)) error {
+func readOrCreateBatchOffer(ctx context.Context, tx pgx.Tx, offer *analysis.BatchOffer, revision int64, mandated bool, pack func(analysis.BatchOffer) ([]analysis.BatchOfferItem, error)) error {
 	var raw []byte
 	id := offer.AnalysisID
 	err := tx.QueryRow(ctx, batchActiveOfferSQL, id).Scan(&offer.ID, &offer.Revision, &raw)
@@ -164,7 +164,7 @@ func readOrCreateBatchOffer(ctx context.Context, tx pgx.Tx, offer *analysis.Batc
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	items, err := batchReadyColumns(ctx, tx, id)
+	items, err := batchReadyColumns(ctx, tx, id, mandated)
 	if len(items) == 0 || err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func readOrCreateBatchOffer(ctx context.Context, tx pgx.Tx, offer *analysis.Batc
 	return err
 }
 
-func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.BatchOfferItem, error) {
+func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string, mandated bool) ([]analysis.BatchOfferItem, error) {
 	rows, err := tx.Query(ctx, batchReadyColumnsSQL, id)
 	if err != nil {
 		return nil, err
@@ -241,7 +241,9 @@ func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Ba
 		} else {
 			col.ReasonCode = "DISCOVERY_NO_CANDIDATES"
 		}
-		if col.RemainingAttempts > 0 {
+		if mandated {
+			col.RemainingAttempts = 0
+		} else if col.RemainingAttempts > 0 {
 			col.Allowed = append(col.Allowed, "REFORMULATE")
 		} else {
 			col.ReasonCode = "REFORMULATION_BUDGET_EXHAUSTED"
@@ -267,7 +269,7 @@ func (s *Store) ReadBatchColumn(ctx context.Context, scope analysis.Scope, id, c
 	if err != nil {
 		return out, item, err
 	}
-	if !start.Initialized {
+	if !start.Seeded {
 		return out, item, analysis.ErrScope
 	}
 	var raw []byte

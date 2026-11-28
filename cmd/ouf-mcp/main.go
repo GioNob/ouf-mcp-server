@@ -313,8 +313,13 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 	}
 	routedGateway := operational.RoutingGateway{Remote: gatewayClient}
 	service := &orchestration.Service{RequireDelegation: true, Auth: authCache, Admission: store, Gateway: routedGateway, Audit: store, FingerprintKey: fingerprintKey}
-	authorities := new(analysis.BatchAuthorities)
-	service.ObserveBatchAuthority = authorities.Observe
+	mandates, err := configureBatchMandates(ctx, logger, store, checksum)
+	if err != nil {
+		logger.Error("batch mandate installation failed", "error", err)
+		os.Exit(1)
+	}
+	authorities := new(analysis.BatchDecisionAuthorities)
+	service.ObserveBatchDecision = authorities.Observe
 	if err := configureReprocessing(service, checksum); err != nil {
 		logger.Error("invalid semantic reprocessing configuration")
 		os.Exit(1)
@@ -350,8 +355,16 @@ func runServer(ctx context.Context, logger *slog.Logger, databaseURL, addr strin
 		logger.Error("kernel initialization failed", "error", err)
 		os.Exit(1)
 	}
-	worker := analysis.BatchWorker{Store: store, Service: service, Manifest: snapshot, Authorities: authorities}
-	go worker.Run(ctx, logger)
+	worker := analysis.BatchWorker{Store: store, Service: service, Manifest: snapshot}
+	if mandates != nil {
+		worker.Mandates = mandates
+		next := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(analysis.WithBatchMandateGateway(r.Context(), mandates)))
+		})
+		go worker.Run(ctx, logger)
+	}
+	go worker.RunDecisionEffects(ctx, logger, authorities)
 	metrics := observability.NewRegistry()
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", metrics.Instrument("mcp", handler))
