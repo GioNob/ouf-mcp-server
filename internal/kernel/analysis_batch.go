@@ -61,7 +61,10 @@ func batchInput(tool string, args nextstep.Object) bool {
 	case "source.file.preview", "source.analysis.plan":
 		return args["mode"] == analysis.BatchMode
 	case "source.analysis.decide":
-		return true
+		// A request without a usable analysis selector gets the common tool
+		// validation result, including next for clients that only read text.
+		id, _ := args["analysisId"].(string)
+		return analysis.ValidateID(id) == nil
 	case "source.analysis.read":
 		return args["view"] == "BATCH" || args["view"] == "CANDIDATES"
 	case "semantic.approval.request", "semantic.proposal.read":
@@ -81,20 +84,6 @@ func legacyInputForms(forms []string) []string {
 		legacy = append(legacy, form)
 	}
 	return legacy
-}
-
-func uniqueDecisionOrdinals(args nextstep.Object) bool {
-	decisions, _ := args["decisions"].([]any)
-	seen := make(map[float64]bool, len(decisions))
-	for _, decision := range decisions {
-		item, _ := decision.(nextstep.Object)
-		ordinal, ok := item["ordinal"].(float64)
-		if !ok || seen[ordinal] {
-			return false
-		}
-		seen[ordinal] = true
-	}
-	return true
 }
 
 func markBatchResult(result *mcp.CallToolResult) *mcp.CallToolResult {

@@ -39,7 +39,8 @@ func TestProfileAnalysisBatchPostgresOfferQueryPlan(t *testing.T) {
 	if _, err = store.SaveBatchStart(ctx, scope, checksum, uuid.NewString(), analysis.Digest(profile), start); err != nil {
 		t.Fatal(err)
 	}
-	for _, first := range []int{0, 990} {
+	checkReady := func(first int) {
+		t.Helper()
 		_, err := store.pool.Exec(ctx, `update ouf_mcp.analysis_batch_column set state=
 			case when ordinal between $2::int and $2::int+9 then 'READY_FOR_DECISION' else 'PENDING' end
 			where analysis_id=$1`, id, first)
@@ -51,11 +52,28 @@ func TestProfileAnalysisBatchPostgresOfferQueryPlan(t *testing.T) {
 		}
 		plan := explainBatchQuery(t, ctx, store, batchReadyColumnsSQL, id)
 		indexes := checkBatchPlan(t, plan, 8)
-		if !slices.Contains(indexes, "analysis_batch_column_offer") || !slices.Contains(indexes, "analysis_column_pkey") {
+		if !slices.Contains(indexes, "analysis_batch_column_offer") || !slices.Contains(indexes, "analysis_column_pkey") ||
+			!slices.Contains(indexes, "analysis_reformulation_budget_pkey") {
 			t.Fatalf("ordinal %d used %v", first, indexes)
 		}
 		t.Logf("ordinal %d: %d rows, %v, %d shared hit blocks", first, plan.Rows, indexes, plan.Hits)
 	}
+	checkReady(0)
+	checkReady(990)
+	// Include one relevant budget and many unrelated profiles to exercise the
+	// same lookup against a populated budget table.
+	_, err = store.pool.Exec(ctx, `insert into ouf_mcp.analysis_reformulation_budget
+		(service_principal_id,principal_id,tenant_id,asset_id,profile_id,ordinal,used)
+		select $1::text,$2::text,$3::text,$4::uuid,gen_random_uuid(),0,1 from generate_series(1,3000)
+		union all select $1,$2,$3,$4,$5,990,1`,
+		scope.Service, scope.Principal, scope.Tenant, profile.AssetID, profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.pool.Exec(ctx, `analyze ouf_mcp.analysis_reformulation_budget`); err != nil {
+		t.Fatal(err)
+	}
+	checkReady(990)
 	// The active lookup must stay bounded even with retired offers.
 	_, err = store.pool.Exec(ctx, `insert into ouf_mcp.analysis_batch_offer(analysis_id,batch_id,revision,items,retired_at)
 		select $1,gen_random_uuid(),n,'[{}]'::jsonb,case when n<3000 then now() end from generate_series(0,3000) as n`, id)

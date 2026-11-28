@@ -97,7 +97,7 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
-	BatchDiscovery                                                                   bool
+	BatchDiscovery                                                                  bool
 	ColumnDecision                                                                  *ColumnDecision
 	CallsPerMinute                                                                  int
 	StatusRead                                                                      bool
@@ -215,6 +215,9 @@ type Invocation struct {
 	// DiscoveryAdmissionKey identifies one fenced worker attempt at MCP.
 	// Semantic still receives the stable key carried by the discovery command.
 	DiscoveryAdmissionKey string
+	// BatchEffectFence reserves one MCP attempt for the worker. Semantic
+	// receives the stable effect identity in IdempotencyKey and commandKey.
+	BatchEffectFence string
 	// BatchRoute identifies the worker route sharing the owner retry clock.
 	BatchRoute string
 
@@ -339,6 +342,15 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.DiscoveryAdmissionKey != "" && (!discoveryCommand || in.Owner != "semantic" || in.Identity.ActorType != "HUMAN" || uuid.Validate(in.DiscoveryAdmissionKey) != nil) {
 		return Result{}, errors.New("INVALID_DISCOVERY_ADMISSION_KEY")
 	}
+	if in.BatchEffectFence != "" {
+		var command struct{ CommandKey string }
+		if in.Owner != "semantic" || in.OperationClass != "COMMAND" || in.Identity.ActorType != "HUMAN" ||
+			(in.CapabilityID != "ouf.semantic.discovery.adopt" && in.CapabilityID != "ouf.semantic.propose") ||
+			uuid.Validate(in.BatchEffectFence) != nil || uuid.Validate(in.IdempotencyKey) != nil ||
+			json.Unmarshal(in.Arguments, &command) != nil || command.CommandKey != in.IdempotencyKey {
+			return Result{}, errors.New("INVALID_BATCH_EFFECT_BINDING")
+		}
+	}
 	if discoveryCommand {
 		var command struct {
 			IdempotencyKey string `json:"idempotencyKey"`
@@ -402,6 +414,9 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	if in.DiscoveryAdmissionKey != "" {
 		admissionKey = "analysis-batch:" + in.DiscoveryAdmissionKey
 	}
+	if in.BatchEffectFence != "" {
+		admissionKey = "analysis-batch-effect:" + in.BatchEffectFence
+	}
 	admitted, err := s.Admission.Reserve(ctx, AdmissionRequest{
 		BatchDiscovery: in.DiscoveryAdmissionKey != "",
 		CallsPerMinute: s.AdmissionCallsPerMinute, StatusRead: statusRead, InternalWaitRead: in.InternalWaitRead,
@@ -442,7 +457,7 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 	selector := observationSelector(s.FingerprintKey, in.CapabilityID, in.OperationClass, in.Arguments)
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	uncertainCommand := in.CapabilityID == "ouf.semantic.discovery.adopt" || in.CapabilityID == HandoffIssueCapability
+	uncertainCommand := in.CapabilityID == "ouf.semantic.discovery.adopt" || in.CapabilityID == HandoffIssueCapability || in.BatchEffectFence != ""
 	if uncertainCommand && callErr == nil && response.Status >= 500 {
 		// A Gateway failure after forwarding cannot establish whether the owner committed.
 		callErr = ErrIdempotencyOutcomeUnknown
@@ -454,8 +469,8 @@ func (s Service) Call(ctx context.Context, in Invocation) (Result, error) {
 		if permit != nil && s.Audit != nil {
 			_ = s.Audit.Audit(ctx, AuditEvent{EventType: "SEMANTIC_REPROCESSING_OUTCOME_UNCERTAIN", Identity: in.Identity, AttemptID: admitted.AttemptID, ManifestChecksum: in.ManifestChecksum, OutcomeCode: "OWNER_OUTCOME_UNCERTAIN", AuthorizationDecisionRef: decision.DecisionRef, PermittedDetailLevel: decision.PermittedDetailLevel})
 		}
-		if in.CapabilityID == "ouf.semantic.discovery.adopt" {
-			if err := s.Admission.Reconcile(finishCtx, admitted.AttemptID, Cost{}, AttemptOutcome{Uncertain: true, Observation: observation, ObservationSelector: selector}); err != nil {
+		if in.CapabilityID == "ouf.semantic.discovery.adopt" || in.BatchEffectFence != "" {
+			if err := s.Admission.Reconcile(finishCtx, admitted.AttemptID, Cost{}, AttemptOutcome{Uncertain: true, Observation: observation, ObservationSelector: selector, BatchRoute: in.BatchRoute}); err != nil {
 				return Result{Observation: observation, AttemptID: admitted.AttemptID}, err
 			}
 		}

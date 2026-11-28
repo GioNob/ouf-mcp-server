@@ -155,13 +155,18 @@ const batchWorkerScopes = "ouf.managed-source.preview ouf.semantic.search ouf.se
 
 func batchWorkerFixture(t *testing.T, width int) (*postgres.Store, string, analysis.BatchWorker, *batchWorkerOwner, orchestration.Identity, string) {
 	t.Helper()
+	return batchWorkerFixtureWithScopes(t, width, batchWorkerScopes)
+}
+
+func batchWorkerFixtureWithScopes(t *testing.T, width int, scopes string) (*postgres.Store, string, analysis.BatchWorker, *batchWorkerOwner, orchestration.Identity, string) {
+	t.Helper()
 	dsn := isolatedSummaryTestDSN(t)
 	store, snapshot := summaryTestStore(t, dsn)
 	owner := &batchWorkerOwner{residuals: 2, requests: map[string]string{}, intents: map[string]string{}}
 	service := &orchestration.Service{RequireDelegation: true, Auth: &batchProfileAuth{}, Admission: store, Gateway: owner, FingerprintKey: make([]byte, 32)}
 	worker := analysis.BatchWorker{Store: store, Service: service, Manifest: snapshot}
 	i := orchestration.Identity{ServicePrincipalID: "ouf-chatgpt", PrincipalID: "worker-fixture", TenantID: "tenant", ActorType: "HUMAN", Delegation: "human-proof",
-		Issuer: "issuer", Audience: "gateway", AuthenticationContextRef: "1", Scopes: strings.Fields(batchWorkerScopes),
+		Issuer: "issuer", Audience: "gateway", AuthenticationContextRef: "1", Scopes: strings.Fields(scopes),
 		// Match the trusted HTTP claims in revisionSessionForScope.
 		Claims: &orchestration.IdentityClaims{ExternalRoleRefs: []string{}, Acr: "1"}}
 	scope := analysis.IdentityScope(i)
@@ -388,7 +393,7 @@ func TestBatchWorkerPostgresExhaustionSurvivesHoursAndRestart(t *testing.T) {
 	restartedService := *worker.Service
 	restartedService.Admission = reopened
 	worker.Store, worker.Service = reopened, &restartedService
-	now := time.Now().Add(13*time.Hour)
+	now := time.Now().Add(13 * time.Hour)
 	worker.Now = func() time.Time { return now }
 	batchWorkerDrain(t, worker, i, id)
 	var attempts int
@@ -528,7 +533,7 @@ func TestBatchWorkerPostgresConcurrentDispatch(t *testing.T) {
 	}()
 	select {
 	case <-owner.entered:
-	case <-time.After(5*time.Second):
+	case <-time.After(5 * time.Second):
 		close(owner.release)
 		t.Fatal("first worker did not reach the owner")
 	}
@@ -543,6 +548,75 @@ func TestBatchWorkerPostgresConcurrentDispatch(t *testing.T) {
 	batchWorkerDrain(t, other, i, id)
 	if owner.publishedCalls != 1 || owner.commandCalls != 2 || len(owner.requests) != 2 {
 		t.Fatalf("expected one published dispatch and one command per residual, got %d published, %d commands and %d requests", owner.publishedCalls, owner.commandCalls, len(owner.requests))
+	}
+}
+
+type pausedBatchDispatch struct {
+	*postgres.Store
+	entered chan uuid.UUID
+	release chan struct{}
+}
+
+func (s pausedBatchDispatch) Dispatch(ctx context.Context, id uuid.UUID, backend string, lease time.Duration, expected int64) error {
+	s.entered <- id
+	select {
+	case <-s.release:
+		return s.Store.Dispatch(ctx, id, backend, lease, expected)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestBatchWorkerPostgresRejectsDispatchFromSupersededLease(t *testing.T) {
+	store, dsn, first, owner, identity, id := batchWorkerFixture(t, 1)
+	assertSupersededBatchDispatch(t, store, dsn, first, identity, id)
+	if owner.publishedCalls != 1 {
+		t.Fatalf("expected one published dispatch after takeover, got %d", owner.publishedCalls)
+	}
+}
+
+func assertSupersededBatchDispatch(t *testing.T, store *postgres.Store, dsn string, first analysis.BatchWorker, identity orchestration.Identity, id string) {
+	t.Helper()
+	otherStore, err := postgres.Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(otherStore.Close)
+	other := first
+	otherService := *other.Service
+	otherService.Admission = otherStore
+	other.Store, other.Service = otherStore, &otherService
+	paused := pausedBatchDispatch{Store: store, entered: make(chan uuid.UUID, 1), release: make(chan struct{})}
+	firstService := *first.Service
+	firstService.Admission = paused
+	first.Service = &firstService
+	now := time.Now().UTC()
+	first.Now = func() time.Time { return now }
+	other.Now = func() time.Time { return now.Add(analysis.BatchLease + time.Second) }
+	done := make(chan error, 1)
+	go func() {
+		_, err := first.RunOnce(t.Context(), id, identity, now.Add(time.Hour))
+		done <- err
+	}()
+	var supersededAttempt uuid.UUID
+	select {
+	case supersededAttempt = <-paused.entered:
+	case err := <-done:
+		t.Fatal("worker exited before transport admission", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not reach transport admission")
+	}
+	worked, takeoverErr := other.RunOnce(t.Context(), id, identity, now.Add(time.Hour))
+	close(paused.release)
+	if !worked || takeoverErr != nil {
+		t.Fatal("replacement worker could not dispatch", worked, takeoverErr)
+	}
+	if err := <-done; !errors.Is(err, analysis.ErrConflict) {
+		t.Fatal("superseded worker was allowed to advance", err)
+	}
+	var dispatchState string
+	if err := store.Pool().QueryRow(t.Context(), `select dispatch_state from ouf_mcp.tool_attempt where attempt_id=$1`, supersededAttempt).Scan(&dispatchState); err != nil || dispatchState != "NOT_DISPATCHED" {
+		t.Fatal("superseded attempt was marked dispatched", dispatchState, err)
 	}
 }
 

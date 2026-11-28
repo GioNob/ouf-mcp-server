@@ -30,7 +30,15 @@ const reformulationHistory = `, discovery as (
 	group by column_number,intent,analysis_id
 ), retained as (
 	select column_number,max(copies) as uses from copies group by column_number,intent
-) select column_number,sum(uses)::int as used from retained group by column_number`
+), batch as (
+	select c.ordinal as column_number,count(*) as uses
+	from budget_profile b join ouf_mcp.profile_analysis p using(service_principal_id,principal_id,tenant_id)
+	join ouf_mcp.analysis_batch_choice c using(analysis_id)
+	where p.profile->>'assetId'=b.asset and p.profile->>'profileId'=b.profile_id and c.action='REFORMULATE'
+	group by c.ordinal
+) select column_number,sum(uses)::int as used from (
+	select column_number,uses from retained union all select column_number,uses from batch
+) totals group by column_number`
 
 func lockProfileBudget(ctx context.Context, tx pgx.Tx, p analysis.Plan) error {
 	_, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1,0))`,

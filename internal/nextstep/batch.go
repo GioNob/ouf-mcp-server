@@ -103,6 +103,15 @@ func (e Engine) BatchPageNext(args Object, expired bool) Object {
 	return BatchBlock(BatchUnavailable)
 }
 
+func (e Engine) BatchDecisionReadNext(id, reason string) Object {
+	const read = "source.analysis.read"
+	args := Object{"analysisId": id}
+	if e.Valid != nil && e.Valid(read, args) {
+		return e.ownerCall(reason, read, args, nil)
+	}
+	return BatchBlock(reason)
+}
+
 // BatchNext projects the continuation for a batch analysis result.
 func (e Engine) BatchNext(tool string, input, obs Object, failed bool) Object {
 	if failed {

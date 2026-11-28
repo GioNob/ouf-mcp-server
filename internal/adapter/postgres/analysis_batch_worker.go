@@ -22,10 +22,12 @@ const extendBatchRoutePause = `insert into ouf_mcp.analysis_batch_route_pause(wo
 	on conflict(work_stage) do update set due_at=greatest(analysis_batch_route_pause.due_at,excluded.due_at)`
 
 const batchClaimHead = `with available as materialized (
-	select route.work_stage from (values ('PUBLISHED'),('REQUEST'),('STATUS'),('CANDIDATES')) route(work_stage)
-	where not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=route.work_stage and p.due_at>$2)
+	select route.work_stage from (values ('PUBLISHED','PUBLISHED'),('REQUEST','REQUEST'),('STATUS','STATUS'),
+		('CANDIDATES','CANDIDATES'),('REFORMULATE','REQUEST'),('ADOPT','ADOPT'),('PROPOSE','PROPOSE'),('DRAFT','DRAFT')) route(work_stage,owner_route)
+	where not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=route.owner_route and p.due_at>$2)
 	and not exists(select from ouf_mcp.analysis_batch_column live
-		where live.state='RUNNING' and live.fence is not null and live.due_at>$2 and live.work_stage=route.work_stage)
+		where live.state='RUNNING' and live.fence is not null and live.due_at>$2
+		and case when live.work_stage='REFORMULATE' then 'REQUEST' else live.work_stage end=route.owner_route)
 )
 select b.ordinal,b.state,b.work_stage,b.published_solo,coalesce(b.dispatch_fence::text,''),b.retry_attempts,b.retry_started_at
 from available r cross join lateral (
@@ -97,9 +99,11 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	rows, err := tx.Query(ctx, `with claimed as (
 		update ouf_mcp.analysis_batch_column set state='RUNNING',due_at=$3,fence=$4
 		where analysis_id=$1 and ordinal=any($2::int[])
-		returning ordinal,intent,retry_attempts,retry_started_at,owner_deadline,completed_count
+		returning ordinal,intent,retry_attempts,retry_started_at,owner_deadline,completed_count,choice_key
 	) select b.ordinal,b.intent,b.retry_attempts,b.retry_started_at,b.owner_deadline,b.completed_count,
-		coalesce(c.request_id::text,'') from claimed b join ouf_mcp.analysis_column c on c.analysis_id=$1 and c.ordinal=b.ordinal
+		coalesce(c.request_id::text,''),coalesce(d.effect_key::text,''),d.effect_arguments,coalesce(d.requested_revision_id::text,'')
+		from claimed b join ouf_mcp.analysis_column c on c.analysis_id=$1 and c.ordinal=b.ordinal
+		left join ouf_mcp.analysis_batch_choice d on d.analysis_id=$1 and d.ordinal=b.ordinal and d.command_key=b.choice_key
 		order by b.ordinal`, id, ordinals, work.LeaseUntil, work.Fence)
 	if err != nil {
 		return analysis.BatchWork{}, err
@@ -107,7 +111,8 @@ func (s *Store) ClaimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	work.Columns, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (analysis.BatchWorkColumn, error) {
 		var col analysis.BatchWorkColumn
 		var retryStarted, ownerEnd *time.Time
-		err := row.Scan(&col.Ordinal, &col.Intent, &col.RetryAttempts, &retryStarted, &ownerEnd, &col.CompletedCount, &col.RequestID)
+		err := row.Scan(&col.Ordinal, &col.Intent, &col.RetryAttempts, &retryStarted, &ownerEnd, &col.CompletedCount,
+			&col.RequestID, &col.EffectKey, &col.EffectArguments, &col.EffectRevision)
 		if retryStarted != nil {
 			col.RetryStarted = *retryStarted
 		}
@@ -159,17 +164,52 @@ func (s *Store) BeginBatchDispatch(ctx context.Context, job analysis.BatchWork, 
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `update ouf_mcp.analysis_batch_column b
-		set retry_attempts=retry_attempts+1,retry_started_at=coalesce(retry_started_at,$4),dispatch_fence=$2
+		set retry_attempts=retry_attempts+1,retry_started_at=coalesce(retry_started_at,$4),
+		dispatch_fence=case when $6 then b.dispatch_fence else $2 end,reconcile_fence=$2
 		where b.analysis_id=$1 and b.fence=$2 and b.ordinal=any($3::int[]) and b.state='RUNNING' and b.due_at>$4
-		and b.work_stage=$5 and b.dispatch_fence is distinct from b.fence
+		and b.work_stage=$5 and b.reconcile_fence is distinct from b.fence and b.dispatch_fence is distinct from b.fence
 		and b.retry_attempts<128 and (b.retry_started_at is null or b.retry_started_at+interval '24 hours'>$4)
-		and not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=b.work_stage and p.due_at>$4)
+		and not exists(select from ouf_mcp.analysis_batch_route_pause p where p.work_stage=$7 and p.due_at>$4)
 		and not (select stopped or integrity_hold from ouf_mcp.analysis_counts where analysis_id=$1 order by seq desc limit 1)`,
-		job.AnalysisID, job.Fence, ordinals, now, job.Stage)
+		job.AnalysisID, job.Fence, ordinals, now, job.Stage, job.ReconcileOnly, job.Route())
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != int64(len(ordinals)) {
+		return analysis.ErrConflict
+	}
+	return tx.Commit(ctx)
+}
+
+// Consume the lease's transport slot and mark the attempt dispatched in the
+// same transaction. Replacement claims lock the same checkpoint rows.
+func (s *Store) dispatchBatchAttempt(ctx context.Context, batch analysis.BatchDispatch, attempt uuid.UUID, backend string, lease time.Duration, expected int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `with owned as materialized (
+		select ordinal from ouf_mcp.analysis_batch_column
+		where analysis_id=$1 and ordinal=any($2::int[]) and fence=$3 and reconcile_fence=$3
+		and work_stage=$4 and state='RUNNING' and transport_fence is distinct from fence
+		order by ordinal for no key update
+	) update ouf_mcp.analysis_batch_column b set transport_fence=$3
+	from owned where b.analysis_id=$1 and b.ordinal=owned.ordinal and b.due_at>clock_timestamp()
+	and not (select stopped or integrity_hold from ouf_mcp.analysis_counts
+		where analysis_id=$1 order by seq desc limit 1)`,
+		batch.AnalysisID, batch.Ordinals, batch.Fence, batch.Stage)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 || tag.RowsAffected() != int64(len(batch.Ordinals)) {
+		return analysis.ErrConflict
+	}
+	tag, err = tx.Exec(ctx, markRunningSQL, attempt, backend, lease.String(), expected)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
 		return analysis.ErrConflict
 	}
 	return tx.Commit(ctx)
@@ -223,7 +263,15 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 		return err
 	}
 	var changed int
-	err = tx.QueryRow(ctx, finishBatchWorkSQL, job.AnalysisID, job.Fence, now, raw).Scan(&changed)
+	switch job.Stage {
+	case analysis.BatchAdopt, analysis.BatchPropose, analysis.BatchDraft:
+		changed, err = finishBatchDecisionEffect(ctx, tx, job, results[0], now)
+	default:
+		err = tx.QueryRow(ctx, finishBatchWorkSQL, job.AnalysisID, job.Fence, now, raw).Scan(&changed)
+		if err == nil && changed == 1 && job.Stage == analysis.BatchReformulate {
+			err = finishBatchReformulation(ctx, tx, job, results[0])
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -231,7 +279,7 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 		return analysis.ErrConflict
 	}
 	if !pause.IsZero() {
-		if _, err = tx.Exec(ctx, extendBatchRoutePause, job.Stage, pause); err != nil {
+		if _, err = tx.Exec(ctx, extendBatchRoutePause, job.Route(), pause); err != nil {
 			return err
 		}
 	}
@@ -240,7 +288,7 @@ func (s *Store) FinishBatchWork(ctx context.Context, scope analysis.Scope, job a
 			continue
 		}
 		_, err = tx.Exec(ctx, `insert into ouf_mcp.analysis_batch_traffic(work_stage,metric,observations) values($1,$2,1)
-			on conflict(work_stage,metric) do update set observations=analysis_batch_traffic.observations+1`, job.Stage, result.TrafficMetric)
+			on conflict(work_stage,metric) do update set observations=analysis_batch_traffic.observations+1`, job.Route(), result.TrafficMetric)
 		if err != nil {
 			return err
 		}

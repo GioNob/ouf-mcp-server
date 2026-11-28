@@ -91,6 +91,9 @@ func init() {
 	registerOwnerProducer(Engine.BatchPageNext, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 		return e.BatchPageNext(Object{"analysisId": "analysis", "view": "BATCH"}, false)
 	}})
+	registerOwnerProducer(Engine.BatchDecisionReadNext, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
+		return e.BatchDecisionReadNext("analysis", "ANALYSIS_CONTINUE")
+	}})
 	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 		return e.AnalysisSuccessorFallback("analysis")
 	}})

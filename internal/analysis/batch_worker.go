@@ -18,13 +18,17 @@ import (
 )
 
 const (
-	BatchPublished  = "PUBLISHED"
-	BatchRequest    = "REQUEST"
-	BatchStatus     = "STATUS"
-	BatchCandidates = "CANDIDATES"
-	BatchLease      = 20 * time.Second
-	batchBudget     = 24 * time.Hour
-	batchCallTime   = 4 * time.Second
+	BatchPublished   = "PUBLISHED"
+	BatchRequest     = "REQUEST"
+	BatchStatus      = "STATUS"
+	BatchCandidates  = "CANDIDATES"
+	BatchReformulate = "REFORMULATE"
+	BatchAdopt       = "ADOPT"
+	BatchPropose     = "PROPOSE"
+	BatchDraft       = "DRAFT"
+	BatchLease       = 20 * time.Second
+	batchBudget      = 24 * time.Hour
+	batchCallTime    = 4 * time.Second
 )
 
 type BatchWork struct {
@@ -32,26 +36,56 @@ type BatchWork struct {
 	Profile                                        Profile
 	LeaseUntil                                     time.Time
 	Columns                                        []BatchWorkColumn
+	ReconcileOnly                                  bool
+}
+
+type batchDispatchKey struct{}
+
+// BatchDispatch identifies the leased columns that back a transport attempt.
+type BatchDispatch struct {
+	AnalysisID, Fence, Stage string
+	Ordinals                 []int
+}
+
+func (j BatchWork) dispatchContext(ctx context.Context, ordinals []int) context.Context {
+	return context.WithValue(ctx, batchDispatchKey{}, BatchDispatch{
+		AnalysisID: j.AnalysisID, Fence: j.Fence, Stage: j.Stage, Ordinals: ordinals,
+	})
+}
+
+func BatchDispatchFromContext(ctx context.Context) (BatchDispatch, bool) {
+	dispatch, ok := ctx.Value(batchDispatchKey{}).(BatchDispatch)
+	return dispatch, ok
+}
+
+func (j BatchWork) Route() string {
+	if j.Stage == BatchReformulate {
+		return BatchRequest
+	}
+	return j.Stage
 }
 
 type BatchWorkColumn struct {
-	Ordinal, RetryAttempts int
-	Intent, RequestID      string
-	RetryStarted, OwnerEnd time.Time
-	CompletedCount         *int
+	Ordinal, RetryAttempts    int
+	Intent, RequestID         string
+	RetryStarted, OwnerEnd    time.Time
+	CompletedCount            *int
+	EffectKey, EffectRevision string
+	EffectArguments           []byte
 }
 
 type BatchWorkResult struct {
-	Ordinal                     int
-	Stage, State                string
-	Due, OwnerEnd, RetryStarted time.Time
-	RetryAttempts               int
-	Outcome                     Outcome
-	Candidates                  []BatchCandidate
-	EvidenceVersion             string
-	CompletedCount              *int
-	TrafficMetric               string
-	PublishedSolo               bool
+	Ordinal                            int
+	Stage, State                       string
+	Due, OwnerEnd, RetryStarted        time.Time
+	RetryAttempts                      int
+	Outcome                            Outcome
+	Candidates                         []BatchCandidate
+	EvidenceVersion                    string
+	CompletedCount                     *int
+	TrafficMetric                      string
+	PublishedSolo                      bool
+	EffectState, EffectCode, EffectRef string
 }
 
 type BatchWorkerStore interface {
@@ -59,6 +93,7 @@ type BatchWorkerStore interface {
 	BeginBatchDispatch(context.Context, BatchWork, []int, time.Time) error
 	FinishBatchWork(context.Context, Scope, BatchWork, []BatchWorkResult, time.Time, time.Time) error
 	BatchDiscoveryReceipt(context.Context, Scope, string, []byte) (orchestration.Result, error)
+	BatchDecisionAttempt(context.Context, Scope, string, string, []byte) (orchestration.Result, bool, error)
 }
 
 type BatchWorker struct {
@@ -183,6 +218,9 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 	if job.Stage == BatchPublished {
 		return w.published(ctx, i, checksum, job, limits)
 	}
+	if job.Stage == BatchAdopt || job.Stage == BatchPropose || job.Stage == BatchDraft {
+		return w.decisionEffect(ctx, i, checksum, job)
+	}
 	col := job.Columns[0]
 	if !col.OwnerEnd.IsZero() && !w.now().Before(col.OwnerEnd) {
 		return batchBlock(job, "DISCOVERY_WAIT_EXPIRED"), time.Time{}, nil
@@ -191,11 +229,18 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 	args, _ := json.Marshal(map[string]string{"requestId": col.RequestID})
 	admissionKey := ""
 	switch job.Stage {
-	case BatchRequest:
+	case BatchRequest, BatchReformulate:
 		tool = "semantic.discovery.request"
 		key := Digest([]any{BatchMode, IdentityScope(i), job.Profile.AssetID, job.Profile.ProfileID, col.Ordinal, 1})
+		ownerKey := "batch:" + key
+		if job.Stage == BatchReformulate {
+			if !CanonicalUUID(col.EffectKey) {
+				return batchBlock(job, InvalidOwner), time.Time{}, nil
+			}
+			ownerKey = col.EffectKey
+		}
 		args, _ = json.Marshal(map[string]any{"requestedArtifactType": "PROPERTY", "intent": col.Intent,
-			"preferredLanguages": limits.Languages, "idempotencyKey": "batch:" + key})
+			"preferredLanguages": limits.Languages, "idempotencyKey": ownerKey})
 		admissionKey = job.Fence
 		if job.PreviousFence != "" {
 			prior, e := w.Store.BatchDiscoveryReceipt(ctx, IdentityScope(i), job.PreviousFence, args)
@@ -239,11 +284,12 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 	if col.RetryAttempts >= MaxRetryAttempts || (!col.RetryStarted.IsZero() && !w.now().Before(col.RetryStarted.Add(batchBudget))) {
 		return batchBlock(job, "RETRY_BUDGET_EXHAUSTED"), time.Time{}, nil
 	}
-	if err := w.begin(ctx, job, []int{col.Ordinal}); err != nil {
+	ordinals := []int{col.Ordinal}
+	if err := w.begin(ctx, job, ordinals); err != nil {
 		return nil, time.Time{}, err
 	}
 	col = job.Columns[0]
-	r, callErr := w.call(ctx, i, checksum, job, tool, args, admissionKey, 0, 0, 0)
+	r, callErr := w.call(job.dispatchContext(ctx, ordinals), i, checksum, job, tool, args, admissionKey, 0, 0, 0)
 	if r.Observation.At.IsZero() && ctx.Err() != nil {
 		return nil, time.Time{}, ctx.Err()
 	}
@@ -254,7 +300,7 @@ func (w BatchWorker) execute(ctx context.Context, i orchestration.Identity, chec
 	if job.Stage == BatchCandidates {
 		result = batchCandidateResult(col, r.Body, r.Observation.At)
 	} else {
-		result = batchDiscoveryResult(col, job.Stage, r)
+		result = batchDiscoveryResult(col, job.Route(), r)
 	}
 	if !col.RetryStarted.IsZero() && !w.now().Before(col.RetryStarted.Add(batchBudget)) {
 		return batchBlock(job, "RETRY_BUDGET_EXHAUSTED"), time.Time{}, nil
@@ -312,7 +358,7 @@ func (w BatchWorker) call(ctx context.Context, i orchestration.Identity, checksu
 	return w.Service.Call(ctx, orchestration.Invocation{
 		Identity: i, ManifestChecksum: checksum, CapabilityID: cap.CapabilityID, AuthorizationCapabilityID: cap.RequiredAuthorization,
 		Owner: cap.Owner, OperationClass: cap.OperationClass, GatewayBindingRef: cap.GatewayBindingRef,
-		Arguments: args, DiscoveryAdmissionKey: admissionKey, BatchRoute: job.Stage, IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(),
+		Arguments: args, DiscoveryAdmissionKey: admissionKey, BatchRoute: job.Route(), IdempotencyKey: uuid.NewString(), CorrelationID: uuid.NewString(),
 		Window: orchestration.AdmissionWindow, Timeout: min(batchCallTime, time.Duration(cost.HardMaxElapsedMs)*time.Millisecond), RetryThreshold: orchestration.AdmissionRetryThreshold,
 		MaxRequestBytes: requestBytes, Maximum: orchestration.Cost{ToolCalls: 1, DistinctObjects: objects, ResultBytes: resultBytes},
 		CheckDecision: func(d orchestration.AuthorizationDecision) error {
@@ -373,7 +419,7 @@ func (w BatchWorker) published(ctx context.Context, i orchestration.Identity, ch
 	if err := w.begin(ctx, job, task.Columns); err != nil {
 		return nil, time.Time{}, err
 	}
-	r, callErr := w.call(ctx, i, checksum, job, BatchTool, task.Arguments, "", limits.RequestBytes, task.MaxBytes, task.MaxObjects)
+	r, callErr := w.call(job.dispatchContext(ctx, task.Columns), i, checksum, job, BatchTool, task.Arguments, "", limits.RequestBytes, task.MaxBytes, task.MaxObjects)
 	if r.Observation.At.IsZero() && ctx.Err() != nil {
 		return nil, time.Time{}, ctx.Err()
 	}

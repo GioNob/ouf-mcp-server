@@ -13,11 +13,20 @@ import (
 const batchActiveOfferSQL = `select batch_id::text,revision,items
 	from ouf_mcp.analysis_batch_offer where analysis_id=$1 and retired_at is null limit 1`
 
+const batchAvailableCandidates = `cross join lateral (
+	select case when cardinality(b.refused_candidates)=0 then b.candidates else (
+		select coalesce(jsonb_agg(candidate order by n),'[]')
+		from jsonb_array_elements(b.candidates) with ordinality as i(candidate,n)
+		where not ((candidate->>'candidateId')=any(b.refused_candidates))
+	) end as items
+) available`
+
 const batchReadyColumnsSQL = `select b.ordinal,c.header,b.metadata,b.attempt,b.intent,c.request_id::text,c.outcome->>'requestId',
 	(c.outcome->>'candidateCount')::int,c.outcome->>'state',
-	jsonb_path_query_array(b.candidates,'$[0 to 7]'),jsonb_array_length(b.candidates),b.evidence_version,b.round
+	jsonb_path_query_array(available.items,'$[0 to 7]'),jsonb_array_length(b.candidates),
+	jsonb_array_length(available.items),b.evidence_version,b.round,coalesce(b.decision_reason,''),coalesce(budget.used,0)
 	from (
-		select ordinal,metadata,attempt,intent,candidates,evidence_version,round
+		select ordinal,metadata,attempt,intent,candidates,evidence_version,round,decision_reason,refused_candidates
 		from ouf_mcp.analysis_batch_column
 		where analysis_id=$1 and state='READY_FOR_DECISION' and offered_batch_id is null
 		order by round,ordinal limit 8
@@ -25,6 +34,14 @@ const batchReadyColumnsSQL = `select b.ordinal,c.header,b.metadata,b.attempt,b.i
 		select header,request_id,outcome from ouf_mcp.analysis_column
 		where analysis_id=$1 and ordinal=b.ordinal limit 1
 	) c
+	` + batchAvailableCandidates + `
+	join ouf_mcp.profile_analysis p on p.analysis_id=$1
+	left join lateral (
+		select used from ouf_mcp.analysis_reformulation_budget
+		where (service_principal_id,principal_id,tenant_id,asset_id,profile_id,ordinal)=
+			(p.service_principal_id,p.principal_id,p.tenant_id,(p.profile->>'assetId')::uuid,(p.profile->>'profileId')::uuid,b.ordinal)
+		limit 1
+	) budget on true
 	order by b.round,b.ordinal`
 
 const batchCountsSQL = `select total,matched,ready,zero_count,blocked,pending,stopped,integrity_hold
@@ -36,7 +53,7 @@ func (s *Store) ReadBatch(ctx context.Context, scope analysis.Scope, id, checksu
 		return analysis.BatchRead{}, err
 	}
 	defer tx.Rollback(ctx)
-	// Serialize publication of an offer with other readers and the future
+	// Serialize publication of an offer with other readers and the
 	// decision transaction. Keep authorization and owner calls outside the lock.
 	if pack != nil {
 		if err = lockBatchAnalysis(ctx, tx, scope, id); err != nil {
@@ -93,11 +110,23 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 	if err != nil {
 		return out, err
 	}
+	var decisionHold string
+	if !ready && !working {
+		err = tx.QueryRow(ctx, `select reason_code from ouf_mcp.analysis_batch_hold
+			where analysis_id=$1 and work_stage in ('ADOPT','PROPOSE','DRAFT','REFORMULATE')
+			order by reason_code,ordinal limit 1`, id).Scan(&decisionHold)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return out, err
+		}
+		err = nil
+	}
 	switch {
 	case ready:
 		out.Phase, out.Reason = "RUNNING", "ANALYSIS_CONTINUE"
 	case working:
 		out.Phase, out.Reason = "RUNNING", "ANALYSIS_RUNNING"
+	case decisionHold != "":
+		out.Phase, out.Reason = "BLOCKED", decisionHold
 	case counts.Blocked == counts.Total:
 		out.Phase, out.Reason = "BLOCKED", "ANALYSIS_HELD"
 		err = tx.QueryRow(ctx, `select outcome->>'reasonCode' from ouf_mcp.analysis_column
@@ -183,11 +212,11 @@ func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Ba
 		var metadata, candidates []byte
 		var request, evidenceRequest *string
 		var count *int
-		var state string
-		var round, cached int
+		var state, decisionReason string
+		var round, cached, available, used int
 		col := &item.Item
 		if err = rows.Scan(&col.Ordinal, &col.Name, &metadata, &col.Attempt, &col.Intent, &request, &evidenceRequest,
-			&count, &state, &candidates, &cached, &item.EvidenceVersion, &round); err != nil {
+			&count, &state, &candidates, &cached, &available, &item.EvidenceVersion, &round, &decisionReason, &used); err != nil {
 			return nil, err
 		}
 		if len(items) == 0 {
@@ -202,11 +231,11 @@ func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Ba
 			!((state == "NO_CANDIDATES" && *count == 0) || (state == "CANDIDATES_READY" && *count > 0)) {
 			return nil, analysis.ErrProfile
 		}
-		col.RequestID, col.CandidateCount = *request, *count
+		col.RequestID, col.CandidateCount = *request, available
 		if !col.Valid() {
 			return nil, analysis.ErrProfile
 		}
-		col.RemainingAttempts = 1 + analysis.MaxColumnReformulations - col.Attempt
+		col.RemainingAttempts = max(0, analysis.MaxColumnReformulations-max(used, col.Attempt-1))
 		if col.CandidateCount > 0 {
 			col.Allowed = append(col.Allowed, "ADOPT")
 		} else {
@@ -216,6 +245,9 @@ func batchReadyColumns(ctx context.Context, tx pgx.Tx, id string) ([]analysis.Ba
 			col.Allowed = append(col.Allowed, "REFORMULATE")
 		} else {
 			col.ReasonCode = "REFORMULATION_BUDGET_EXHAUSTED"
+		}
+		if decisionReason != "" {
+			col.ReasonCode = decisionReason
 		}
 		col.Allowed = append(col.Allowed, "EXCLUDE", "PROPOSE")
 		items = append(items, item)
@@ -270,8 +302,9 @@ func (s *Store) ReadBatchColumn(ctx context.Context, scope analysis.Scope, id, c
 	var metadata, candidates []byte
 	col := &item.Item
 	err = tx.QueryRow(ctx, `select c.header,b.intent,b.metadata,
-		jsonb_path_query_array(b.candidates,'$[$start to $end]',jsonb_build_object('start',$6::int,'end',$6::int+8))
+		jsonb_path_query_array(available.items,'$[$start to $end]',jsonb_build_object('start',$6::int,'end',$6::int+8))
 		from ouf_mcp.analysis_batch_column b join ouf_mcp.analysis_column c using(analysis_id,ordinal)
+		`+batchAvailableCandidates+`
 		where b.analysis_id=$1 and b.ordinal=$2 and b.offered_batch_id=$3 and b.state='READY_FOR_DECISION'
 		and c.request_id=$4 and b.evidence_version=$5 and b.attempt=$7 limit 1`,
 		id, ordinal, batchID, col.RequestID, item.EvidenceVersion, offset, col.Attempt).
