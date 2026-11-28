@@ -160,15 +160,15 @@ func revisionSessionForScope(t *testing.T, service *orchestration.Service, ident
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, v := range map[string]string{"X-OUF-Gateway-Verified": "true", "X-OUF-Delegation": "human-proof", "X-OUF-Service-Principal": identity.Service, "X-OUF-Principal-ID": identity.Principal, "X-OUF-Tenant-ID": identity.Tenant, "X-OUF-Actor-Type": "HUMAN", "X-OUF-Authentication-Context-Ref": "1", "X-OUF-Token-Issuer": "issuer", "X-OUF-Token-Audience": "gateway", "X-OUF-Granted-Scopes": grantedScopes} {
 			r.Header.Set(k, v)
 		}
 		handler.ServeHTTP(w, r)
 	}))
-	t.Cleanup(server.Close)
+	httpClient := server.Client()
 	client := mcp.NewClient(&mcp.Implementation{Name: "source-revision", Version: "1"}, nil)
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

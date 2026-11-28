@@ -101,8 +101,18 @@ type batchQueryPlan struct {
 
 func explainBatchQuery(t *testing.T, ctx context.Context, store *Store, query, id string) batchQueryPlan {
 	t.Helper()
+	// Prefer the indexes even on small fixtures. The plan assertions still
+	// require the expected indexes and reject any sequential scans.
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
+		t.Fatal(err)
+	}
 	var raw []byte
-	err := store.pool.QueryRow(ctx, "explain (analyze,buffers,format json) "+query, id).Scan(&raw)
+	err = tx.QueryRow(ctx, "explain (analyze,buffers,format json) "+query, id).Scan(&raw)
 	var plans []struct{ Plan batchQueryPlan }
 	if err != nil || json.Unmarshal(raw, &plans) != nil || len(plans) != 1 {
 		t.Fatalf("EXPLAIN failed: %s (%v)", raw, err)

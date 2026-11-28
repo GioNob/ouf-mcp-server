@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/httpclient"
@@ -243,6 +244,10 @@ func (g *nextGateway) Execute(_ context.Context, req orchestration.GatewayReques
 // handler and delegated Gateway dispatch, without performing a THS mutation.
 func TestNextOnlyFromReviewToObjectSearch(t *testing.T) {
 	t.Setenv("OUF_WAIT_KEY_BASE64", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	synctest.Test(t, testNextOnlyFromReviewToObjectSearch)
+}
+
+func testNextOnlyFromReviewToObjectSearch(t *testing.T) {
 	owner := &nextGateway{deadline: time.Now().UTC().Add(time.Hour).Truncate(time.Second).Format("2006-01-02T15:04:05.000Z"), linkEnd: time.Now().UTC().Add(time.Minute).Format(time.RFC3339)}
 	service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &statusAdmission{}, Gateway: owner, FingerprintKey: make([]byte, 32)}
 	session := revisionSession(t, service, "ouf.managed-source.onboarding.review.prepare ouf.managed-source.onboarding.read ingestion.operations.read urban.object.search "+recoveryLinkID)
@@ -250,7 +255,7 @@ func TestNextOnlyFromReviewToObjectSearch(t *testing.T) {
 	tool := "source.onboarding.read"
 	args := nextstep.Object{"sourceId": "teatri", "onboardingVersionId": "11111111-1111-4111-8111-111111111111"}
 	for _, expected := range []string{"CALL_TOOL", "WAIT_FOR_HUMAN", "CALL_TOOL", "WAIT_FOR_HUMAN", "CALL_TOOL", "DONE"} {
-		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+		res, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +269,7 @@ func TestNextOnlyFromReviewToObjectSearch(t *testing.T) {
 			if err != nil || id.Version() != 4 {
 				t.Fatal("missing generated command key", next)
 			}
-			again, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+			again, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -300,12 +305,12 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 		{name: "current challenge during prepare", atPrepare: true, ownerURL: true, noDeadline: true},
 		{name: "Onboarding denies link despite Semantic URL", ownerURL: true, denyLink: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		run := func(t *testing.T) {
 			deadline := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 			linkEnd := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
 			var links, reads atomic.Int32
 			var pendingKey atomic.Value
-			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gateway := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req orchestration.GatewayRequest
 				var args nextstep.Object
 				if r.Method != http.MethodPost || r.Header.Get("X-OUF-Delegation") != "human-proof" ||
@@ -361,8 +366,7 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(obs)
 			}))
-			defer gateway.Close()
-			endpoint, _ := url.Parse(gateway.URL + "/internal/capabilities/v1/execute")
+			endpoint, _ := url.Parse("https://gateway.example.com/internal/capabilities/v1/execute")
 			service := &orchestration.Service{RequireDelegation: true, Auth: analysisSDKAuth{}, Admission: &statusAdmission{}, FingerprintKey: make([]byte, 32),
 				Gateway: &httpclient.GatewayClient{Endpoint: endpoint, Client: gateway.Client(), TokenSource: httpclient.StaticTokenSource("fixture")}}
 			session := revisionSession(t, service, "ouf.semantic.propose ouf.semantic.review.prepare ouf.semantic.approval.request ouf.semantic.proposal.read "+semanticLinkID)
@@ -379,7 +383,7 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 				steps = append(steps, "ouf.wait")
 			}
 			for _, target := range steps {
-				result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+				result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -416,7 +420,8 @@ func TestNextOnlyFromSemanticProposalToHumanDecision(t *testing.T) {
 			if links.Load() != 1 || (!tc.denyLink && reads.Load() != 1) || (tc.denyLink && reads.Load() != 0) {
 				t.Fatal("unexpected Onboarding or Semantic read count", links.Load(), reads.Load())
 			}
-		})
+		}
+		t.Run(tc.name, func(t *testing.T) { synctest.Test(t, run) })
 	}
 }
 
