@@ -184,7 +184,7 @@ func (s *Store) BatchMandateEvidence(ctx context.Context, q analysis.BatchEviden
 	if err != nil {
 		return proof, err
 	}
-	if !start.Initialized || !q.Matches(start, scope) || !analysis.ValidBatchHash(start.Epoch) {
+	if !start.Seeded || !q.Matches(start, scope) || !analysis.ValidBatchHash(start.Epoch) {
 		return proof, nil
 	}
 	err = tx.QueryRow(ctx, `select `+batchMandatePhase+` from ouf_mcp.analysis_batch_mandate m`+

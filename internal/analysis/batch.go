@@ -27,7 +27,7 @@ type BatchStart struct {
 	Authority   string
 	Mandate     BatchMandate `json:"-"`
 	Revision    int64
-	Initialized bool
+	Seeded bool
 }
 
 type BatchPreviewColumn struct {
@@ -96,7 +96,7 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 		if err != nil {
 			return start, err
 		}
-		if start.Initialized && start.Mandate.StartRef != "" {
+		if start.Seeded && start.Mandate.StartRef != "" {
 			return c.issueBatchMandate(ctx, mandates, gateway, start, proof)
 		}
 	}
@@ -121,7 +121,7 @@ func (c Coordinator) StartBatch(ctx context.Context, i orchestration.Identity, a
 		!valid || !binding.matches(i, prepared.Ref, asset, profile, hash, key) {
 		return BatchStart{}, ErrUnavailable
 	}
-	if !start.Initialized {
+	if !start.Seeded {
 		pin, err := c.prepareBatchProfile(ctx, i, store, checksum, id, epoch, asset, profile, profileHash, start.Profile)
 		if err != nil {
 			return BatchStart{}, err

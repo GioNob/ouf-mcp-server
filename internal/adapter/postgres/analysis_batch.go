@@ -24,7 +24,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 	var stored string
 	var revision int64
 	var createdAt time.Time
-	var initialized bool
+	var seeded bool
 	var m analysis.BatchMandate
 	err := q.QueryRow(ctx, `select p.profile,p.manifest_checksum,p.revision,p.created_at,
 		exists(select from ouf_mcp.analysis_counts where analysis_id=$1),
@@ -33,7 +33,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		coalesce(m.state,''),coalesce(m.reason_code,'')
 		from ouf_mcp.profile_analysis p left join ouf_mcp.analysis_batch_mandate m using(analysis_id)
 		where p.analysis_id=$1 and p.service_principal_id=$2 and p.principal_id=$3 and p.tenant_id=$4 and p.profile->>'mode'=$5`,
-		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &initialized,
+		id, scope.Service, scope.Principal, scope.Tenant, analysis.BatchMode).Scan(&raw, &stored, &revision, &createdAt, &seeded,
 		&m.StartRef, &m.StartBinding, &m.Ref, &m.Binding, &m.CommandKey, &m.Generation, &m.State, &m.Reason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return analysis.BatchStart{}, analysis.ErrScope
@@ -53,7 +53,7 @@ func readBatchStart(ctx context.Context, q planReceiptReader, scope analysis.Sco
 		}
 		m.Version = view.Version
 	}
-	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Initialized: initialized, Mandate: m}, nil
+	return analysis.BatchStart{ID: id, Profile: pin.Profile, CreatedAt: createdAt, Epoch: pin.Epoch, Authority: pin.Authority, Revision: revision, Seeded: seeded, Mandate: m}, nil
 }
 
 func (s *Store) ReadBatchStart(ctx context.Context, scope analysis.Scope, id, checksum string) (analysis.BatchStart, error) {
@@ -111,7 +111,7 @@ func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		if retained.Authority != "" && retained.Authority != start.Authority {
 			return analysis.View{}, analysis.ErrScope
 		}
-		if !retained.Initialized {
+		if !retained.Seeded {
 			if err = seedBatchColumns(ctx, tx, scope, checksum, start); err != nil {
 				return analysis.View{}, err
 			}

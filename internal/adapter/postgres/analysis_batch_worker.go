@@ -62,7 +62,7 @@ func (s *Store) claimBatchWork(ctx context.Context, scope analysis.Scope, id, ch
 	}
 	defer tx.Rollback(ctx)
 	start, err := readBatchStart(ctx, tx, scope, id, checksum)
-	if err != nil || !start.Initialized {
+	if err != nil || !start.Seeded {
 		return analysis.BatchWork{}, err
 	}
 	if rail != 1 && start.Authority != "" && start.Authority != authority {

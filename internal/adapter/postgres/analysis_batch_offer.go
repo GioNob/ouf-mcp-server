@@ -73,7 +73,7 @@ func readBatch(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id, checksu
 		return analysis.BatchRead{}, err
 	}
 	out := analysis.BatchRead{BatchStart: start, Offer: analysis.BatchOffer{AnalysisID: id}}
-	if !start.Initialized {
+	if !start.Seeded {
 		out.Counts = analysis.Counts{Total: start.Profile.ColumnCount, Pending: start.Profile.ColumnCount}
 		out.Phase, out.Reason = "BLOCKED", "ANALYSIS_BATCH_NOT_AVAILABLE"
 		return out, nil
@@ -269,7 +269,7 @@ func (s *Store) ReadBatchColumn(ctx context.Context, scope analysis.Scope, id, c
 	if err != nil {
 		return out, item, err
 	}
-	if !start.Initialized {
+	if !start.Seeded {
 		return out, item, analysis.ErrScope
 	}
 	var raw []byte

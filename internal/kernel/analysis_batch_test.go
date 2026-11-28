@@ -60,7 +60,7 @@ func (s *batchSDKStore) LookupBatchStartCommand(_ context.Context, scope analysi
 func (s *batchSDKStore) SaveBatchStart(_ context.Context, scope analysis.Scope, _, key, digest string, start analysis.BatchStart) (analysis.BatchStart, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	start.Initialized = true
+	start.Seeded = true
 	start.CreatedAt = time.Now()
 	s.scope, s.key, s.digest, s.start = scope, key, digest, start
 	return start, nil

@@ -33,7 +33,7 @@ func (s *Store) DecideBatch(ctx context.Context, scope analysis.Scope, checksum 
 	if err != nil {
 		return result, err
 	}
-	if start.ID != authorized.ID || start.Epoch != authorized.Epoch || start.Authority != authorized.Authority || !start.Initialized {
+	if start.ID != authorized.ID || start.Epoch != authorized.Epoch || start.Authority != authorized.Authority || !start.Seeded {
 		return result, analysis.ErrScope
 	}
 	var fingerprint string
