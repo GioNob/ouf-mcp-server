@@ -193,7 +193,7 @@ func batchEffectReference(stage string, read bool, col BatchWorkColumn, raw []by
 			Operation, RevisionID, State string
 			Result                       json.RawMessage
 			HistoricalSnapshot           bool
-			OwnerStateMustBeRechecked     bool
+			OwnerStateMustBeRechecked    bool
 		}
 		operation := "CREATE"
 		if stage == BatchAdopt {
