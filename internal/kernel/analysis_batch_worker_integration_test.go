@@ -388,7 +388,7 @@ func TestBatchWorkerPostgresExhaustionSurvivesHoursAndRestart(t *testing.T) {
 	restartedService := *worker.Service
 	restartedService.Admission = reopened
 	worker.Store, worker.Service = reopened, &restartedService
-	now := time.Now().Add(13*time.Hour)
+	now := time.Now().Add(13 * time.Hour)
 	worker.Now = func() time.Time { return now }
 	batchWorkerDrain(t, worker, i, id)
 	var attempts int
@@ -528,7 +528,7 @@ func TestBatchWorkerPostgresConcurrentDispatch(t *testing.T) {
 	}()
 	select {
 	case <-owner.entered:
-	case <-time.After(5*time.Second):
+	case <-time.After(5 * time.Second):
 		close(owner.release)
 		t.Fatal("first worker did not reach the owner")
 	}

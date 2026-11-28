@@ -97,7 +97,7 @@ type AuthorizationPort interface {
 
 type Cost struct{ ToolCalls, DistinctObjects, ResultBytes int64 }
 type AdmissionRequest struct {
-	BatchDiscovery                                                                   bool
+	BatchDiscovery                                                                  bool
 	ColumnDecision                                                                  *ColumnDecision
 	CallsPerMinute                                                                  int
 	StatusRead                                                                      bool
