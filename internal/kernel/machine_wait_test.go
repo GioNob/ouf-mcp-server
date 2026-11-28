@@ -106,7 +106,7 @@ func TestMachineWaitOwnerFloor(t *testing.T) {
 				ctx := context.WithValue(context.Background(), identityKey{}, requestIdentity{Identity: orchestration.Identity{
 					TenantID: "tenant", PrincipalID: "reader", Delegation: "fixture",
 				}})
-				start := time.Now()
+				start := time.Now().UTC()
 				due := start.Add(72 * time.Second)
 				if tc.producer != "source.analysis.step" || tc.target == tc.producer {
 					engine := s.engine(ctx)

@@ -85,7 +85,7 @@ func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checks
 	if !scope.Valid() || !start.Profile.Valid() || start.ID != analysis.BatchAnalysisID(scope, start.Profile, start.Epoch) {
 		return analysis.BatchStart{}, analysis.ErrInvalid
 	}
-	initialize := func(tx pgx.Tx) (analysis.View, error) {
+	seedBatch := func(tx pgx.Tx) (analysis.View, error) {
 		raw, err := json.Marshal(batchProfile{Profile: start.Profile, Mode: analysis.BatchMode, Epoch: start.Epoch, Authority: start.Authority})
 		if err != nil {
 			return analysis.View{}, err
@@ -112,7 +112,7 @@ func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checks
 			return analysis.View{}, analysis.ErrScope
 		}
 		if !retained.Initialized {
-			if err = initializeBatchColumns(ctx, tx, scope, checksum, start); err != nil {
+			if err = seedBatchColumns(ctx, tx, scope, checksum, start); err != nil {
 				return analysis.View{}, err
 			}
 		}
@@ -139,7 +139,7 @@ func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checks
 		}
 		return analysis.View{ID: retained.ID, Profile: retained.Profile, Revision: retained.Revision, Epoch: retained.Epoch}, nil
 	}
-	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, initialize, func(target string) (analysis.View, error) {
+	v, err := s.planCommandWithReplay(ctx, scope, checksum, key, intent, seedBatch, func(target string) (analysis.View, error) {
 		if target != start.ID {
 			return analysis.View{}, analysis.ErrProfile
 		}
@@ -149,7 +149,7 @@ func (s *Store) saveBatchStart(ctx context.Context, scope analysis.Scope, checks
 			return analysis.View{}, err
 		}
 		defer tx.Rollback(ctx)
-		view, err := initialize(tx)
+		view, err := seedBatch(tx)
 		if err == nil {
 			err = tx.Commit(ctx)
 		}
@@ -172,7 +172,7 @@ func lockBatchAnalysis(ctx context.Context, tx pgx.Tx, scope analysis.Scope, id 
 	return err
 }
 
-func initializeBatchColumns(ctx context.Context, tx pgx.Tx, scope analysis.Scope, checksum string, start analysis.BatchStart) error {
+func seedBatchColumns(ctx context.Context, tx pgx.Tx, scope analysis.Scope, checksum string, start analysis.BatchStart) error {
 	pin, err := json.Marshal(start.Profile)
 	if err != nil {
 		return err

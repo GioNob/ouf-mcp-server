@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/GioNob/ouf-mcp-server/internal/adapter/postgres"
@@ -194,7 +197,11 @@ func batchWorkerFixtureWithScopes(t *testing.T, width int, scopes string) (*post
 
 func batchWorkerStep(t *testing.T, worker analysis.BatchWorker, identity orchestration.Identity, id string) bool {
 	t.Helper()
-	worked, err := worker.RunOnce(t.Context(), id, identity, time.Now().Add(24*time.Hour))
+	now := time.Now
+	if worker.Now != nil {
+		now = worker.Now
+	}
+	worked, err := worker.RunOnce(t.Context(), id, identity, now().Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,24 +257,81 @@ func TestBatchWorkerPostgresLongUnicodeHeaderGoesToDiscovery(t *testing.T) {
 	}
 }
 
+type batchCheckpointNotifications struct {
+	*postgres.Store
+	committed chan struct{}
+}
+
+func (s batchCheckpointNotifications) FinishBatchWork(ctx context.Context, scope analysis.Scope, job analysis.BatchWork, results []analysis.BatchWorkResult, pause, now time.Time) error {
+	if err := s.Store.FinishBatchWork(ctx, scope, job, results, pause, now); err != nil {
+		return err
+	}
+	select {
+	case s.committed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func TestBatchWorkerPostgresRunsWithoutClient(t *testing.T) {
+	f := newMandatePostgresFixture(t, 32, false)
+	f.dbAdvance(t, 30*time.Second)
+	committed := make(chan struct{}, 1)
+	worker := f.worker()
+	worker.Store = batchCheckpointNotifications{Store: f.store, committed: committed}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	sum, _ := worker.Manifest.Checksum()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the queue did not complete without a client: %v", ctx.Err())
+		case <-committed:
+		}
+		read, err := f.store.ReadBatch(ctx, f.scope, f.id, sum, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read.Counts.Pending == 0 {
+			if read.Counts.Ready != 1 || read.Counts.Zero != 1 || read.Counts.Matched != 30 {
+				t.Fatal("background worker did not preserve exact outcomes", read.Counts)
+			}
+			return
+		}
+	}
+}
+
 func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {
 	store, dsn, worker, owner, i, id := batchWorkerFixture(t, 32)
 	owner.throttle = true
 	owner.loseResponse = true
-	if !batchWorkerStep(t, worker, i, id) || !batchWorkerStep(t, worker, i, id) {
-		t.Fatal("missing published lookup or first request attempt")
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
+	worker.Now = func() time.Time { return now }
+	if !batchWorkerStep(t, worker, i, id) || owner.publishedCalls != 1 {
+		t.Fatal("missing published lookup", owner.publishedCalls)
+	}
+	if !batchWorkerStep(t, worker, i, id) || owner.commandCalls != 1 {
+		t.Fatal("missing first request attempt", owner.commandCalls)
 	}
 	var due time.Time
 	var attempts int
 	err := store.Pool().QueryRow(t.Context(), `select due_at,retry_attempts from ouf_mcp.analysis_batch_column where analysis_id=$1 and ordinal=0`, id).Scan(&due, &attempts)
-	if err != nil || attempts != 1 || time.Until(due) < 85*time.Second {
+	if err != nil || attempts != 1 || due.Sub(now) < 85*time.Second {
 		t.Fatal("Retry-After was not retained", due, attempts, err)
 	}
-	worker.Now = func() time.Time { return due.Add(-time.Second) }
+	now = due.Add(-time.Second)
 	if batchWorkerStep(t, worker, i, id) || owner.commandCalls != 1 {
 		t.Fatal("a request bypassed the shared route pause")
 	}
-	worker.Now = func() time.Time { return due.Add(time.Second) }
+	now = due.Add(time.Second)
 	if !batchWorkerStep(t, worker, i, id) || len(owner.requests) != 1 {
 		t.Fatal("owner did not commit the request before losing the response")
 	}
@@ -285,7 +349,7 @@ func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {
 	restartedService := *worker.Service
 	restartedService.Admission = reopened
 	worker.Service, worker.Store = &restartedService, reopened
-	worker.Now = func() time.Time { return resumedDue.Add(time.Second) }
+	now = resumedDue.Add(time.Second)
 	batchWorkerDrain(t, worker, i, id)
 	if owner.commandCalls != 4 || len(owner.requests) != 2 || owner.candidateCalls != 2 {
 		t.Fatal("a retry lost or duplicated a logical effect", owner.commandCalls, len(owner.requests), owner.candidateCalls)
@@ -578,18 +642,31 @@ func assertSupersededBatchDispatch(t *testing.T, store *postgres.Store, dsn stri
 
 func TestBatchWorkerPostgresWaitReturnsExecutableRead(t *testing.T) {
 	store, _, worker, owner, i, id := batchWorkerFixture(t, 32)
+	// The fake clock starts in 2000. Align it with the real database before
+	// issuing a signed wait based on the persisted batch creation timestamp.
+	startedAt := time.Now()
+	synctest.Test(t, func(t *testing.T) {
+		time.Sleep(time.Until(startedAt))
+		assertBatchWorkerWaitReturnsExecutableRead(t, store, worker, owner, i, id)
+	})
+}
+
+func assertBatchWorkerWaitReturnsExecutableRead(t *testing.T, store *postgres.Store, worker analysis.BatchWorker, owner *batchWorkerOwner, i orchestration.Identity, id string) {
+	t.Helper()
 	scope := analysis.IdentityScope(i)
 	client := revisionSessionForScope(t, worker.Service, scope, batchWorkerScopes)
 	contract := nextContract(t)
-	call := func(ctx context.Context, tool string, args nextstep.Object) nextstep.Object {
+	call := func(tool string, args nextstep.Object) nextstep.Object {
 		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+		defer cancel()
 		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
 		if err != nil || result == nil || result.IsError {
 			t.Fatalf("%s: %v %v", tool, result, err)
 		}
 		return assertBatchWire(t, contract, result)
 	}
-	status := call(t.Context(), "source.analysis.read", nextstep.Object{"analysisId": id, "view": "STATUS"})
+	status := call("source.analysis.read", nextstep.Object{"analysisId": id, "view": "STATUS"})
 	next := status["next"].(nextstep.Object)
 	if next["action"] != "POLL" || next["reasonCode"] != nextstep.AnalysisRunning || next["tool"] != "ouf.wait" {
 		t.Fatal("expected a signed wait", next)
@@ -598,39 +675,28 @@ func TestBatchWorkerPostgresWaitReturnsExecutableRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Use the worker's real clock and stop at the first column ready for decision.
-	workerCtx, stopWorker := context.WithTimeout(t.Context(), 12*time.Second)
-	defer stopWorker()
-	for {
-		worked, err := worker.RunOnce(workerCtx, id, i, time.Now().Add(24*time.Hour))
-		if err != nil {
-			t.Fatal("worker step failed", err)
+	// Put the worker clock beyond the fixture's immediate owner observations,
+	// including timestamps rounded to PostgreSQL's microsecond precision.
+	now := time.Now().Add(time.Second)
+	worker.Now = func() time.Time { return now }
+	var read analysis.BatchRead
+	// One published search and at most two requests before the first candidate read.
+	for range 4 {
+		if !batchWorkerStep(t, worker, i, id) {
+			t.Fatalf("worker stalled before the first decision: %+v (%s)", read.Counts, read.Reason)
 		}
-		read, err := store.ReadBatch(workerCtx, scope, id, checksum, nil)
+		read, err = store.ReadBatch(t.Context(), scope, id, checksum, nil)
 		if err != nil {
 			t.Fatal("could not read committed batch progress", err)
 		}
-		if ready := read.Counts.Ready + read.Counts.Zero; ready > 0 {
-			if ready != 1 || read.Counts.Pending != 1 || read.Reason != "ANALYSIS_CONTINUE" {
-				t.Fatalf("expected one column ready for decision and one pending, got %+v (%s)", read.Counts, read.Reason)
-			}
+		if read.Reason == "ANALYSIS_CONTINUE" || read.Counts.Pending == 0 {
 			break
 		}
-		if read.Counts.Pending == 0 {
-			t.Fatalf("batch finished before any column was ready for decision: %+v (%s)", read.Counts, read.Reason)
-		}
-		if !worked {
-			select {
-			case <-workerCtx.Done():
-				t.Fatalf("no column became ready for decision: %+v (%s): %v", read.Counts, read.Reason, workerCtx.Err())
-			case <-time.After(250 * time.Millisecond):
-			}
-		}
 	}
-	stopWorker()
-	waitCtx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
-	defer cancel()
-	body := call(waitCtx, "ouf.wait", next["arguments"].(nextstep.Object))
+	if read.Counts.Ready+read.Counts.Zero != 1 || read.Counts.Pending != 1 || read.Reason != "ANALYSIS_CONTINUE" {
+		t.Fatalf("expected one column ready for decision and one pending, got %+v (%s)", read.Counts, read.Reason)
+	}
+	body := call("ouf.wait", next["arguments"].(nextstep.Object))
 	executable := body["next"].(nextstep.Object)
 	if body["changed"] != true || body["analysisId"] != id || executable["action"] != "CALL_TOOL" || executable["tool"] != "source.analysis.read" {
 		t.Fatal("wait did not return the ready step", body)
@@ -639,7 +705,7 @@ func TestBatchWorkerPostgresWaitReturnsExecutableRead(t *testing.T) {
 	if args["analysisId"] != id || args["view"] != "BATCH" {
 		t.Fatal("wait changed the analysis selector", args)
 	}
-	offer := call(t.Context(), "source.analysis.read", args)
+	offer := call("source.analysis.read", args)
 	if items, _ := offer["items"].([]any); len(items) != 1 || owner.candidateCalls != 1 {
 		t.Fatal("the wait continuation did not return the ready batch", offer)
 	}
