@@ -35,13 +35,14 @@ type workflowServer struct {
 	analysisService    *orchestration.Service
 	publishedLanguages []string
 	*mcp.Server
-	manifest      *manifest.Snapshot
-	nextSchema    *jsonschema.Resolved
-	tools         map[string]registeredTool
-	waits         *waitService
-	summaryLimits analysis.Limits
-	thsLinks      map[string]linkLookup
-	key           []byte
+	manifest         *manifest.Snapshot
+	manifestChecksum string
+	nextSchema       *jsonschema.Resolved
+	tools            map[string]registeredTool
+	waits            *waitService
+	summaryLimits    analysis.Limits
+	thsLinks         map[string]linkLookup
+	key              []byte
 }
 
 func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installationKey []byte) (*workflowServer, error) {
@@ -61,6 +62,10 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if err != nil {
 		return nil, err
 	}
+	checksum, err := snapshot.Checksum()
+	if err != nil {
+		return nil, err
+	}
 	var langs []string
 	if cap, ok := analysis.Find(snapshot, analysis.BatchTool); ok && cap.PublicationState == "ACTIVE" {
 		policy, err := analysis.PublishedLimits(cap)
@@ -72,7 +77,7 @@ func newWorkflowServer(sdk *mcp.Server, snapshot *manifest.Snapshot, installatio
 	if sdk != nil {
 		sdk.AddReceivingMiddleware(workflowResultWire)
 	}
-	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
+	return &workflowServer{publishedLanguages: langs, summaryLimits: limits, Server: sdk, nextSchema: schema, manifest: snapshot, manifestChecksum: checksum, tools: map[string]registeredTool{}, waits: waits, key: installationKey}, nil
 }
 
 // A pseudorandom UUIDv4 for this intent. Reprojecting the same observation
@@ -107,7 +112,7 @@ func (s *workflowServer) valid(name string, args nextstep.Object) bool {
 	raw, err := json.Marshal(args)
 	var v map[string]any
 	return err == nil && !exceedsOnboardingArgumentLimit(t.capability, len(raw)) && json.Unmarshal(raw, &v) == nil && t.input.Validate(v) == nil &&
-		(name != "source.analysis.decide" || uniqueDecisionOrdinals(v))
+		(name != "source.analysis.decide" || validBatchDecisionEnvelope(v, raw))
 }
 
 // Keep argument diagnostics inside the tool result. Typed SDK registration
@@ -196,15 +201,20 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 		if len(req.Params.Arguments) == 0 {
 			req.Params.Arguments = json.RawMessage("{}")
 		}
-		validArgs := !exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) &&
-			json.Unmarshal(req.Params.Arguments, &args) == nil && args != nil && input.Validate(args) == nil
 		decide := name == "source.analysis.decide"
-		// A schema-invalid decision has no batch envelope. Once the envelope is
-		// valid, ordinal validation is part of the batch command contract.
-		batchEnvelope := !decide || validArgs
-		if !validArgs || (decide && !uniqueDecisionOrdinals(args)) {
+		validArgs := !exceedsOnboardingArgumentLimit(c, len(req.Params.Arguments)) &&
+			(!decide || len(req.Params.Arguments) <= maxBatchDecisionArgumentsBytes) &&
+			json.Unmarshal(req.Params.Arguments, &args) == nil && args != nil
+		if validArgs {
+			if decide {
+				validArgs = validBatchDecisionEnvelope(args, req.Params.Arguments)
+			} else {
+				validArgs = input.Validate(args) == nil
+			}
+		}
+		if !validArgs {
 			result = errorResult("INVALID_TOOL_ARGUMENTS", false)
-			if batchEnvelope && s.batchReadSelector(ctx, name, args) {
+			if s.batchReadSelector(ctx, name, args) {
 				result = markBatchResult(result)
 			} else if summaryInput(name, args) {
 				inputErr := analysis.ErrInvalid
@@ -247,7 +257,7 @@ func (s *workflowServer) register(tool *mcp.Tool, run rawTool) {
 			decoder.UseNumber()
 			_ = decoder.Decode(&args)
 		}
-		batch := (batchEnvelope && batchInput(name, args)) || result.Meta[batchResultMeta] == true
+		batch := batchInput(name, args) || result.Meta[batchResultMeta] == true
 		delete(result.Meta, batchResultMeta)
 		if batch {
 			if name != "ouf.wait" || result.StructuredContent == nil {

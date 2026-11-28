@@ -62,7 +62,9 @@ func replayResult(c manifest.Capability, args []byte, r orchestration.Result) *m
 			body["readTool"] = "source.file.upload.status"
 			body["readArguments"] = map[string]any{"handoffId": r.ResultID}
 		}
-		if r.ResultID != nil {
+		// The proposal ID is retained for scoped batch draft lookup. The
+		// ordinary proposal replay still requires a fresh owner receipt read.
+		if r.ResultID != nil && c.ToolName != "semantic.propose" {
 			body["resultRef"] = r.ResultID
 			failed = false
 		} else {

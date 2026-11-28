@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GioNob/ouf-mcp-server/contracts"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
 	"github.com/google/uuid"
@@ -41,7 +42,7 @@ const adoptionReceipt = `{
 }`
 
 func TestSemanticAdoptionDescriptorMatchesOwnerPR49(t *testing.T) {
-	source := bytes.ReplaceAll(adoptionContract, []byte("\r\n"), []byte("\n"))
+	source := bytes.ReplaceAll([]byte(contracts.DiscoveryAdoptionContract()), []byte("\r\n"), []byte("\n"))
 	if fmt.Sprintf("%x", sha256.Sum256(source)) != "7d48d80559f820185ab46f97625f38e86ead17fd3cdcfa533485b622c54152c1" {
 		t.Fatal("owner schema differs from commit 8c0b1a23228d6ad0d99f16283f69d448c36b2560")
 	}

@@ -26,16 +26,15 @@ func isAcquisitionRead(id string) bool {
 	return id == "ouf.ingestion.acquisition.read" || id == "urban.acquisition.read"
 }
 
-func registerAcquisitionReadTool(server *workflowServer, c manifest.Capability, snapshot *manifest.Snapshot, service *orchestration.Service) {
+func registerAcquisitionReadTool(server *workflowServer, c manifest.Capability, service *orchestration.Service) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(c.InputSchema, &schema); err != nil {
 		panic(err)
 	}
-	checksum, _ := snapshot.Checksum()
 	addWorkflowTool(server, &mcp.Tool{Name: c.ToolName, Description: c.Description(), InputSchema: &schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input acquisitionReadInput) (*mcp.CallToolResult, any, error) {
 			args, _ := json.Marshal(input)
-			return invoke(ctx, c, checksum, args, service, 100, 1<<20)
+			return invoke(ctx, c, server.manifestChecksum, args, service, 100, 1<<20)
 		})
 }
 

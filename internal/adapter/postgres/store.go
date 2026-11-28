@@ -55,11 +55,11 @@ func (s *Store) Close()              { s.pool.Close() }
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) Ready(ctx context.Context) error {
 	var ready bool
-	if err := s.pool.QueryRow(ctx, "select exists(select from ouf_mcp.schema_migration where version=28)").Scan(&ready); err != nil {
+	if err := s.pool.QueryRow(ctx, "select exists(select from ouf_mcp.schema_migration where version=29)").Scan(&ready); err != nil {
 		return err
 	}
 	if !ready {
-		return errors.New("batch worker migration 028 is required")
+		return errors.New("batch worker migration 029 is required")
 	}
 	return nil
 }
@@ -471,12 +471,21 @@ func readOwnerDues(ctx context.Context, tx pgx.Tx, scope analysis.Scope, selecto
 }
 
 func (s *Store) Dispatch(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) error {
+	if batch, ok := analysis.BatchDispatchFromContext(ctx); ok {
+		return s.dispatchBatchAttempt(ctx, batch, id, backendRequestID, lease, expected)
+	}
 	_, err := s.MarkRunning(ctx, id, backendRequestID, lease, expected)
 	return err
 }
+
+const markRunningSQL = `update ouf_mcp.tool_attempt set state='RUNNING',dispatch_state='DISPATCHED',backend_request_id=$2,
+	started_at=transaction_timestamp(),lease_until=transaction_timestamp()+$3::interval,lock_version=lock_version+1
+	where attempt_id=$1 and state='ADMITTED' and dispatch_state='NOT_DISPATCHED' and lock_version=$4
+	returning attempt_id,state,dispatch_state,request_hash,lock_version`
+
 func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, backendRequestID string, lease time.Duration, expected int64) (Attempt, error) {
 	var out Attempt
-	err := s.pool.QueryRow(ctx, `update ouf_mcp.tool_attempt set state='RUNNING',dispatch_state='DISPATCHED',backend_request_id=$2,started_at=transaction_timestamp(),lease_until=transaction_timestamp()+$3::interval,lock_version=lock_version+1 where attempt_id=$1 and state='ADMITTED' and dispatch_state='NOT_DISPATCHED' and lock_version=$4 returning attempt_id,state,dispatch_state,request_hash,lock_version`, id, backendRequestID, lease.String(), expected).Scan(&out.ID, &out.State, &out.DispatchState, &out.RequestHash, &out.LockVersion)
+	err := s.pool.QueryRow(ctx, markRunningSQL, id, backendRequestID, lease.String(), expected).Scan(&out.ID, &out.State, &out.DispatchState, &out.RequestHash, &out.LockVersion)
 	return out, err
 }
 func (s *Store) AppendAudit(ctx context.Context, eventType, actorType, servicePrincipal string, attemptID *uuid.UUID, manifestChecksum string, safeDetail []byte) error {

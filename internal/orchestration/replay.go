@@ -24,6 +24,16 @@ func replayResultID(in Invocation, body []byte) *uuid.UUID {
 		field = "onboardingVersionId"
 	case "ouf.semantic.discovery":
 		field = "requestId"
+	case "ouf.semantic.propose":
+		if in.BatchEffectFence != "" {
+			// The batch outbox retains its own stable owner key and receipt.
+			return nil
+		}
+		var draft struct{ Status string }
+		if json.Unmarshal(body, &draft) != nil || draft.Status != "DRAFT" {
+			return nil
+		}
+		field = "revisionId"
 	default:
 		return nil
 	}

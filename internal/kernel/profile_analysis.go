@@ -31,7 +31,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		}
 		tool.OutputSchema = &output
 	}
-	addWorkflowTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+	addWorkflowTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		i, ok := ctx.Value(identityKey{}).(requestIdentity)
 		if !ok || i.Delegation == "" || i.ActorType != "HUMAN" {
 			if summaryInput(c.ToolName, input) && !batchInput(c.ToolName, input) {
@@ -42,7 +42,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 		_, railCommand := input["commandKey"]
 		key, _ := input["commandKey"].(string)
 		replan, _ := input["replanOf"].(string)
-		if railCommand {
+		if railCommand && c.ToolName != "source.analysis.decide" {
 			delete(input, "commandKey")
 			if c.ToolName == "source.analysis.step" && key != server.commandKey(ctx, c.ToolName, input, nil, nil) {
 				return errorResult("IDEMPOTENCY_KEY_REUSE", false), nil, nil
@@ -56,6 +56,9 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			return errorResult("ANALYSIS_STORE_NOT_BOUND", false), nil, nil
 		}
 		coordinator := analysis.Coordinator{Store: store, Service: service, Manifest: snapshot, Onboarding: railCommand, PreviewPageSize: server.summaryLimits.PreviewPageSize, MaxColumnReformulations: &server.summaryLimits.MaxColumnReformulations}
+		if c.ToolName == "source.analysis.decide" {
+			return server.decideAnalysisBatch(ctx, coordinator, i.Identity, input, req.Params.Arguments), nil, nil
+		}
 		raw, _ := json.Marshal(input)
 		var out any
 		var err error
@@ -147,16 +150,6 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				args.Limit = 128
 			}
 			out, err = coordinator.Read(ctx, i.Identity, args.AnalysisID, args.Offset, args.Limit)
-		case "source.analysis.decide":
-			id, _ := input["analysisId"].(string)
-			start, batch, batchErr := batchStartForRead(ctx, coordinator, i.Identity, id)
-			if batchErr != nil {
-				return analysisReadError(batchErr), nil, nil
-			}
-			if !batch {
-				return analysisReadError(analysis.ErrScope), nil, nil
-			}
-			return batchUnavailable(start.ID), nil, nil
 		case "source.analysis.step":
 			var args struct {
 				AnalysisID string `json:"analysisId"`
