@@ -298,8 +298,11 @@ func TestBatchWorkerPostgresRetryAfterAndLostResponse(t *testing.T) {
 	store, dsn, worker, owner, i, id := batchWorkerFixture(t, 32)
 	owner.throttle = true
 	owner.loseResponse = true
-	if !batchWorkerStep(t, worker, i, id) || !batchWorkerStep(t, worker, i, id) {
-		t.Fatal("missing published lookup or first request attempt")
+	if !batchWorkerStep(t, worker, i, id) {
+		t.Fatal("missing published lookup")
+	}
+	if !batchWorkerStep(t, worker, i, id) {
+		t.Fatal("missing first request attempt")
 	}
 	var due time.Time
 	var attempts int
