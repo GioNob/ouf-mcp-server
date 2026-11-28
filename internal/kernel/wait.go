@@ -215,7 +215,8 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 	if !ok || (!machine && t.capability.OperationClass != "READ") || ref.Read == "ouf.wait" || !s.valid(ref.Read, ref.Args) {
 		return errorResult("WAIT_REFERENCE_INVALID", false)
 	}
-	batch := s.batchReadSelector(ctx, ref.Read, ref.Args)
+	batchStatus := machine && ref.Reason == nextstep.AnalysisRunning && ref.Read == "source.analysis.read" && ref.Args["view"] == "STATUS"
+	batch := batchStatus || s.batchReadSelector(ctx, ref.Read, ref.Args)
 	defer func() {
 		if batch {
 			markBatchResult(response)
@@ -349,6 +350,9 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 		if refreshLink() && !time.Now().Before(due) {
 			return waitResult(false, last, ref.Refresh(s.engine(ctx), nextstep.Object{"notBefore": due.UTC().Format(time.RFC3339Nano)}))
 		}
+		if batchStatus {
+			return waitResult(false, last, w.signer.Postpone(binding, ref, time.Now().Add(w.interval), exp))
+		}
 		return waitResult(false, last, ref.Next(token))
 	}
 	delay := w.interval
@@ -415,6 +419,20 @@ func (s *workflowServer) wait(ctx context.Context, req *mcp.CallToolRequest, tok
 			batch = batch || result.Meta[batchResultMeta] == true
 			body := ownerObject(result)
 			obs := nextstep.Observation(ref.Read, ref.Args, body)
+			if batchStatus {
+				projected, _ := result.Meta[batchNextMeta].(nextstep.Object)
+				if result.IsError {
+					return waitError(result, s.engine(ctx).BatchNext(ref.Read, args, body, true))
+				}
+				if body["mode"] != analysis.BatchMode || body["analysisId"] != ref.Args["analysisId"] || projected == nil {
+					return stop("WAIT_RESOURCE_CHANGED")
+				}
+				last = nextstep.Object{"analysisId": body["analysisId"], "phase": body["phase"], "revision": body["revision"], "counts": body["counts"]}
+				if projected["action"] == "POLL" && projected["reasonCode"] == nextstep.AnalysisRunning {
+					continue
+				}
+				return waitResult(true, last, projected)
+			}
 			if result.IsError {
 				if code, ok := body["code"].(string); ok && nextstep.AdmissionWindowCode(code) {
 					return windowRefusal(result)

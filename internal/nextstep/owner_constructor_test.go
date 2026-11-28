@@ -19,6 +19,35 @@ import (
 type ownerProducerCase struct {
 	target string
 	run    func(Engine) Object
+	poll   bool
+}
+
+func TestBatchStatusWaitFitsEveryConfiguredWindow(t *testing.T) {
+	created := time.Unix(1800000000, 0).UTC()
+	now := created
+	e := signedEngine(t, Engine{Now: func() time.Time { return now }, Valid: func(string, Object) bool { return true }})
+	for _, cadence := range []int{orchestration.PollIntervalSeconds, 45} {
+		e.PollIntervalSeconds = cadence
+		for maximum := 1; maximum <= DefaultWaitMaxSeconds; maximum++ {
+			e.WaitMaxSeconds = maximum
+			window := time.Duration(maximum) * time.Second
+			start := created.Add(3 * window)
+			now = start.Add(100 * time.Millisecond)
+			ref := pollTarget(t, e, e.BatchStatusNext("analysis", AnalysisRunning, created))
+			due, dueErr := time.Parse(time.RFC3339Nano, ref.NotBefore)
+			end, endErr := time.Parse(time.RFC3339Nano, ref.Deadline)
+			if dueErr != nil || endErr != nil || !due.After(now) || !due.Before(end) || !end.Equal(start.Add(window)) {
+				t.Fatalf("cadence %ds, maximum %ds: unusable STATUS wait %+v", cadence, maximum, ref)
+			}
+			interval := time.Duration(cadence) * time.Second
+			if interval < window && !due.Equal(start.Add(interval)) {
+				t.Fatalf("cadence %ds, maximum %ds: shortened a cadence that fits", cadence, maximum)
+			}
+			if next := e.Signer.Postpone(e.Binding, ref, end, end); next["action"] != "BLOCKED" || next["reasonCode"] != "WAIT_DEADLINE_EXPIRED" {
+				t.Fatalf("cadence %ds, maximum %ds: renewed STATUS wait at expiry", cadence, maximum)
+			}
+		}
+	}
 }
 
 // Each fixture enters the production function at its public boundary. The
@@ -35,47 +64,57 @@ func registerOwnerProducer(fn any, cases ...ownerProducerCase) {
 }
 
 func init() {
-	registerOwnerProducer(Engine.Evaluate, ownerProducerCase{"source.analysis.step", func(e Engine) Object {
+	registerOwnerProducer(Engine.Evaluate, ownerProducerCase{target: "source.analysis.step", run: func(e Engine) Object {
 		p := manifest.Policy{Rules: []manifest.Rule{{Action: "CALL_TOOL", Tool: "source.analysis.step",
 			Reason: "ANALYSIS_CONTINUE", Args: map[string]string{"taskId": "#readyTask", "analysisId": "@analysisId"}}}}
 		return e.Evaluate(manifest.Capability{ToolName: "source.analysis.read"}, p, Object{"analysisId": "analysis"},
 			Object{"tasks": []any{Object{"taskId": "task", "state": "READY"}}}, false)
 	}})
-	registerOwnerProducer(Engine.Evaluate, ownerProducerCase{"source.analysis.step", func(e Engine) Object {
+	registerOwnerProducer(Engine.Evaluate, ownerProducerCase{target: "source.analysis.step", run: func(e Engine) Object {
 		e.AnalysisSuccessor = &analysis.TaskResume{ID: "successor", State: "READY"}
 		e.CommandKey = func(string, Object, Object, Object) string { return "key" }
 		return e.Evaluate(manifest.Capability{ToolName: "source.analysis.step"}, manifest.Policy{},
 			Object{"analysisId": "analysis", "taskId": "predecessor"}, Object{"state": "SUCCEEDED"}, false)
 	}})
-	registerOwnerProducer(Engine.BatchNext, ownerProducerCase{"source.analysis.plan", func(e Engine) Object {
+	registerOwnerProducer(Engine.BatchNext, ownerProducerCase{target: "source.analysis.plan", run: func(e Engine) Object {
 		e.CommandKey = func(string, Object, Object, Object) string { return "key" }
 		return e.BatchNext("source.file.preview", Object{"mode": analysis.BatchMode},
 			Object{"assetId": "asset", "profileId": "profile", "schemaHash": "hash"}, false)
 	}})
-	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+	registerOwnerProducer(Engine.BatchStatusNext,
+		ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
+			return e.BatchStatusNext("analysis", "ANALYSIS_CONTINUE", time.Time{})
+		}},
+		ownerProducerCase{target: "source.analysis.read", poll: true, run: func(e Engine) Object {
+			return e.BatchStatusNext("analysis", AnalysisRunning, time.Time{})
+		}})
+	registerOwnerProducer(Engine.BatchPageNext, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
+		return e.BatchPageNext(Object{"analysisId": "analysis", "view": "BATCH"}, false)
+	}})
+	registerOwnerProducer(Engine.AnalysisSuccessorFallback, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 		return e.AnalysisSuccessorFallback("analysis")
 	}})
 	registerOwnerProducer(Engine.SummaryNext,
-		ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+		ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 			return e.SummaryNext("analysis", "SUMMARY", "cursor", analysis.Summary{})
 		}},
-		ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+		ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 			return e.SummaryNext("analysis", "STATUS", "", analysis.Summary{})
 		}},
-		ownerProducerCase{"semantic.discovery.candidates", func(e Engine) Object {
+		ownerProducerCase{target: "semantic.discovery.candidates", run: func(e Engine) Object {
 			return e.SummaryNext("analysis", "STATUS", "", analysis.Summary{Hint: analysis.Hint{
 				DecisionRequired: true, Tool: "semantic.discovery.candidates", RequestID: "request"}})
 		}})
-	registerOwnerProducer(Engine.ExpiredSummary, ownerProducerCase{"source.analysis.read", func(e Engine) Object {
+	registerOwnerProducer(Engine.ExpiredSummary, ownerProducerCase{target: "source.analysis.read", run: func(e Engine) Object {
 		return e.ExpiredSummary("analysis")
 	}})
-	registerOwnerProducer(Engine.PreviewColumn, ownerProducerCase{"source.file.preview", func(e Engine) Object {
+	registerOwnerProducer(Engine.PreviewColumn, ownerProducerCase{target: "source.file.preview", run: func(e Engine) Object {
 		return e.PreviewColumn(analysis.Hint{Ordinal: 2})
 	}})
-	registerOwnerProducer(WaitRef.Refresh, ownerProducerCase{"semantic.proposal.read", func(e Engine) Object {
+	registerOwnerProducer(WaitRef.Refresh, ownerProducerCase{target: "semantic.proposal.read", run: func(e Engine) Object {
 		return (WaitRef{Read: "semantic.proposal.read", Args: Object{"commandKey": "key"}}).Refresh(e, nil)
 	}})
-	registerOwnerProducer(WaitRef.ResumeCommand, ownerProducerCase{"source.analysis.step", func(e Engine) Object {
+	registerOwnerProducer(WaitRef.ResumeCommand, ownerProducerCase{target: "source.analysis.step", run: func(e Engine) Object {
 		return (WaitRef{Reason: "ANALYSIS_CONTINUE", Read: "source.analysis.step", Args: Object{"taskId": "task"},
 			NotBefore: time.Unix(1, 0).UTC().Format(time.RFC3339)}).ResumeCommand(e)
 	}})
@@ -90,6 +129,9 @@ func checkOwnerProducer(t *testing.T, tc ownerProducerCase) {
 			if tool != tc.target {
 				t.Fatalf("looked up %s, want %s", tool, tc.target)
 			}
+			if tc.poll {
+				return orchestration.OwnerObservation{Due: due, Reason: "TRANSIENT_OWNER_WAIT"}, nil
+			}
 			return orchestration.OwnerObservation{Due: due}, nil
 		}})
 	ref := pollTarget(t, e, tc.run(e))
@@ -98,6 +140,15 @@ func checkOwnerProducer(t *testing.T, tc ownerProducerCase) {
 	}
 	now = due
 	next := tc.run(e)
+	if tc.poll {
+		resumed := pollTarget(t, e, next)
+		floor := now.Add(time.Duration(orchestration.PollIntervalSeconds) * time.Second)
+		if ref.Reason != AnalysisRunning || resumed.Reason != ref.Reason || resumed.Read != ref.Read ||
+			resumed.NotBefore != floor.Format(time.RFC3339Nano) || !wireArgumentsEqual(ref.Args, resumed.Args) {
+			t.Fatal("poll did not preserve the status selector and observe the polling floor", ref, resumed)
+		}
+		return
+	}
 	if next["tool"] != ref.Read || next["action"] != "CALL_TOOL" || !CheckedOwnerCall(next) ||
 		!wireArgumentsEqual(ref.Args, next["arguments"]) {
 		t.Fatal("expired clock did not release the original call", next, ref)
@@ -132,7 +183,8 @@ func TestOwnerContinuationConstructionBoundary(t *testing.T) {
 					site = filepath.Base(path) + "/" + fn.Name.Name
 				}
 				ast.Inspect(decl, func(n ast.Node) bool {
-					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "ownerCall" || sel.Sel.Name == "ownerNext") && site != "engine.go/ownerCall" {
+					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "ownerCall" || sel.Sel.Name == "ownerNext" || sel.Sel.Name == "ownerPoll") &&
+						site != "engine.go/ownerCall" && site != "engine.go/ownerPoll" {
 						discovered[site] = true
 					}
 					if bypassesOwnerTiming(site, n) {
@@ -191,7 +243,7 @@ func bypassesOwnerTiming(site string, n ast.Node) bool {
 		case *ast.Ident:
 			if callee.Name == "alternative" {
 				switch site {
-				case "discovery.go/discoveryDecisions", "discovery.go/reformulationOption", "draft.go/draftCreateDecision", "draft.go/draftFailure",
+				case "batch.go/BatchDecisionNext", "discovery.go/discoveryDecisions", "discovery.go/reformulationOption", "draft.go/draftCreateDecision", "draft.go/draftFailure",
 					"draft.go/afterDraftRecoveryRead", "draft.go/installationLimitDecision", "engine.go/failure",
 					"summary.go/SummaryNext", "summary.go/ReplanNext", "summary.go/permissionHold":
 					return false
@@ -202,7 +254,7 @@ func bypassesOwnerTiming(site string, n ast.Node) bool {
 				return false
 			}
 			switch site {
-			case "engine.go/evaluate", "engine.go/failure", "engine.go/ownerCall", "engine.go/call",
+			case "engine.go/evaluate", "engine.go/failure", "engine.go/ownerCall", "engine.go/ownerPoll", "engine.go/call",
 				"waitref.go/Issue", "waitref.go/pollNext", "waitref.go/Next":
 				return false
 			}
@@ -221,7 +273,7 @@ func bypassesOwnerTiming(site string, n ast.Node) bool {
 				}
 			}
 		}
-		if site == "engine.go/Evaluate" || site == "engine.go/ownerCall" {
+		if site == "engine.go/Evaluate" || site == "engine.go/ownerCall" || site == "engine.go/ownerPoll" {
 			guarded := false
 			ast.Inspect(v, func(child ast.Node) bool {
 				if call, ok := child.(*ast.CallExpr); ok {

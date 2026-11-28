@@ -52,10 +52,16 @@ func TestBatchStartRetainsModeAndSharesNoLegacyAnalysis(t *testing.T) {
 	if _, err := store.PlanAnalysis(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
-	start := analysis.BatchStart{ID: analysis.BatchAnalysisID(scope, profile, ""), Profile: profile}
+	start := analysis.BatchStart{ID: analysis.BatchAnalysisID(scope, profile, ""), Profile: profile, Initialized: true}
+	saveBatchFixturePreview(t, ctx, store, scope, checksum, start)
 	key, intent := uuid.NewString(), analysis.Digest([]string{analysis.BatchMode, profile.AssetID, profile.ProfileID, profile.SchemaHash})
-	if got, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start); err != nil || got != start {
-		t.Fatal(got, err)
+	saved, err := store.SaveBatchStart(ctx, scope, checksum, key, intent, start)
+	if err != nil || saved.CreatedAt.IsZero() {
+		t.Fatalf("batch start has no persisted creation time: %+v, %v", saved, err)
+	}
+	start.CreatedAt = saved.CreatedAt
+	if saved != start {
+		t.Fatalf("batch start changed: got %+v, want %+v", saved, start)
 	}
 	reopened, err := Open(ctx, os.Getenv("MCP_TEST_DATABASE_URL"))
 	if err != nil {
@@ -81,9 +87,13 @@ func TestBatchStartRetainsModeAndSharesNoLegacyAnalysis(t *testing.T) {
 		t.Fatal("predecessor checksum could not read the legacy analysis", err)
 	}
 	var mode, fence string
-	err = reopened.pool.QueryRow(ctx, `select profile->>'mode',manifest_checksum from ouf_mcp.profile_analysis where analysis_id=$1`, start.ID).Scan(&mode, &fence)
+	var createdAt time.Time
+	err = reopened.pool.QueryRow(ctx, `select profile->>'mode',manifest_checksum,created_at from ouf_mcp.profile_analysis where analysis_id=$1`, start.ID).Scan(&mode, &fence, &createdAt)
 	if err != nil || mode != analysis.BatchMode || fence != checksum || fence == predecessor {
 		t.Fatal("batch is missing its stored mode or candidate fence", mode, fence, err)
+	}
+	if !createdAt.Equal(start.CreatedAt) {
+		t.Fatalf("batch start creation time differs from the stored value: got %v, want %v", start.CreatedAt, createdAt)
 	}
 }
 

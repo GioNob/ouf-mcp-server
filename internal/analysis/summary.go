@@ -44,6 +44,23 @@ func SummaryLimits(m *manifest.Snapshot) (Limits, error) {
 }
 
 func previewPage(body []byte, asset, profile string, pin Profile, offset, limit int) (Profile, []string, error) {
+	page, columns, err := verifiedPreviewPage(body, asset, profile, pin, offset, limit)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+	names := make([]string, len(columns))
+	for i, col := range columns {
+		names[i] = col.Name
+	}
+	return page, names, nil
+}
+
+type previewColumn struct {
+	Name string
+	Raw  json.RawMessage
+}
+
+func verifiedPreviewPage(body []byte, asset, profile string, pin Profile, offset, limit int) (Profile, []previewColumn, error) {
 	var page struct {
 		Profile
 		View               string
@@ -61,7 +78,7 @@ func previewPage(body []byte, asset, profile string, pin Profile, offset, limit 
 		(*page.HasMore && (page.NextOffset == nil || *page.NextOffset != end)) || (page.NextOffset != nil && *page.NextOffset != end) {
 		return Profile{}, nil, ErrProfile
 	}
-	names := make([]string, len(page.Columns))
+	columns := make([]previewColumn, len(page.Columns))
 	for i, raw := range page.Columns {
 		var col struct {
 			Ordinal *int
@@ -72,10 +89,11 @@ func previewPage(body []byte, asset, profile string, pin Profile, offset, limit 
 		}
 		var name string
 		if json.Unmarshal(col.Name, &name) == nil && UsableColumnName(name) {
-			names[i] = name
+			columns[i].Name = name
 		}
+		columns[i].Raw = raw
 	}
-	return page.Profile, names, nil
+	return page.Profile, columns, nil
 }
 
 func UsableColumnName(name string) bool {

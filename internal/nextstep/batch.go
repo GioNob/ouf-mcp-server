@@ -1,6 +1,8 @@
 package nextstep
 
 import (
+	"time"
+
 	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/GioNob/ouf-mcp-server/internal/manifest"
 	"github.com/GioNob/ouf-mcp-server/internal/orchestration"
@@ -29,6 +31,76 @@ func BatchBlock(code string) Object {
 		message = "La risposta dell’analisi a lotti supera il limite di 8 KiB."
 	}
 	return ManualBlock(code, message, "OPERATOR")
+}
+
+func (e Engine) BatchStatusNext(id, reason string, createdAt time.Time) Object {
+	const read = "source.analysis.read"
+	args := Object{"analysisId": id}
+	switch reason {
+	case "ANALYSIS_CONTINUE":
+		args["view"] = "BATCH"
+	case "ANALYSIS_SUMMARY":
+		args["view"] = "SUMMARY"
+	case AnalysisRunning:
+		args["view"] = "STATUS"
+		if e.Valid == nil || !e.Valid(read, args) {
+			return BatchBlock(BatchUnavailable)
+		}
+		maximum := e.WaitMaxSeconds
+		if maximum == 0 {
+			maximum = DefaultWaitMaxSeconds
+		}
+		window := time.Duration(maximum) * time.Second
+		now := e.clock()
+		start := now
+		if !createdAt.IsZero() && !createdAt.After(now) {
+			// All readers of this running analysis share a finite issuance window.
+			// A new authorized STATUS read can issue the next window after expiry.
+			start = createdAt.Add(now.Sub(createdAt) / window * window)
+		}
+		e.batchPollStart = start
+		deadline := start.Add(window)
+		return e.ownerPoll(reason, read, args, Object{"deadline": deadline.UTC().Format(time.RFC3339Nano)},
+			[]string{"READY_FOR_DECISION", "COMPLETE", "PARTIAL", "BLOCKED"})
+	default:
+		return BatchBlock(reason)
+	}
+	if e.Valid != nil && e.Valid(read, args) {
+		return e.ownerCall(reason, read, args, nil)
+	}
+	return BatchBlock(BatchUnavailable)
+}
+
+func (e Engine) BatchDecisionNext(id, batchID string, revision int64, ordinal int, cursor string) Object {
+	const read = "source.analysis.read"
+	const reason = analysis.DiscoveryDecisionRequired
+	next := Block(reason, "", "Valuta le colonne offerte e scegli tra le azioni ammesse per ciascuna voce.")
+	options := make([]Object, 0, 3)
+	if e.CommandKey != nil {
+		const decide = "source.analysis.decide"
+		args := Object{"analysisId": id, "batchId": batchID, "expectedRevision": revision}
+		args["commandKey"] = e.CommandKey(decide, args, nil, nil)
+		options = append(options, alternative(decide, args, reason, "Indica le azioni scelte per gli ordinali del lotto."))
+	}
+	if cursor != "" {
+		args := Object{"analysisId": id, "view": "CANDIDATES", "batchId": batchID, "ordinal": ordinal, "cursor": cursor}
+		options = append(options, alternative(read, args, "ANALYSIS_NEXT_PAGE", "Leggi altri dati della colonna."))
+	}
+	options = append(options, alternative(read, Object{"analysisId": id, "view": "BATCH"}, reason, "Rileggi il lotto corrente."))
+	next["alternatives"] = options
+	return next
+}
+
+func (e Engine) BatchPageNext(args Object, expired bool) Object {
+	const read = "source.analysis.read"
+	reason := "ANALYSIS_NEXT_PAGE"
+	if expired {
+		reason = "ANALYSIS_CURSOR_EXPIRED"
+	}
+	if e.Valid != nil && e.Valid(read, args) {
+		return e.ownerCall(reason, read, args, nil)
+	}
+	return BatchBlock(BatchUnavailable)
 }
 
 // BatchNext projects the continuation for a batch analysis result.

@@ -69,7 +69,7 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 				hash, _ := input["schemaHash"].(string)
 				start, startErr := coordinator.StartBatch(ctx, i.Identity, asset, profile, hash, key)
 				if startErr == nil {
-					return batchStatus(start), nil, nil
+					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, ""), nil, nil
 				}
 				err = startErr
 				break
@@ -107,16 +107,21 @@ func registerAnalysisTool(server *workflowServer, c manifest.Capability, snapsho
 			start, batch, batchErr := batchStartForRead(ctx, coordinator, i.Identity, id)
 			if batch || batchInput(c.ToolName, input) {
 				if batchErr != nil {
-					return markBatchResult(analysisReadError(batchErr)), nil, nil
+					return batchReadFailure(id, batchErr), nil, nil
 				}
 				if !batch {
-					return analysisReadError(analysis.ErrScope), nil, nil
+					return batchReadFailure(id, analysis.ErrScope), nil, nil
 				}
 				if input["offset"] != nil || input["limit"] != nil {
 					return markBatchResult(analysisReadError(analysis.ErrInvalid)), nil, nil
 				}
-				if len(input) == 1 || input["view"] == "STATUS" {
-					return batchStatus(start), nil, nil
+				switch input["view"] {
+				case nil, "BATCH":
+					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, "BATCH"), nil, nil
+				case "STATUS":
+					return server.readAnalysisBatch(ctx, coordinator, i.Identity, start.ID, "STATUS"), nil, nil
+				case "CANDIDATES":
+					return server.readBatchCandidates(ctx, coordinator, i.Identity, start, input), nil, nil
 				}
 				return batchUnavailable(start.ID), nil, nil
 			}

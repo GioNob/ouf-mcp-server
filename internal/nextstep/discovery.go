@@ -8,25 +8,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/GioNob/ouf-mcp-server/internal/analysis"
 	"github.com/google/uuid"
 )
 
 const planIntentMessage = "Prima di chiamare source.analysis.plan, usa intentHint per riformulare ogni intent in italiano. Descrivi che cosa rappresenta la colonna senza copiare i valori di esempio."
 const reformulationIntentHint = "Scegli un termine di 1–3 parole. Prova la parola che esprime il concetto, un sinonimo, un concetto più generale o l’equivalente inglese."
-
-func permitsExamples(metadata Object) bool {
-	for _, key := range []string{"redacted", "valuesRedacted", "distinctValuesRedacted"} {
-		if flag, present := metadata[key]; present && flag != false {
-			return false
-		}
-	}
-	for _, key := range []string{"dataAccessLabel", "accessLabel"} {
-		if label, present := metadata[key]; present && label != "OPEN" && label != "PUBLIC" {
-			return false
-		}
-	}
-	return true
-}
 
 // Copy only scalar examples from the owner's filtered distinct list. Never
 // unwrap redaction objects, rows or cursor data.
@@ -42,7 +29,7 @@ func intentHint(page, column Object, name string) Object {
 		case json.Number, float64, int:
 			count = v
 		case []any:
-			if permitsExamples(page) && permitsExamples(column) && column["distinctValuesComplete"] == true && page["offset"] == nil && page["view"] != "COLUMNS" {
+			if analysis.PreviewAllowsExamples(page) && analysis.PreviewAllowsExamples(column) && column["distinctValuesComplete"] == true && page["offset"] == nil && page["view"] != "COLUMNS" {
 				count = len(v)
 			}
 		}
@@ -50,7 +37,7 @@ func intentHint(page, column Object, name string) Object {
 	if n, err := strconv.Atoi(fmt.Sprint(count)); err == nil && n >= 0 {
 		hint["distinctCount"] = n
 	}
-	if !permitsExamples(page) || !permitsExamples(column) {
+	if !analysis.PreviewAllowsExamples(page) || !analysis.PreviewAllowsExamples(column) {
 		return hint
 	}
 	var examples []any
